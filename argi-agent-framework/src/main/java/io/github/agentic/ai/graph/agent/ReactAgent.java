@@ -48,6 +48,7 @@ import io.github.agentic.ai.graph.agent.node.AgentLlmNode;
 import io.github.agentic.ai.graph.agent.node.AgentToolNode;
 import io.github.agentic.ai.graph.checkpoint.BaseCheckpointSaver;
 import io.github.agentic.ai.graph.checkpoint.Checkpoint;
+import io.github.agentic.ai.graph.checkpoint.CheckpointExecutionQueue;
 import io.github.agentic.ai.graph.exception.GraphRunnerException;
 import io.github.agentic.ai.graph.exception.GraphStateException;
 import io.github.agentic.ai.graph.internal.node.Node;
@@ -84,6 +85,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static io.github.agentic.ai.graph.RunnableConfig.AGENT_MODEL_NAME;
@@ -308,13 +310,13 @@ public class ReactAgent extends BaseAgent {
 		CompiledGraph compiledGraph = getAndCompileGraph();
 		RunnableConfig config = buildStreamConfig(runnableConfig);
 		Optional<BaseCheckpointSaver> saver = compiledGraph.compileConfig.checkpointSaver();
-		// Capture the pre-turn snapshot at subscription time, not at assembly time:
+		// Capture the pre-turn snapshot after this subscription acquires its execution slot:
 		// the graph itself only executes on subscribe, so the rewind base must be
 		// read in the same per-subscription scope. A snapshot taken when the Flux
 		// was created would let a cancellation roll the thread back over any state
 		// committed between assembly and subscription, and every re-subscription of
 		// a cold Flux would reuse that same stale read.
-		return Flux.defer(() -> {
+		Supplier<Flux<NodeOutput>> execution = () -> {
 			Optional<Checkpoint> preTurnCheckpoint = saver.flatMap(s -> {
 				try {
 					return s.get(config);
@@ -335,7 +337,9 @@ public class ReactAgent extends BaseAgent {
 							rewindToPreTurnCheckpoint(saver, config, preTurnCheckpoint);
 						}
 					});
-		});
+		};
+		return saver.map(checkpointSaver -> CheckpointExecutionQueue.serialize(checkpointSaver, config, execution))
+				.orElseGet(() -> Flux.defer(execution));
 	}
 
 	/**

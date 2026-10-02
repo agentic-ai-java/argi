@@ -44,6 +44,28 @@ The core of the framework includes: **StateGraph** (the state graph for defining
 - Execution: The graph is compiled and executed, with state flowing through nodes and edges, and conditional logic determining the path.
 - Integration: Typically exposed via a REST controller or service in a Spring Boot app.
 
+## Concurrent Calls and Checkpoints
+
+Graph and ReactAgent executions using the same checkpoint saver instance and checkpoint
+namespace run in FIFO subscription order within one JVM. A queued call loads the latest
+checkpoint only after the preceding call finishes, fails, or completes cancellation
+cleanup. Cancelling a waiting call removes it without running its nodes or changing
+checkpoint state. ReactAgent cancellation also finishes its checkpoint rewind before the
+next call starts.
+
+The namespace comes from `BaseCheckpointSaver.checkpointThreadId(config)`, including
+application and user metadata when present. Calls for different namespaces or different
+saver instances can still run concurrently. An omitted `threadId` uses the shared
+`$default` namespace; set explicit thread IDs to isolate conversations. Graphs configured
+with an empty `SaverConfig` keep their previous concurrent behavior.
+
+This is an in-process execution queue, not a distributed lock. Separate saver instances
+or application processes pointing at the same database need external coordination.
+Direct saver writes and explicit `CompiledGraph.updateState` calls are outside this
+queue; applications must coordinate these with running executions. A queued call keeps
+waiting while its predecessor remains active, so apply an application timeout or cancel
+the subscription when that wait is no longer wanted.
+
 ## Interruption Support
 
 ARGI Graph supports interrupting workflow execution at specific points, enabling human-in-the-loop scenarios.

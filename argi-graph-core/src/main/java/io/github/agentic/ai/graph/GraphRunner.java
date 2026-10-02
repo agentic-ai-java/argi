@@ -16,6 +16,7 @@
 package io.github.agentic.ai.graph;
 
 import io.github.agentic.ai.graph.executor.MainGraphExecutor;
+import io.github.agentic.ai.graph.checkpoint.CheckpointExecutionQueue;
 
 import reactor.core.publisher.Flux;
 
@@ -46,6 +47,12 @@ public class GraphRunner {
 	}
 
 	public Flux<GraphResponse<NodeOutput>> run(OverAllState initialState) {
+		return compiledGraph.compileConfig.checkpointSaver()
+			.map(saver -> CheckpointExecutionQueue.serialize(saver, config, () -> runWithCheckpointLease(initialState)))
+			.orElseGet(() -> runWithCheckpointLease(initialState));
+	}
+
+	private Flux<GraphResponse<NodeOutput>> runWithCheckpointLease(OverAllState initialState) {
 		return Flux.defer(() -> {
 			try {
 				GraphRunnerContext context = new GraphRunnerContext(initialState, config, compiledGraph);

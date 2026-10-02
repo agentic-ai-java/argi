@@ -23,7 +23,10 @@ import io.github.agentic.ai.graph.NodeOutput;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.action.AsyncNodeActionWithConfig;
+import io.github.agentic.ai.graph.checkpoint.CheckpointExecutionQueue;
 import io.github.agentic.ai.graph.utils.TypeRef;
+
+import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -33,6 +36,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import static io.github.agentic.ai.graph.internal.node.ResumableSubGraphAction.outputKeyToParent;
 import static io.github.agentic.ai.graph.internal.node.ResumableSubGraphAction.resumeSubGraphId;
@@ -107,13 +111,25 @@ public record SubCompiledGraphNodeAction(String nodeId, CompileConfig parentComp
 		final CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
 
 		try {
-			if (resumeSubgraph) {
-				subGraphRunnableConfig = subGraph.updateState(subGraphRunnableConfig, state.data());
-			}
-
-			AtomicReference<Map<String, Object>> subGraphInputState = new AtomicReference<>(new HashMap<>(state.data()));
-			var fluxStream = subGraph.graphResponseStream(state, subGraphRunnableConfig)
-				.map(response -> toParentDeltaResponse(response, subGraphInputState));
+			final RunnableConfig childConfig = subGraphRunnableConfig;
+			Supplier<Flux<GraphResponse<NodeOutput>>> execution = () -> Flux.defer(() -> {
+				try {
+					RunnableConfig executionConfig = resumeSubgraph
+							? subGraph.updateState(childConfig, state.data()) : childConfig;
+					AtomicReference<Map<String, Object>> subGraphInputState =
+							new AtomicReference<>(new HashMap<>(state.data()));
+					return subGraph.graphResponseStream(state, executionConfig)
+						.map(response -> toParentDeltaResponse(response, subGraphInputState));
+				}
+				catch (Exception e) {
+					return Flux.error(e);
+				}
+			});
+			// Resuming updates the child's checkpoint before running it. Both operations
+			// must wait for the same child-thread permit, including the state read.
+			var fluxStream = subGraphSaver.isPresent()
+					? CheckpointExecutionQueue.serialize(subGraphSaver.get(), childConfig, execution)
+					: execution.get();
 
 			future.complete(Map.of(outputKeyToParent(nodeId), fluxStream));
 
