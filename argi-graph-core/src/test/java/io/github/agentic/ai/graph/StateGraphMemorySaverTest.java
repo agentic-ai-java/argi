@@ -19,6 +19,7 @@ import io.github.agentic.ai.graph.action.EdgeAction;
 import io.github.agentic.ai.graph.action.InterruptionMetadata;
 import io.github.agentic.ai.graph.action.NodeAction;
 import io.github.agentic.ai.graph.checkpoint.Checkpoint;
+import io.github.agentic.ai.graph.checkpoint.HasVersions;
 import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 import io.github.agentic.ai.graph.checkpoint.savers.VersionedMemorySaver;
@@ -36,6 +37,8 @@ import java.util.logging.LogManager;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static io.github.agentic.ai.graph.StateGraph.END;
 import static io.github.agentic.ai.graph.StateGraph.START;
@@ -464,6 +467,68 @@ public class StateGraphMemorySaverTest {
 		assertEquals("node1-value", node2EntryState.get().get("value"));
 		assertEquals("node1-value",
 				resumedResults.get(resumedResults.size() - 1).state().value("seenByNode2").orElseThrow());
+	}
+
+	@ParameterizedTest
+	@CsvSource({ "assistant,alice,shared-thread", "assistant,,shared-thread", ",alice,shared-thread",
+			"assistant,alice,", "' assistant/one ',' alice/two ',shared-thread", ",,shared-thread", ",,",
+			"' ',' ',shared-thread" })
+	public void testVersionQueriesUseCheckpointNamespace(String appName, String userId, String threadId)
+			throws Exception {
+		var saver = VersionedMemorySaver.builder().build();
+		HasVersions versions = saver;
+		var builder = RunnableConfig.builder().threadId(threadId);
+		if (appName != null) {
+			builder.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, appName);
+		}
+		if (userId != null) {
+			builder.addMetadata(RunnableConfig.USER_ID_METADATA_KEY, userId);
+		}
+		var config = builder.build();
+		assertTrue(versions.versionsByThreadId(config).isEmpty());
+		assertTrue(versions.lastVersionByThreadId(config).isEmpty());
+
+		var checkpoint = Checkpoint.builder().state(Map.of()).nodeId(START).nextNodeId(END).build();
+		var tag = saver.release(saver.put(config, checkpoint));
+
+		assertEquals(1, tag.checkpoints().size());
+		assertIterableEquals(List.of(1), versions.versionsByThreadId(config));
+		assertEquals(Optional.of(1), versions.lastVersionByThreadId(config));
+		assertIterableEquals(List.of(1), versions.versionsByThreadId(tag.threadId()));
+		assertEquals(Optional.of(1), versions.lastVersionByThreadId(tag.threadId()));
+	}
+
+	@Test
+	public void testVersionQueriesDoNotFallBackToLegacyThread() throws Exception {
+		var saver = VersionedMemorySaver.builder().build();
+		HasVersions versions = saver;
+		var alice = RunnableConfig.builder().threadId("shared-thread")
+				.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, "assistant")
+				.addMetadata(RunnableConfig.USER_ID_METADATA_KEY, "alice").build();
+		var bob = RunnableConfig.builder(alice).addMetadata(RunnableConfig.USER_ID_METADATA_KEY, "bob").build();
+		var otherApp = RunnableConfig.builder(alice).addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, "other").build();
+		var legacy = RunnableConfig.builder().threadId("shared-thread").build();
+
+		for (int index = 0; index < 3; index++) {
+			var checkpoint = Checkpoint.builder().state(Map.of("index", index)).nodeId(START).nextNodeId(END).build();
+			saver.release(saver.put(bob, checkpoint));
+			if (index < 2) {
+				saver.release(saver.put(legacy, checkpoint));
+			}
+		}
+		var checkpoint = Checkpoint.builder().state(Map.of()).nodeId(START).nextNodeId(END).build();
+		saver.release(saver.put(alice, checkpoint));
+
+		assertIterableEquals(List.of(1), versions.versionsByThreadId(alice));
+		assertEquals(Optional.of(1), versions.lastVersionByThreadId(alice));
+		assertIterableEquals(List.of(1, 2, 3), versions.versionsByThreadId(bob));
+		assertEquals(Optional.of(3), versions.lastVersionByThreadId(bob));
+		assertTrue(versions.versionsByThreadId(otherApp).isEmpty());
+		assertTrue(versions.lastVersionByThreadId(otherApp).isEmpty());
+		assertIterableEquals(List.of(1, 2), versions.versionsByThreadId(legacy));
+		assertEquals(Optional.of(2), versions.lastVersionByThreadId(legacy));
+		assertIterableEquals(List.of(1, 2), versions.versionsByThreadId("shared-thread"));
+		assertEquals(Optional.of(2), versions.lastVersionByThreadId("shared-thread"));
 	}
 
 	@Test

@@ -126,6 +126,11 @@ public class VersionedMemorySaver implements BaseCheckpointSaver, HasVersions {
 				.orElse(Collections.emptyList());
 	}
 
+	@Override
+	public Collection<Integer> versionsByThreadId(RunnableConfig config) {
+		return versionsByThreadId(checkpointThreadId(config));
+	}
+
 	/**
 	 * Retrieves the last version by thread ID.
 	 * @param threadId the ID of the thread to retrieve the last version for, or
@@ -136,6 +141,11 @@ public class VersionedMemorySaver implements BaseCheckpointSaver, HasVersions {
 	@Override
 	public Optional<Integer> lastVersionByThreadId(String threadId) {
 		return getCheckpointHistoryByThread(ofNullable(threadId).orElse(THREAD_ID_DEFAULT)).map(TreeMap::lastKey);
+	}
+
+	@Override
+	public Optional<Integer> lastVersionByThreadId(RunnableConfig config) {
+		return lastVersionByThreadId(checkpointThreadId(config));
 	}
 
 	/**
