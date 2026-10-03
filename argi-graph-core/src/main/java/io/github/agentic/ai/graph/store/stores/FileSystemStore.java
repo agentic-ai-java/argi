@@ -382,7 +382,8 @@ public class FileSystemStore extends BaseStore {
 	 */
 	private void cleanupEmptyDirectories(Path directory) {
 		try {
-			while (directory != null && !directory.equals(rootPath)) {
+			final Path normalizedRoot = rootPath.toAbsolutePath().normalize();
+			while (directory != null && !directory.equals(normalizedRoot)) {
 				if (Files.exists(directory) && isDirectoryEmpty(directory)) {
 					Files.delete(directory);
 					directory = directory.getParent();

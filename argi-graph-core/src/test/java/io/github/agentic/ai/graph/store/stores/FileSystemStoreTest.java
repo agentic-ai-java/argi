@@ -30,6 +30,8 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -91,6 +93,46 @@ class FileSystemStoreTest {
 		assertThat(deleted).isTrue();
 		assertThat(store.getItem(namespace, key)).isEmpty();
 		assertThat(store.deleteItem(namespace, key)).isFalse(); // Already deleted
+	}
+
+	@ParameterizedTest
+	@CsvSource({ "relative, true", "relative, false", "absolute, true", "non-normalized, true" })
+	void testDeleteItemPreservesRootDirectory(String pathType, boolean nestedNamespace) throws IOException {
+		Path parent = Files.createDirectories(tempDir.resolve("parent"));
+		Path root = Files.createDirectories(parent.resolve("store"));
+		Path outsideFile = Files.writeString(tempDir.resolve("outside.txt"), "keep");
+		Path configuredRoot = switch (pathType) {
+			case "relative" -> Path.of("").toAbsolutePath().normalize().relativize(root);
+			case "non-normalized" -> root.resolve("..").resolve("store");
+			default -> root;
+		};
+		FileSystemStore fileStore = new FileSystemStore(configuredRoot);
+		List<String> namespace = nestedNamespace ? List.of("users", "user1") : List.of();
+		fileStore.putItem(StoreItem.of(namespace, "only", Map.of("value", "test")));
+
+		assertThat(fileStore.deleteItem(namespace, "only")).isTrue();
+
+		assertThat(Files.exists(root.resolve("users"))).isFalse();
+		assertThat(Files.isDirectory(root)).isTrue();
+		assertThat(Files.isDirectory(parent)).isTrue();
+		assertThat(Files.exists(outsideFile)).isTrue();
+	}
+
+	@Test
+	void testDeleteItemPreservesNonEmptySiblingNamespace() {
+		Path root = tempDir.resolve("store");
+		Path relativeRoot = Path.of("").toAbsolutePath().normalize().relativize(root);
+		FileSystemStore fileStore = new FileSystemStore(relativeRoot);
+		List<String> deletedNamespace = List.of("users", "user1");
+		List<String> remainingNamespace = List.of("users", "user2");
+		fileStore.putItem(StoreItem.of(deletedNamespace, "only", Map.of("value", "delete")));
+		fileStore.putItem(StoreItem.of(remainingNamespace, "only", Map.of("value", "keep")));
+
+		assertThat(fileStore.deleteItem(deletedNamespace, "only")).isTrue();
+
+		assertThat(Files.exists(root.resolve("users").resolve("user1"))).isFalse();
+		assertThat(Files.isDirectory(root)).isTrue();
+		assertThat(fileStore.getItem(remainingNamespace, "only")).isPresent();
 	}
 
 	@Test
