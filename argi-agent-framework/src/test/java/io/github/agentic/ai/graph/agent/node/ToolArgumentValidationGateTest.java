@@ -259,4 +259,45 @@ class ToolArgumentValidationGateTest {
 		};
 	}
 
+	@Test
+	@DisplayName("oversized arguments are rejected before the callback runs")
+	void oversizedArgumentsAreRejected() throws Exception {
+		AtomicInteger calls = new AtomicInteger();
+		AgentToolNode node = baseBuilder()
+			.validateToolArguments(true)
+			.toolCallbacks(List.of(countedTool("gated", "{}", calls)))
+			.build();
+
+		// 70_000 bytes, well above the validator's 64 KiB byte limit
+		String response = run(node, "gated", "{\"name\": \"" + "a".repeat(70_000) + "\"}");
+
+		assertEquals(0, calls.get(), "byte-limit rejection must happen before dispatch");
+		assertTrue(response.contains("ARGUMENTS_TOO_LARGE"), response);
+	}
+
+	@Test
+	@DisplayName("local $ref rules in a tool schema are enforced by the gate")
+	void localRefSchemaIsEnforced() throws Exception {
+		AtomicInteger calls = new AtomicInteger();
+		String refSchema = """
+				{
+				  "type": "object",
+				  "properties": {
+				    "name": { "$ref": "#/definitions/str" }
+				  },
+				  "definitions": { "str": { "type": "string" } }
+				}""";
+		AgentToolNode node = baseBuilder()
+			.validateToolArguments(true)
+			.toolCallbacks(List.of(countedTool("gated", refSchema, calls)))
+			.build();
+
+		assertTrue(run(node, "gated", "{\"name\": \"ok\"}").contains("executed:"));
+		assertEquals(1, calls.get());
+
+		String rejected = run(node, "gated", "{\"name\": 1}");
+		assertEquals(1, calls.get(), "second call must be rejected before the callback");
+		assertTrue(rejected.contains("INVALID_TYPE"), rejected);
+	}
+
 }
