@@ -19,17 +19,16 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.graph.agent.interceptor.toolselection.ToolSelectionInterceptor;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.prompt.Prompt;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRequest;
+import io.github.agentic.ai.api.chat.ChatResponse;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,13 +45,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for ToolSelectionInterceptor with tool descriptions.
- * Verifies that tool descriptions are properly included in the selection prompt.
+ * Unit tests for ToolSelectionInterceptor with tool descriptions. Verifies that tool
+ * descriptions are properly included in the selection prompt.
  */
 class ToolSelectionWithDescriptionsTest {
 
 	@Mock
-	private ChatModel selectionModel;
+	private ChatClient selectionClient;
 
 	@Mock
 	private ModelCallHandler handler;
@@ -60,21 +59,22 @@ class ToolSelectionWithDescriptionsTest {
 	@BeforeEach
 	void setUp() {
 		MockitoAnnotations.openMocks(this);
+		when(selectionClient.callBlocking(any(ChatRequest.class))).thenCallRealMethod();
 	}
 
 	@Test
 	void testToolSelectionPromptIncludesDescriptions() {
 		// Setup mock response for tool selection
 		ChatResponse mockResponse = createMockChatResponse("{\"tools\": [\"weather_tool\"]}");
-		when(selectionModel.call(any(Prompt.class))).thenReturn(mockResponse);
+		when(selectionClient.call(any(ChatRequest.class))).thenReturn(CompletableFuture.completedFuture(mockResponse));
 
 		// Setup mock handler response
 		when(handler.call(any(ModelRequest.class)))
-			.thenReturn(ModelResponse.of(new AssistantMessage("Weather is sunny")));
+			.thenReturn(ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Weather is sunny")));
 
 		// Create interceptor
 		ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
-			.selectionModel(selectionModel)
+			.chatClient(selectionClient)
 			.maxTools(2)
 			.build();
 
@@ -85,7 +85,7 @@ class ToolSelectionWithDescriptionsTest {
 		toolDescriptions.put("hotel_tool", "Search and reserve hotel accommodations");
 
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("What's the weather in Shanghai?")))
+			.messages(List.of(ChatMessage.user("What's the weather in Shanghai?")))
 			.tools(List.of("weather_tool", "ticket_tool", "hotel_tool"))
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -95,48 +95,51 @@ class ToolSelectionWithDescriptionsTest {
 		interceptor.interceptModel(request, handler);
 
 		// Capture the prompt sent to selection model
-		ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-		verify(selectionModel, times(1)).call(promptCaptor.capture());
+		ArgumentCaptor<ChatRequest> promptCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+		verify(selectionClient, times(1)).call(promptCaptor.capture());
 
 		// Verify prompt contains tool descriptions
-		Prompt capturedPrompt = promptCaptor.getValue();
-		String promptContent = capturedPrompt.getContents();
+		ChatRequest capturedPrompt = promptCaptor.getValue();
+		String promptContent = promptText(capturedPrompt);
 
-		assertTrue(promptContent.contains("weather_tool"),
-			"Prompt should contain weather_tool name");
+		assertTrue(promptContent.contains("weather_tool"), "Prompt should contain weather_tool name");
 		assertTrue(promptContent.contains("Get current weather information for any city worldwide"),
-			"Prompt should contain weather_tool description");
-		assertTrue(promptContent.contains("ticket_tool"),
-			"Prompt should contain ticket_tool name");
+				"Prompt should contain weather_tool description");
+		assertTrue(promptContent.contains("ticket_tool"), "Prompt should contain ticket_tool name");
 		assertTrue(promptContent.contains("Book train or flight tickets for travel"),
-			"Prompt should contain ticket_tool description");
-		assertTrue(promptContent.contains("hotel_tool"),
-			"Prompt should contain hotel_tool name");
+				"Prompt should contain ticket_tool description");
+		assertTrue(promptContent.contains("hotel_tool"), "Prompt should contain hotel_tool name");
 		assertTrue(promptContent.contains("Search and reserve hotel accommodations"),
-			"Prompt should contain hotel_tool description");
+				"Prompt should contain hotel_tool description");
 	}
 
 	@Test
 	void testToolSelectionWithPartialDescriptions() {
 		// Setup mock response
 		ChatResponse mockResponse = createMockChatResponse("{\"tools\": [\"tool_with_desc\"]}");
-		when(selectionModel.call(any(Prompt.class))).thenReturn(mockResponse);
+		when(selectionClient.call(any(ChatRequest.class))).thenReturn(CompletableFuture.completedFuture(mockResponse));
 		when(handler.call(any(ModelRequest.class)))
-			.thenReturn(ModelResponse.of(new AssistantMessage("Done")));
+			.thenReturn(ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Done")));
 
 		ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
-			.selectionModel(selectionModel)
-			.maxTools(1)  // Changed from 2 to 1 to trigger selection
+			.chatClient(selectionClient)
+			.maxTools(1) // Changed from 2 to 1 to trigger selection
 			.build();
 
-		// Create request with partial descriptions (some tools have descriptions, some don't)
+		// Create request with partial descriptions (some tools have descriptions, some
+		// don't)
 		Map<String, String> toolDescriptions = new HashMap<>();
 		toolDescriptions.put("tool_with_desc", "This tool has a description");
 		// tool_without_desc intentionally not added
 
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Test query")))
-			.tools(List.of("tool_with_desc", "tool_without_desc", "tool_third"))  // Added third tool to exceed maxTools
+			.messages(List.of(ChatMessage.user("Test query")))
+			.tools(List.of("tool_with_desc", "tool_without_desc", "tool_third")) // Added
+																					// third
+																					// tool
+																					// to
+																					// exceed
+																					// maxTools
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
 			.build();
@@ -145,36 +148,35 @@ class ToolSelectionWithDescriptionsTest {
 		interceptor.interceptModel(request, handler);
 
 		// Capture the prompt
-		ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-		verify(selectionModel).call(promptCaptor.capture());
+		ArgumentCaptor<ChatRequest> promptCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+		verify(selectionClient).call(promptCaptor.capture());
 
-		String promptContent = promptCaptor.getValue().getContents();
+		String promptContent = promptText(promptCaptor.getValue());
 
 		// Tool with description should have description in prompt
 		assertTrue(promptContent.contains("tool_with_desc: This tool has a description"),
-			"Tool with description should show description");
+				"Tool with description should show description");
 
 		// Tool without description should still be listed (just without description)
-		assertTrue(promptContent.contains("tool_without_desc"),
-			"Tool without description should still be listed");
+		assertTrue(promptContent.contains("tool_without_desc"), "Tool without description should still be listed");
 	}
 
 	@Test
 	void testToolSelectionWithNullDescriptions() {
 		// Setup mock response
 		ChatResponse mockResponse = createMockChatResponse("{\"tools\": [\"tool1\"]}");
-		when(selectionModel.call(any(Prompt.class))).thenReturn(mockResponse);
+		when(selectionClient.call(any(ChatRequest.class))).thenReturn(CompletableFuture.completedFuture(mockResponse));
 		when(handler.call(any(ModelRequest.class)))
-			.thenReturn(ModelResponse.of(new AssistantMessage("Done")));
+			.thenReturn(ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Done")));
 
 		ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
-			.selectionModel(selectionModel)
+			.chatClient(selectionClient)
 			.maxTools(1)
 			.build();
 
 		// Create request without tool descriptions (null)
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Test query")))
+			.messages(List.of(ChatMessage.user("Test query")))
 			.tools(List.of("tool1", "tool2", "tool3"))
 			.context(new HashMap<>())
 			.build();
@@ -186,10 +188,10 @@ class ToolSelectionWithDescriptionsTest {
 		assertNotNull(response);
 
 		// Capture the prompt
-		ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-		verify(selectionModel).call(promptCaptor.capture());
+		ArgumentCaptor<ChatRequest> promptCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+		verify(selectionClient).call(promptCaptor.capture());
 
-		String promptContent = promptCaptor.getValue().getContents();
+		String promptContent = promptText(promptCaptor.getValue());
 
 		// Tools should be listed without descriptions
 		assertTrue(promptContent.contains("tool1"), "tool1 should be in prompt");
@@ -201,12 +203,12 @@ class ToolSelectionWithDescriptionsTest {
 	void testToolSelectionWithEmptyDescription() {
 		// Setup mock response
 		ChatResponse mockResponse = createMockChatResponse("{\"tools\": [\"tool1\"]}");
-		when(selectionModel.call(any(Prompt.class))).thenReturn(mockResponse);
+		when(selectionClient.call(any(ChatRequest.class))).thenReturn(CompletableFuture.completedFuture(mockResponse));
 		when(handler.call(any(ModelRequest.class)))
-			.thenReturn(ModelResponse.of(new AssistantMessage("Done")));
+			.thenReturn(ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Done")));
 
 		ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
-			.selectionModel(selectionModel)
+			.chatClient(selectionClient)
 			.maxTools(1)
 			.build();
 
@@ -217,7 +219,7 @@ class ToolSelectionWithDescriptionsTest {
 		toolDescriptions.put("tool3", null); // Null description
 
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Test query")))
+			.messages(List.of(ChatMessage.user("Test query")))
 			.tools(List.of("tool1", "tool2", "tool3"))
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -227,27 +229,26 @@ class ToolSelectionWithDescriptionsTest {
 		interceptor.interceptModel(request, handler);
 
 		// Capture the prompt
-		ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-		verify(selectionModel).call(promptCaptor.capture());
+		ArgumentCaptor<ChatRequest> promptCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+		verify(selectionClient).call(promptCaptor.capture());
 
-		String promptContent = promptCaptor.getValue().getContents();
+		String promptContent = promptText(promptCaptor.getValue());
 
 		// tool1 should have description
-		assertTrue(promptContent.contains("tool1: Valid description"),
-			"tool1 should have its description");
+		assertTrue(promptContent.contains("tool1: Valid description"), "tool1 should have its description");
 	}
 
 	@Test
 	void testToolSelectionSkippedWhenToolsWithinLimit() {
 		// Create interceptor with maxTools = 5
 		ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
-			.selectionModel(selectionModel)
+			.chatClient(selectionClient)
 			.maxTools(5)
 			.build();
 
 		// Create handler response
 		when(handler.call(any(ModelRequest.class)))
-			.thenReturn(ModelResponse.of(new AssistantMessage("Done")));
+			.thenReturn(ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Done")));
 
 		// Create request with only 2 tools (less than maxTools)
 		Map<String, String> toolDescriptions = new HashMap<>();
@@ -255,7 +256,7 @@ class ToolSelectionWithDescriptionsTest {
 		toolDescriptions.put("tool2", "Description 2");
 
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Test query")))
+			.messages(List.of(ChatMessage.user("Test query")))
 			.tools(List.of("tool1", "tool2"))
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -265,7 +266,7 @@ class ToolSelectionWithDescriptionsTest {
 		interceptor.interceptModel(request, handler);
 
 		// Selection model should NOT be called when tools <= maxTools
-		verify(selectionModel, times(0)).call(any(Prompt.class));
+		verify(selectionClient, times(0)).call(any(ChatRequest.class));
 
 		// Handler should be called directly with original request
 		verify(handler, times(1)).call(request);
@@ -275,12 +276,12 @@ class ToolSelectionWithDescriptionsTest {
 	void testToolSelectionFiltersToolsCorrectly() {
 		// Setup mock to return specific tools
 		ChatResponse mockResponse = createMockChatResponse("{\"tools\": [\"weather_tool\", \"hotel_tool\"]}");
-		when(selectionModel.call(any(Prompt.class))).thenReturn(mockResponse);
+		when(selectionClient.call(any(ChatRequest.class))).thenReturn(CompletableFuture.completedFuture(mockResponse));
 		when(handler.call(any(ModelRequest.class)))
-			.thenReturn(ModelResponse.of(new AssistantMessage("Done")));
+			.thenReturn(ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Done")));
 
 		ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
-			.selectionModel(selectionModel)
+			.chatClient(selectionClient)
 			.maxTools(2)
 			.build();
 
@@ -290,7 +291,7 @@ class ToolSelectionWithDescriptionsTest {
 		toolDescriptions.put("hotel_tool", "Hotel booking");
 
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("I need weather and hotel info")))
+			.messages(List.of(ChatMessage.user("I need weather and hotel info")))
 			.tools(List.of("weather_tool", "ticket_tool", "hotel_tool"))
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -315,12 +316,12 @@ class ToolSelectionWithDescriptionsTest {
 	void testToolSelectionPromptFormat() {
 		// Setup mock response
 		ChatResponse mockResponse = createMockChatResponse("{\"tools\": [\"api_tool\"]}");
-		when(selectionModel.call(any(Prompt.class))).thenReturn(mockResponse);
+		when(selectionClient.call(any(ChatRequest.class))).thenReturn(CompletableFuture.completedFuture(mockResponse));
 		when(handler.call(any(ModelRequest.class)))
-			.thenReturn(ModelResponse.of(new AssistantMessage("Done")));
+			.thenReturn(ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Done")));
 
 		ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
-			.selectionModel(selectionModel)
+			.chatClient(selectionClient)
 			.maxTools(1)
 			.build();
 
@@ -328,7 +329,7 @@ class ToolSelectionWithDescriptionsTest {
 		toolDescriptions.put("api_tool", "Call external API endpoints");
 
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Call the API")))
+			.messages(List.of(ChatMessage.user("Call the API")))
 			.tools(List.of("api_tool", "db_tool"))
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -336,20 +337,22 @@ class ToolSelectionWithDescriptionsTest {
 
 		interceptor.interceptModel(request, handler);
 
-		ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-		verify(selectionModel).call(promptCaptor.capture());
+		ArgumentCaptor<ChatRequest> promptCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+		verify(selectionClient).call(promptCaptor.capture());
 
-		String promptContent = promptCaptor.getValue().getContents();
+		String promptContent = promptText(promptCaptor.getValue());
 
 		// Verify format: "- toolName: description"
 		assertTrue(promptContent.contains("- api_tool: Call external API endpoints"),
-			"Prompt should use format '- toolName: description'");
+				"Prompt should use format '- toolName: description'");
 	}
 
 	private ChatResponse createMockChatResponse(String content) {
-		AssistantMessage assistantMessage = new AssistantMessage(content);
-		Generation generation = new Generation(assistantMessage);
-		return new ChatResponse(List.of(generation));
+		return new ChatResponse(null, null, List.of(ChatMessage.assistant(content)), List.of(), null, null, Map.of());
+	}
+
+	private String promptText(ChatRequest request) {
+		return request.messages().stream().map(ChatMessage::text).collect(Collectors.joining("\n"));
 	}
 
 }

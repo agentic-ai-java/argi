@@ -15,17 +15,16 @@
  */
 package io.github.agentic.ai.graph.agent.node;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ToolCall;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolRegistry;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.execution.ToolExecutionExceptionProcessor;
-import org.springframework.ai.tool.function.FunctionToolCallback;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -36,26 +35,24 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for the in-memory dynamic tool callback registry on {@link AgentToolNode}.
+ * Tests for model-turn dynamic tool binding snapshots on {@link AgentToolNode}.
  *
  * <p>
  * Covers the Human-in-the-Loop resumption scenario reported in issue #35: skill tools are
  * disclosed dynamically at model-call time and passed to the tool node through
- * {@code config.context()}, which is cleared when a subgraph resumes after an interruption.
- * The registry (shared with {@link AgentLlmNode} via the agent builder) keeps the disclosed
- * callbacks resolvable across resumption.
+ * {@code config.context()}, which is cleared when a subgraph resumes after an
+ * interruption. The immutable snapshot keeps only this model turn's tools resolvable
+ * across resumption.
  * </p>
  *
  * @author Kal'tsit
  * @since 1.0.0
  */
-@DisplayName("AgentToolNode Dynamic Tool Callback Registry Tests")
+@DisplayName("AgentToolNode Dynamic Tool Registry Tests")
 class AgentToolNodeDynamicToolCallbackRegistryTest {
 
-	private static final ToolExecutionExceptionProcessor DEFAULT_PROCESSOR = e -> "Error: " + e.getMessage();
-
-	private ToolCallback queryTool() {
-		return FunctionToolCallback.builder("queryTool", (QueryInput input) -> "result:" + input.q())
+	private Tool queryTool() {
+		return TypedTool.builder("queryTool", (QueryInput input) -> "result:" + input.q())
 			.description("Query tool")
 			.inputType(QueryInput.class)
 			.build();
@@ -64,19 +61,17 @@ class AgentToolNodeDynamicToolCallbackRegistryTest {
 	record QueryInput(String q) {
 	}
 
-	private AgentToolNode buildNode() {
+	private AgentToolNode buildNode(AgentToolBindingStore bindings) {
 		return AgentToolNode.builder()
 			.agentName("test-agent")
+			.toolBindingStore(bindings)
 			.toolExecutionTimeout(Duration.ofMinutes(5))
-			.toolExecutionExceptionProcessor(DEFAULT_PROCESSOR)
+			.throwOnToolError(false)
 			.build();
 	}
 
 	private OverAllState stateWithToolCall(String toolName, String arguments) {
-		AssistantMessage assistantMessage = AssistantMessage.builder()
-			.content("")
-			.toolCalls(List.of(new AssistantMessage.ToolCall("call_1", "function", toolName, arguments)))
-			.build();
+		ChatMessage assistantMessage = ChatMessage.assistant("", List.of(new ToolCall("call_1", toolName, arguments)));
 		Map<String, Object> stateData = new HashMap<>();
 		stateData.put("messages", new ArrayList<>(List.of(assistantMessage)));
 		return new OverAllState(stateData);
@@ -85,32 +80,37 @@ class AgentToolNodeDynamicToolCallbackRegistryTest {
 	@Test
 	@DisplayName("Dynamic registry resolves a tool when the config context is empty (HITL resume scenario)")
 	void dynamicRegistryResolvesToolWhenConfigContextIsEmpty() throws Exception {
-		AgentToolNode node = buildNode();
-		node.registerDynamicToolCallbacks(List.of(queryTool()));
+		AgentToolBindingStore bindings = new AgentToolBindingStore();
+		AgentToolNode node = buildNode(bindings);
+		OverAllState state = stateWithToolCall("queryTool", "{\"q\":\"hello\"}");
+		var selected = new AgentToolBindings(new ToolRegistry(List.of(queryTool())));
+		var configured = new AgentToolBindings(new ToolRegistry(List.of()));
+		List<ChatMessage> messages = (List<ChatMessage>) state.data().get("messages");
+		messages.set(0, bindings.attach(messages.get(0), selected, configured));
 
 		// Simulate a resumed run: a fresh config whose context no longer carries the
 		// dynamically disclosed tool callbacks.
 		RunnableConfig config = RunnableConfig.builder().threadId("test-thread").build();
 
-		Map<String, Object> result = node.apply(stateWithToolCall("queryTool", "{\"q\":\"hello\"}"), config);
+		Map<String, Object> result = node.apply(state, config);
 
-		ToolResponseMessage responseMessage = (ToolResponseMessage) result.get("messages");
-		assertThat(responseMessage.getResponses()).hasSize(1);
-		assertThat(responseMessage.getResponses().get(0).responseData()).contains("result:hello");
+		List<ChatMessage> responseMessages = (List<ChatMessage>) result.get("messages");
+		assertThat(responseMessages).hasSize(1);
+		assertThat(responseMessages.get(0).text()).contains("result:hello");
 	}
 
 	@Test
 	@DisplayName("A tool absent from the registry is reported as unavailable")
 	void toolAbsentFromRegistryIsReportedUnavailable() throws Exception {
-		AgentToolNode node = buildNode();
+		AgentToolNode node = buildNode(new AgentToolBindingStore());
 
 		RunnableConfig config = RunnableConfig.builder().threadId("test-thread").build();
 
 		Map<String, Object> result = node.apply(stateWithToolCall("unknownTool", "{}"), config);
 
-		ToolResponseMessage responseMessage = (ToolResponseMessage) result.get("messages");
-		assertThat(responseMessage.getResponses()).hasSize(1);
-		assertThat(responseMessage.getResponses().get(0).responseData()).contains("Tool not available: unknownTool");
+		List<ChatMessage> responseMessages = (List<ChatMessage>) result.get("messages");
+		assertThat(responseMessages).hasSize(1);
+		assertThat(responseMessages.get(0).text()).contains("Tool not available: unknownTool");
 	}
 
 }

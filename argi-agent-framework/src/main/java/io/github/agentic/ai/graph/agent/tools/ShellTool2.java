@@ -19,9 +19,9 @@ import io.github.agentic.ai.graph.RunnableConfig;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -30,16 +30,14 @@ import java.util.Map;
 import static io.github.agentic.ai.graph.agent.tools.ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY;
 
 /**
- * A tool for executing shell commands using Spring AI Tool annotations.
+ * A provider-neutral tool for executing shell commands.
  *
- * This tool allows for the execution of shell commands within a managed session.
- * The session's lifecycle and configuration are handled by the {@link ShellSessionManager}.
+ * This tool allows for the execution of shell commands within a managed session. The
+ * session's lifecycle and configuration are handled by the {@link ShellSessionManager}.
  *
- * This implementation uses Spring AI Tool annotations (@Tool, @ToolParam) similar to
- * FileSystemTools, providing better integration with the Spring AI framework.
+ * Register {@link #tool()} with an agent's tool registry.
  *
- * Example of creating an instance:
- * <pre>
+ * Example of creating an instance: <pre>
  * ShellTool2 shellTool2 = ShellTool2.builder("/tmp/agent-workspace")
  *     .withName("shell")
  *     .build();
@@ -49,20 +47,18 @@ public class ShellTool2 {
 
 	private static final Logger log = LoggerFactory.getLogger(ShellTool2.class);
 
-	public static final String DEFAULT_TOOL_DESCRIPTION =
-			"Execute a shell command inside a persistent session. Before running a command, "
-					+ "confirm the working directory is correct (e.g., inspect with `ls` or `pwd`) and ensure "
-					+ "any parent directories exist. Prefer absolute paths and quote paths containing spaces, "
-					+ "such as `cd \"/path/with spaces\"`. Chain multiple commands with `&&` or `;` instead of "
-					+ "embedding newlines. Avoid unnecessary `cd` usage unless explicitly required so the "
-					+ "session remains stable. Outputs may be truncated when they become very large, and long "
-					+ "running commands will be terminated once their configured timeout elapses.";
+	public static final String DEFAULT_TOOL_DESCRIPTION = "Execute a shell command inside a persistent session. Before running a command, "
+			+ "confirm the working directory is correct (e.g., inspect with `ls` or `pwd`) and ensure "
+			+ "any parent directories exist. Prefer absolute paths and quote paths containing spaces, "
+			+ "such as `cd \"/path/with spaces\"`. Chain multiple commands with `&&` or `;` instead of "
+			+ "embedding newlines. Avoid unnecessary `cd` usage unless explicitly required so the "
+			+ "session remains stable. Outputs may be truncated when they become very large, and long "
+			+ "running commands will be terminated once their configured timeout elapses.";
 
 	private final ShellSessionManager sessionManager;
 
 	/**
 	 * Constructs a new ShellTool2.
-	 *
 	 * @param sessionManager The manager for the shell session. Must not be null.
 	 */
 	public ShellTool2(ShellSessionManager sessionManager) {
@@ -73,15 +69,14 @@ public class ShellTool2 {
 	}
 
 	// @formatter:off
-	@Tool(name = "shell", description = DEFAULT_TOOL_DESCRIPTION)
 	public String executeShellCommand(
-		@ToolParam(description = "The command to execute in the shell.") String command,
-		@ToolParam(description = "Restart the shell session before executing the command (default: false).", required = false) Boolean restart,
+		String command,
+		Boolean restart,
 		ToolContext toolContext) { // @formatter:on
 
 		try {
-			RunnableConfig config = (RunnableConfig) toolContext.getContext().get(AGENT_CONFIG_CONTEXT_KEY);
-			
+			RunnableConfig config = (RunnableConfig) toolContext.attributes().get(AGENT_CONFIG_CONTEXT_KEY);
+
 			// Handle restart request
 			if (Boolean.TRUE.equals(restart)) {
 				log.info("Restarting shell session as requested.");
@@ -102,10 +97,25 @@ public class ShellTool2 {
 			// Format the output
 			return formatResult(result);
 
-		} catch (Exception e) {
+		}
+		catch (Exception e) {
 			log.error("Shell command execution failed unexpectedly.", e);
 			return "Error: " + e.getMessage();
 		}
+	}
+
+	/** Build the executable declaration without provider-specific reflection. */
+	public Tool tool() {
+		return TypedTool
+			.builder("shell",
+					(Request request, ToolContext context) -> executeShellCommand(request.command(), request.restart(),
+							context))
+			.description(DEFAULT_TOOL_DESCRIPTION)
+			.inputType(Request.class)
+			.build();
+	}
+
+	public record Request(String command, Boolean restart) {
 	}
 
 	private String formatResult(ShellSessionManager.CommandResult result) {

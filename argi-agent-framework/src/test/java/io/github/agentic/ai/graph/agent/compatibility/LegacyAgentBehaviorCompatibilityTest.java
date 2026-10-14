@@ -26,7 +26,6 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -42,17 +41,18 @@ class LegacyAgentBehaviorCompatibilityTest {
 	void callInvokeAndStreamMessagesExposeLegacyAssistantResponseOnly() throws GraphRunnerException {
 		ReactAgent agent = ReactAgent.builder()
 			.name("legacy-agent")
-			.model(new DeterministicChatModel())
+			.chatClient(
+					new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(new DeterministicChatModel()))
 			.build();
 
-		assertThat(agent.call("hello").getText()).isEqualTo("legacy-response");
+		assertThat(agent.call("hello").text()).isEqualTo("legacy-response");
 
 		Optional<OverAllState> invoked = agent.invoke("hello");
 		assertThat(invoked).isPresent();
 		assertThat(invoked.get().value("messages")).isPresent();
 
 		List<String> streamedMessages = agent.streamMessages("hello")
-			.map(Message::getText)
+			.map(io.github.agentic.ai.api.chat.ChatMessage::text)
 			.collectList()
 			.block(Duration.ofSeconds(2));
 		assertThat(streamedMessages).containsExactly("legacy-response");

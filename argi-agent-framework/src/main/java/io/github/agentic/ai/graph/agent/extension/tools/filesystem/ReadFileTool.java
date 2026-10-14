@@ -17,9 +17,9 @@ package io.github.agentic.ai.graph.agent.extension.tools.filesystem;
 
 import io.github.agentic.ai.graph.agent.extension.file.FilesystemBackend;
 
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -38,31 +38,35 @@ import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 public class ReadFileTool implements BiFunction<ReadFileTool.ReadFileRequest, ToolContext, String> {
 
 	private static final String EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents";
+
 	private static final int MAX_LINE_LENGTH = 10000;
+
 	private static final int LINE_NUMBER_WIDTH = 6;
+
 	private static final int DEFAULT_READ_OFFSET = 0;
+
 	private static final int DEFAULT_READ_LIMIT = 500;
 
 	private final FilesystemBackend backend;
 
 	public static final String DESCRIPTION = """
-Reads a file from the filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+			Reads a file from the filesystem. You can access any file directly by using this tool.
+			Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 500 lines starting from the beginning of the file
-- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
-  - First scan: read_file(path, limit=100) to see file structure
-  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
-  - Only omit limit (read full file) when necessary for editing
-- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
-- Any lines longer than 2000 characters will be truncated
-- Results are returned using cat -n format, with line numbers starting at 1
-- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-			- You should almost ALWAYS use the list_files tool before using this tool to verify the file path.
-			""";
+			Usage:
+			- The file_path parameter must be an absolute path, not a relative path
+			- By default, it reads up to 500 lines starting from the beginning of the file
+			- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
+			  - First scan: read_file(path, limit=100) to see file structure
+			  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
+			  - Only omit limit (read full file) when necessary for editing
+			- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
+			- Any lines longer than 2000 characters will be truncated
+			- Results are returned using cat -n format, with line numbers starting at 1
+			- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
+			- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
+						- You should almost ALWAYS use the list_files tool before using this tool to verify the file path.
+						""";
 
 	public ReadFileTool() {
 		this(null);
@@ -89,9 +93,8 @@ Usage:
 	}
 
 	/**
-	 * Core logic for reading file content with pagination.
-	 * This method can be reused by other classes like FileSystemTools.
-	 *
+	 * Core logic for reading file content with pagination. This method can be reused by
+	 * other classes like FileSystemTools.
 	 * @param filePath The path to the file to read
 	 * @param offset Line offset to start reading from (null means 0)
 	 * @param limit Maximum number of lines to read (null means 500)
@@ -145,8 +148,8 @@ Usage:
 	}
 
 	/**
-	 * Format lines with line numbers (cat -n format).
-	 * Handles long lines by splitting them into chunks.
+	 * Format lines with line numbers (cat -n format). Handles long lines by splitting
+	 * them into chunks.
 	 */
 	private static String formatContentWithLineNumbers(String[] lines, int startLine) {
 		StringBuilder result = new StringBuilder();
@@ -181,15 +184,15 @@ Usage:
 		return result.toString();
 	}
 
-	public static ToolCallback createReadFileToolCallback(String description) {
-		return createReadFileToolCallback(description, null);
+	public static Tool createReadFileTool(String description) {
+		return createReadFileTool(description, null);
 	}
 
-	public static ToolCallback createReadFileToolCallback(String description, FilesystemBackend backend) {
-		return FunctionToolCallback.builder("read_file", new ReadFileTool(backend))
-				.description(description)
-				.inputType(ReadFileRequest.class)
-				.build();
+	public static Tool createReadFileTool(String description, FilesystemBackend backend) {
+		return TypedTool.builder("read_file", new ReadFileTool(backend))
+			.description(description)
+			.inputType(ReadFileRequest.class)
+			.build();
 	}
 
 	/**
@@ -217,5 +220,7 @@ Usage:
 			this.offset = offset;
 			this.limit = limit;
 		}
+
 	}
+
 }

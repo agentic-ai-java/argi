@@ -15,6 +15,11 @@
  */
 package io.github.agentic.ai.graph.agent.node;
 
+import io.github.agentic.ai.api.chat.Usage;
+
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.action.NodeActionWithConfig;
@@ -25,27 +30,14 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.graph.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.InterceptorChain;
-import io.github.agentic.ai.graph.agent.tool.ToolCallbackUtils;
 import io.github.agentic.ai.graph.agent.interceptor.StreamingModelInterceptor;
 
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.ChatClientAttributes;
-import org.springframework.ai.chat.client.advisor.api.Advisor;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.metadata.EmptyUsage;
-import org.springframework.ai.chat.metadata.Usage;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.prompt.PromptTemplate;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
-import org.springframework.ai.template.TemplateRenderer;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatRequest;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.GenerationOptions;
+import io.github.agentic.ai.graph.utils.PromptTemplate;
 
-import org.springframework.lang.Nullable;
-import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import org.slf4j.Logger;
@@ -57,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 
 import reactor.core.publisher.Flux;
 
@@ -64,22 +57,14 @@ import static io.github.agentic.ai.graph.RunnableConfig.AGENT_MODEL_NAME;
 import static io.github.agentic.ai.graph.checkpoint.BaseCheckpointSaver.THREAD_ID_DEFAULT;
 
 public class AgentLlmNode implements NodeActionWithConfig {
+
 	private static final Logger logger = LoggerFactory.getLogger(AgentLlmNode.class);
+
 	public static final String MODEL_ITERATION_KEY = "_MODEL_ITERATION_";
 
 	private String agentName;
 
-	private List<Advisor> advisors = new ArrayList<>();
-
-	// FIXME: toolCallbacks should be managed in chatOptions only. Currently it's guaranteed immutable with unmodifiableList.
-	private List<ToolCallback> toolCallbacks = new ArrayList<>();
-
-	/**
-	 * Shared in-memory registry (with {@link AgentToolNode}) of tool callbacks disclosed
-	 * dynamically at model-call time. It keeps the callbacks resolvable after a
-	 * Human-in-the-Loop resumption, where the config context is cleared.
-	 */
-	private Map<String, ToolCallback> dynamicToolCallbacksRegistry;
+	private final AgentToolBindingStore toolBindings;
 
 	private List<ModelInterceptor> modelInterceptors = new ArrayList<>();
 
@@ -91,13 +76,15 @@ public class AgentLlmNode implements NodeActionWithConfig {
 
 	private ChatClient chatClient;
 
+	private final io.github.agentic.ai.api.tool.ToolRegistry toolRegistry;
+
 	private String systemPrompt;
 
-	private TemplateRenderer templateRenderer;
+	private BiFunction<String, Map<String, Object>, String> templateRenderer;
 
 	private String instruction;
 
-	private ToolCallingChatOptions chatOptions;
+	private GenerationOptions generationOptions;
 
 	private boolean enableReasoningLog;
 
@@ -110,13 +97,7 @@ public class AgentLlmNode implements NodeActionWithConfig {
 		this.systemPrompt = builder.systemPrompt;
 		this.instruction = builder.instruction;
 		this.templateRenderer = builder.templateRenderer;
-		if (builder.advisors != null) {
-			this.advisors = builder.advisors;
-		}
-		if (builder.toolCallbacks != null) {
-			this.toolCallbacks = builder.toolCallbacks;
-		}
-		this.dynamicToolCallbacksRegistry = builder.dynamicToolCallbacksRegistry;
+		this.toolBindings = builder.toolBindingStore;
 		if (builder.modelInterceptors != null) {
 			this.modelInterceptors = builder.modelInterceptors;
 		}
@@ -124,17 +105,14 @@ public class AgentLlmNode implements NodeActionWithConfig {
 			this.streamingInterceptors = builder.streamingInterceptors;
 		}
 		this.chatClient = builder.chatClient;
-		this.chatOptions = buildChatOptions(builder.chatOptions, this.toolCallbacks);
+		this.toolRegistry = builder.toolRegistry;
+		this.generationOptions = builder.generationOptions;
 		this.enableReasoningLog = builder.enableReasoningLog;
 		this.throwOnModelError = builder.throwOnModelError;
 	}
 
 	public static Builder builder() {
 		return new Builder();
-	}
-
-	public void setToolCallbacks(List<ToolCallback> toolCallbacks) {
-		this.toolCallbacks = toolCallbacks;
 	}
 
 	public void setModelInterceptors(List<ModelInterceptor> modelInterceptors) {
@@ -155,9 +133,10 @@ public class AgentLlmNode implements NodeActionWithConfig {
 
 	@Override
 	public Map<String, Object> apply(OverAllState state, RunnableConfig config) throws Exception {
+		toolBindings.clear(config);
 		if (enableReasoningLog && logger.isDebugEnabled()) {
-			logger.debug("[ThreadId {}] Agent {} start reasoning.", config.threadId()
-					.orElse(THREAD_ID_DEFAULT), agentName);
+			logger.debug("[ThreadId {}] Agent {} start reasoning.", config.threadId().orElse(THREAD_ID_DEFAULT),
+					agentName);
 		}
 
 		// Check and manage iteration counter
@@ -165,294 +144,259 @@ public class AgentLlmNode implements NodeActionWithConfig {
 		if (!config.context().containsKey(MODEL_ITERATION_KEY)) {
 			iterations = new AtomicInteger(0);
 			config.context().put(MODEL_ITERATION_KEY, iterations);
-		} else {
+		}
+		else {
 			iterations = (AtomicInteger) config.context().get(MODEL_ITERATION_KEY);
 			iterations.incrementAndGet();
 		}
 
 		// Check and manage messages
-		List<Message> messages = new ArrayList<>();
-		if (state.value("messages").isEmpty()) {
-			// try with "input" key, which is more commonly used in graph input when agent is used as a node.
+		List<ChatMessage> messages = new ArrayList<>();
+		if (state.value("messages").map(value -> ((List<?>) value).isEmpty()).orElse(true)) {
+			// try with "input" key, which is more commonly used in graph input when agent
+			// is used as a node.
 			if (state.value("input").isPresent()) {
-				messages.add(new UserMessage(state.value("input").get().toString()));
-			} else {
+				messages.add(ChatMessage.user(state.value("input").get().toString()));
+			}
+			else {
 				throw new IllegalArgumentException("Either 'instruction' or 'includeContents' must be set for Agent.");
 			}
-		} else {
-			messages = (List<Message>) state.value("messages").get();
+		}
+		else {
+			messages = new ArrayList<>((List<ChatMessage>) state.value("messages").get());
 		}
 
 		augmentUserMessage(messages, outputSchema);
 		renderTemplatedUserMessage(messages, state.data(), config.metadata());
 
-		// Create ModelRequest; include state in context so interceptors (e.g. handoffs step-config) can read it
+		// Create ModelRequest; include state in context so interceptors (e.g. handoffs
+		// step-config) can read it
 		Map<String, Object> contextMap = new HashMap<>(state.data());
 		Map<String, Object> metadata = config.metadata().orElse(new HashMap<>());
 		if (!metadata.isEmpty()) {
 			contextMap.putAll(metadata);
 		}
 		ModelRequest.Builder requestBuilder = ModelRequest.builder()
-				.messages(messages)
-				.options(this.chatOptions != null ? this.chatOptions.mutate().build() : null)
-				.context(contextMap);
+			.messages(messages)
+			.options(this.generationOptions)
+			.toolRegistry(configuredRegistry())
+			.context(contextMap);
 
-        // Extract tool names and descriptions from toolCallbacks and pass them to ModelRequest
-        if (toolCallbacks != null && !toolCallbacks.isEmpty()) {
-            List<String> toolNames = new ArrayList<>();
-            Map<String, String> toolDescriptions = new HashMap<>();
-            for (ToolCallback callback : toolCallbacks) {
-                String name = callback.getToolDefinition().name();
-                String description = callback.getToolDefinition().description();
-                toolNames.add(name);
-                if (description != null && !description.isEmpty()) {
-                    toolDescriptions.put(name, description);
-                }
-            }
-            requestBuilder.tools(toolNames);
-            requestBuilder.toolDescriptions(toolDescriptions);
-        }
+		// Extract tool names and descriptions from toolCallbacks and pass them to
+		// ModelRequest
+		if (!toolRegistry.definitions().isEmpty()) {
+			Map<String, String> toolDescriptions = new HashMap<>();
+			for (var definition : toolRegistry.definitions()) {
+				toolDescriptions.put(definition.name(), definition.description());
+			}
+			requestBuilder.toolDescriptions(toolDescriptions);
+		}
 
 		if (StringUtils.hasLength(this.systemPrompt)) {
-			requestBuilder.systemMessage(new SystemMessage(this.systemPrompt));
+			requestBuilder.systemMessage(ChatMessage.system(this.systemPrompt));
 		}
 
 		ModelRequest modelRequest = requestBuilder.build();
 
 		// add streaming support
-		boolean stream = config.metadata("_stream_", new TypeRef<Boolean>(){}).orElse(true);
+		boolean stream = config.metadata("_stream_", new TypeRef<Boolean>() {
+		}).orElse(true);
 		if (stream) {
-			// Create base handler that actually calls the model with streaming
-			ModelCallHandler baseHandler = request -> {
-				try {
-					if (enableReasoningLog) {
-						String systemPrompt = request.getSystemMessage() != null ? request.getSystemMessage().getText() : "";
-						if (logger.isDebugEnabled()) {
-							logger.debug("[ThreadId {}] Agent {} reasoning with system prompt: {}", config.threadId()
-									.orElse(THREAD_ID_DEFAULT), agentName, systemPrompt);
+			// Each cold subscription owns its selection, including any retry
+			// replacements.
+			Flux<ChatResponse> output = Flux.defer(() -> {
+				RunnableConfig subscriptionConfig = RunnableConfig.builder(config).build();
+				toolBindings.clear(subscriptionConfig);
+				ModelCallHandler baseHandler = request -> {
+					try {
+						if (enableReasoningLog && logger.isDebugEnabled()) {
+							String prompt = request.getSystemMessage() != null ? request.getSystemMessage().text() : "";
+							logger.debug("[ThreadId {}] Agent {} reasoning with system prompt: {}",
+									config.threadId().orElse(THREAD_ID_DEFAULT), agentName, prompt);
 						}
+						ChatClient selectedClient = request.getChatClient() != null ? request.getChatClient()
+								: chatClient;
+						if (!selectedClient.capabilities().streaming()) {
+							return ModelResponse
+								.of(selectedClient.callBlocking(buildChatRequest(request, subscriptionConfig)));
+						}
+						ChatRequest chatRequest = buildChatRequest(request, subscriptionConfig);
+						Flux<io.github.agentic.ai.api.chat.ChatEvent> chatResponseFlux = Flux
+							.defer(() -> reactor.adapter.JdkFlowAdapter
+								.flowPublisherToFlux(selectedClient.stream(chatRequest)));
+						if (enableReasoningLog) {
+							chatResponseFlux = chatResponseFlux
+								.doOnNext(event -> logger.info("[ThreadId {}] Agent {} reasoning round {} event: {}",
+										config.threadId().orElse(THREAD_ID_DEFAULT), agentName, iterations.get(),
+										event));
+						}
+						return ModelResponse.stream(InterceptorChain.applyStreamingInterceptors(streamingInterceptors,
+								reactor.adapter.JdkFlowAdapter.publisherToFlowPublisher(chatResponseFlux), request));
 					}
-					Flux<ChatResponse> chatResponseFlux = buildChatClientRequestSpec(request, config).stream().chatResponse();
-					if (enableReasoningLog) {
-						chatResponseFlux = chatResponseFlux.doOnNext(chatResponse -> {
-							if (chatResponse != null && chatResponse.getResult() != null && chatResponse.getResult().getOutput() != null) {
-								if (chatResponse.getResult().getOutput().hasToolCalls()) {
-									logger.info("[ThreadId {}] Agent {} reasoning round {} streaming output: {}",
-											config.threadId().orElse(THREAD_ID_DEFAULT), agentName, iterations.get(), chatResponse.getResult().getOutput().getToolCalls());
-								} else {
-									logger.info("[ThreadId {}] Agent {} reasoning round {} streaming output: {}",
-											config.threadId()
-													.orElse(THREAD_ID_DEFAULT), agentName, iterations.get(), chatResponse.getResult()
-													.getOutput().getText());
-								}
-							}
-						});
-					}
-					if (streamingInterceptors != null && !streamingInterceptors.isEmpty()) {
-						chatResponseFlux = InterceptorChain.applyStreamingInterceptors(
-								streamingInterceptors, chatResponseFlux, request);
-					}
-					return ModelResponse.of(chatResponseFlux);
-				} catch (Exception e) {
-					logger.error("Exception during streaming model call: ", e);
-					if (throwOnModelError) {
+					catch (Exception e) {
+						logger.error("Exception during streaming model call: ", e);
 						throw e;
 					}
-					return ModelResponse.of(new AssistantMessage("Exception: " + e.getMessage()));
-				}
-			};
-
-			// Chain interceptors if any
-			ModelCallHandler chainedHandler = InterceptorChain.chainModelInterceptors(
-					modelInterceptors, baseHandler);
-
-			// Execute the chained handler
-			ModelResponse modelResponse = chainedHandler.call(modelRequest);
-			return Map.of(StringUtils.hasLength(this.outputKey) ? this.outputKey : "messages", modelResponse.getMessage());
-		} else {
+				};
+				ModelCallHandler chainedHandler = InterceptorChain.chainModelInterceptors(modelInterceptors,
+						baseHandler);
+				ModelRequest subscriptionRequest = ModelRequest.builder(modelRequest)
+					.context(new HashMap<>(modelRequest.getContext()))
+					.build();
+				return streamResponse(invokeModelChain(chainedHandler, subscriptionRequest), subscriptionConfig);
+			});
+			return Map.of(StringUtils.hasLength(this.outputKey) ? this.outputKey : "messages", output);
+		}
+		else {
 			// Create base handler that actually calls the model
 			ModelCallHandler baseHandler = request -> {
 				try {
 					if (enableReasoningLog) {
-						String systemPrompt = request.getSystemMessage() != null ? request.getSystemMessage().getText() : "";
-						logger.info("[ThreadId {}] Agent {} reasoning round {} with system prompt: {}.", config.threadId().orElse(THREAD_ID_DEFAULT), agentName, iterations.get(), systemPrompt);
+						String systemPrompt = request.getSystemMessage() != null ? request.getSystemMessage().text()
+								: "";
+						logger.info("[ThreadId {}] Agent {} reasoning round {} with system prompt: {}.",
+								config.threadId().orElse(THREAD_ID_DEFAULT), agentName, iterations.get(), systemPrompt);
 					}
 
-					ChatResponse response = buildChatClientRequestSpec(request, config).call().chatResponse();
-
-					AssistantMessage responseMessage = new AssistantMessage("Empty response from model for unknown reason");
-					if (response != null && response.getResult() != null) {
-						responseMessage = response.getResult().getOutput();
-					}
+					ChatClient selectedClient = request.getChatClient() != null ? request.getChatClient() : chatClient;
+					var response = selectedClient.callBlocking(buildChatRequest(request, config));
 
 					if (enableReasoningLog) {
-						logger.info("[ThreadId {}] Agent {} reasoning round {} returned: {}.", config.threadId().orElse(THREAD_ID_DEFAULT), agentName, iterations.get(), responseMessage);
+						logger.info("[ThreadId {}] Agent {} reasoning round {} returned: {}.",
+								config.threadId().orElse(THREAD_ID_DEFAULT), agentName, iterations.get(), response);
 					}
 
-					return ModelResponse.of(responseMessage, response);
-				} catch (Exception e) {
+					return ModelResponse.of(response);
+				}
+				catch (Exception e) {
 					logger.error("Exception during invoking model call: ", e);
-					if (throwOnModelError) {
-						throw e;
-					}
-					return ModelResponse.of(new AssistantMessage("Exception: " + e.getMessage()));
+					throw e;
 				}
 			};
 
 			// Chain interceptors if any
-			ModelCallHandler chainedHandler = InterceptorChain.chainModelInterceptors(
-					modelInterceptors, baseHandler);
+			ModelCallHandler chainedHandler = InterceptorChain.chainModelInterceptors(modelInterceptors, baseHandler);
 
 			if (enableReasoningLog) {
-				logger.info("[ThreadId {}] Agent {} reasoning round {} model chain has started.", config.threadId().orElse(THREAD_ID_DEFAULT), agentName, iterations.get());
+				logger.info("[ThreadId {}] Agent {} reasoning round {} model chain has started.",
+						config.threadId().orElse(THREAD_ID_DEFAULT), agentName, iterations.get());
 			}
 
 			// Execute the chained handler
-			ModelResponse modelResponse = chainedHandler.call(modelRequest);
-			Usage tokenUsage = modelResponse.getChatResponse() != null ? modelResponse.getChatResponse().getMetadata()
-					.getUsage() : new EmptyUsage();
+			ModelResponse modelResponse = invokeModelChain(chainedHandler, modelRequest);
+			Usage tokenUsage = modelResponse.isStreaming() ? Usage.unknown() : modelResponse.getChatResponse().usage();
+			Object output = stateResponse(modelResponse, config);
 
 			Map<String, Object> updatedState = new HashMap<>();
-			updatedState.put("_TOKEN_USAGE_", tokenUsage);
-			updatedState.put("messages", modelResponse.getMessage());
+			updatedState.put(io.github.agentic.ai.graph.NodeOutput.TOKEN_USAGE_KEY, tokenUsage);
+			updatedState.put("messages", output);
 			if (StringUtils.hasLength(this.outputKey)) {
-				updatedState.put(this.outputKey, modelResponse.getMessage());
+				updatedState.put(this.outputKey, output);
 			}
 
 			return updatedState;
 		}
 	}
 
-	public void setAdvisors(List<Advisor> advisors) {
-		this.advisors = advisors;
+	private Object stateResponse(ModelResponse response, RunnableConfig config) {
+		AgentToolBindings configured = new AgentToolBindings(toolRegistry);
+		return response.isStreaming() ? streamResponse(response, config)
+				: toolBindings.attach(AgentChatProtocol.response(response.getChatResponse(), null).messages().get(0),
+						toolBindings.current(config), configured);
 	}
 
-	private List<Message> appendSystemPromptIfNeeded(ModelRequest modelRequest) {
+	private Flux<ChatResponse> streamResponse(ModelResponse response, RunnableConfig config) {
+		AgentToolBindings configured = new AgentToolBindings(toolRegistry);
+		var chunks = response.isStreaming() ? AgentChatProtocol.stream(response.getStream())
+				: Flux.just(AgentChatProtocol.response(response.getChatResponse(), null));
+		return chunks.map(chunk -> {
+			// Streaming retries can replace the selection after the publisher is
+			// assembled.
+			var output = toolBindings.attach(chunk.messages().get(0), toolBindings.current(config), configured);
+			return new ChatResponse(chunk.id(), chunk.model(), List.of(output), chunk.toolCalls(), chunk.finishReason(),
+					chunk.usage(), chunk.metadata());
+		});
+	}
+
+	private List<ChatMessage> appendSystemPromptIfNeeded(ModelRequest modelRequest) {
 		// Create a new list and copy messages from modelRequest
-		List<Message> messages = new ArrayList<>(modelRequest.getMessages());
+		List<ChatMessage> messages = new ArrayList<>(modelRequest.getMessages());
 
-		// FIXME, there should have only one SystemMessage.
-		//  Users may have added SystemMessages in hooks or somewhere else, simply remove will cause unexpected agent behaviour.
-//		messages.removeIf(message -> message instanceof SystemMessage);
+		// FIXME, there should have only one ChatMessage.
+		// Users may have added SystemMessages in hooks or somewhere else, simply remove
+		// will cause unexpected agent behaviour.
+		// messages.removeIf(message -> message instanceof ChatMessage && ((ChatMessage)
+		// message).role() == ChatRole.SYSTEM);
 
-		// Add the SystemMessage from modelRequest at the beginning if present
+		// Add the ChatMessage from modelRequest at the beginning if present
 		if (modelRequest.getSystemMessage() != null) {
 			messages.add(0, modelRequest.getSystemMessage());
 		}
 
-		long systemMessageCount = messages.stream()
-				.filter(message -> message instanceof SystemMessage)
-				.count();
+		long systemMessageCount = messages.stream().filter(message -> message.role() == ChatRole.SYSTEM).count();
 
 		if (systemMessageCount > 2) {
-			logger.warn("Detected {} SystemMessages in the message list. There should typically be only one SystemMessage. " +
-					"Multiple SystemMessages may cause unexpected behavior or model confusion.", systemMessageCount);
+			logger.warn(
+					"Detected {} SystemMessages in the message list. There should typically be only one ChatMessage. "
+							+ "Multiple SystemMessages may cause unexpected behavior or model confusion.",
+					systemMessageCount);
 		}
 
 		return messages;
 	}
 
-	/**
-	 * Build chat options by merging toolCallbacks with existing tool-calling options.
-	 * Tool-only configuration is applied to the request spec so it does not replace
-	 * provider-specific model options with generic options.
-	 * @param chatOptions the original chat options
-	 * @param toolCallbacks the tool callbacks to be included
-	 * @return merged ToolCallingChatOptions, or {@code null} when no tool-calling
-	 * options were explicitly provided
-	 */
-	@Nullable
-	private ToolCallingChatOptions buildChatOptions(ChatOptions chatOptions, List<ToolCallback> toolCallbacks) {
-		if (chatOptions == null) {
-			return null;
-		}
-
-		List<ToolCallback> configuredToolCallbacks = toolCallbacks != null ? toolCallbacks : List.of();
-
-		if (chatOptions instanceof ToolCallingChatOptions builderToolCallingOptions) {
-			ToolCallingChatOptions.Builder<?> optionsBuilder = builderToolCallingOptions.mutate();
-			List<ToolCallback> mergedToolCallbacks = new ArrayList<>(configuredToolCallbacks);
-			List<ToolCallback> optionToolCallbacks = builderToolCallingOptions.getToolCallbacks() != null
-					? builderToolCallingOptions.getToolCallbacks() : List.of();
-			// Add callbacks from chatOptions that are not already present (toolCallbacks takes precedence)
-			for (ToolCallback callback : optionToolCallbacks) {
-				boolean exists = mergedToolCallbacks.stream()
-						.anyMatch(tc -> tc.getToolDefinition().name().equals(callback.getToolDefinition().name()));
-				if (!exists) {
-					mergedToolCallbacks.add(callback);
-				}
-			}
-
-			return optionsBuilder.toolCallbacks(mergedToolCallbacks).build();
-		}
-
-		if (logger.isDebugEnabled()) {
-			logger.debug("The provided chatOptions is not of type ToolCallingChatOptions (actual type: {}). "
-					+ "Tools will be applied to ChatClient request spec without replacing prompt options.",
-					chatOptions.getClass().getName());
-		}
-		return null;
-	}
-
 	private String renderPromptTemplate(String prompt, Map<String, Object> params) {
-		PromptTemplate.Builder builder = PromptTemplate.builder().template(prompt);
-		if (templateRenderer != null) {
-			builder.renderer(templateRenderer);
-		}
-		return builder.build().render(params);
+		return templateRenderer != null ? java.util.Objects.requireNonNull(templateRenderer.apply(prompt, params),
+				"Template renderer must not return null") : PromptTemplate.of(prompt).render(params);
 	}
 
-	public void augmentUserMessage(List<Message> messages, String outputSchema) {
+	public void augmentUserMessage(List<ChatMessage> messages, String outputSchema) {
 		if (!StringUtils.hasText(outputSchema)) {
 			return;
 		}
 
 		for (int i = messages.size() - 1; i >= 0; i--) {
-			Message message = messages.get(i);
-			if (message instanceof UserMessage userMessage) {
+			ChatMessage message = messages.get(i);
+			if (message.role() == ChatRole.USER) {
+				ChatMessage userMessage = message;
+				String schema = AgentInstructionMessage.isTemplate(message)
+						? outputSchema.replace("{", "\\{").replace("}", "\\}") : outputSchema;
 				// Check if outputSchema is already present to avoid duplication
-				if (!userMessage.getText().contains(outputSchema)) {
-					messages.set(i, userMessage.mutate().text(userMessage.getText() + System.lineSeparator() + outputSchema).build());
+				if (!userMessage.text().contains(schema)) {
+					messages.set(i, userMessage.withText(userMessage.text() + System.lineSeparator() + schema));
 				}
 				break;
 			}
-			if (message instanceof AgentInstructionMessage templatedUserMessage) {
-                String newOutputSchema = outputSchema.replace("{", "\\{").replace("}", "\\}");
-                // Check if outputSchema is already present to avoid duplication
-                if (!templatedUserMessage.getText().contains(newOutputSchema)) {
-                	messages.set(i, templatedUserMessage.mutate().text(templatedUserMessage.getText() + System.lineSeparator() + newOutputSchema).build());
-                }
-				break;
-			}
-
 			if (i == 0) {
-				messages.add(new UserMessage(outputSchema));
+				messages.add(ChatMessage.user(outputSchema));
 			}
 		}
 	}
 
-	public void renderTemplatedUserMessage(List<Message> messages, Map<String, Object> params, Optional<Map<String, Object>> metadata) {
+	public void renderTemplatedUserMessage(List<ChatMessage> messages, Map<String, Object> params,
+			Optional<Map<String, Object>> metadata) {
 		// Process params to create a new Map
 		Map<String, Object> processedParams = new HashMap<>();
 		if (params != null) {
 			for (Map.Entry<String, Object> entry : params.entrySet()) {
 				String key = entry.getKey();
 				Object value = entry.getValue();
-				
+
 				// Exclude key "messages"
 				if ("messages".equals(key)) {
 					continue;
 				}
-				
+
 				// Exclude List type values
 				if (value instanceof List) {
 					continue;
 				}
-				
-				// Convert Message type to String using getText()
-				if (value instanceof Message message) {
-					processedParams.put(key, message.getText());
-				} else {
+
+				// Convert ChatMessage type to String using getText()
+				if (value instanceof ChatMessage message) {
+					processedParams.put(key, message.text());
+				}
+				else {
 					// Keep other types as is
 					processedParams.put(key, value);
 				}
@@ -460,86 +404,58 @@ public class AgentLlmNode implements NodeActionWithConfig {
 		}
 
 		for (int i = messages.size() - 1; i >= 0; i--) {
-			Message message = messages.get(i);
-			if (message instanceof AgentInstructionMessage instructionMessage && !instructionMessage.isRendered()) {
-				AgentInstructionMessage newMessage = instructionMessage.mutate().text(renderPromptTemplate(instructionMessage.getText(), processedParams)).rendered(true).build();
+			ChatMessage message = messages.get(i);
+			if (AgentInstructionMessage.isTemplate(message) && !AgentInstructionMessage.isRendered(message)) {
+				ChatMessage newMessage = AgentInstructionMessage.rendered(message,
+						renderPromptTemplate(message.text(), processedParams));
 				messages.set(i, newMessage);
 				break;
 			}
 		}
 	}
 
-	/**
-	 * Filter tool callbacks based on the tools specified in ModelRequest.
-	 * @param modelRequest the model request containing the list of tool names to filter by
-	 * @return filtered list of tool callbacks matching the requested tools
-	 */
-	private List<ToolCallback> filterToolCallbacks(ModelRequest modelRequest) {
-		List<ToolCallback> toolCallbacks = new ArrayList<>();
-		if (modelRequest == null) {
-			toolCallbacks.addAll(this.toolCallbacks);
-			return ToolCallbackUtils.deduplicateByName(toolCallbacks);
+	private ModelResponse invokeModelChain(ModelCallHandler handler, ModelRequest request) {
+		try {
+			return handler.call(request);
 		}
-
-		if (modelRequest.getOptions() == null) {
-			toolCallbacks.addAll(this.toolCallbacks);
-		} else if (modelRequest.getOptions().getToolCallbacks() != null) {
-			toolCallbacks.addAll(modelRequest.getOptions().getToolCallbacks());
-		} else {
-			// Leave room for users to disable all tools by setting empty toolCallbacks in options.
+		catch (RuntimeException failure) {
+			// Interceptors must see failures before the optional user-facing error
+			// message is built.
+			if (throwOnModelError || failure instanceof java.util.concurrent.CancellationException
+					|| Thread.currentThread().isInterrupted()) {
+				throw failure;
+			}
+			return ModelResponse
+				.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Exception: " + failure.getMessage()));
 		}
-
-		List<String> requestedTools = modelRequest.getTools();
-		if (requestedTools == null || requestedTools.isEmpty()) {
-			return ToolCallbackUtils.deduplicateByName(toolCallbacks);
-		}
-		return ToolCallbackUtils.deduplicateByName(new ArrayList<>(toolCallbacks.stream()
-				.filter(callback -> requestedTools.contains(callback.getToolDefinition().name()))
-				.toList()));
 	}
 
-	private ChatClient.ChatClientRequestSpec buildChatClientRequestSpec(ModelRequest modelRequest, RunnableConfig config) {
-		List<Message> messages = appendSystemPromptIfNeeded(modelRequest);
-
-		// NOTICE! If both tools(ToolSelectionInterceptor) and options are customized in ModelRequest, tools will override toolcall setting in options.
-		List<ToolCallback> filteredToolCallbacks = filterToolCallbacks(modelRequest);
-
-		List<ToolCallback> dynamicToolCallbacks = ToolCallbackUtils.deduplicateByName(modelRequest.getDynamicToolCallbacks());
-		if (!CollectionUtils.isEmpty(dynamicToolCallbacks)) {
-			filteredToolCallbacks = ToolCallbackUtils.deduplicateByName(filteredToolCallbacks, dynamicToolCallbacks);
-			// FIXME, use RunnableConfig to pass dynamic tool callbacks to tool node via config context (internal use)
-			config.context().put(RunnableConfig.DYNAMIC_TOOL_CALLBACKS_METADATA_KEY, dynamicToolCallbacks);
-			registerDynamicToolCallbacks(dynamicToolCallbacks);
-		}
-		else {
-			config.context().remove(RunnableConfig.DYNAMIC_TOOL_CALLBACKS_METADATA_KEY);
-		}
-
-		var promptSpec = this.chatClient.prompt()
-                .messages(messages)
-				.advisors(advisorSpec -> advisorSpec.param(
-						ChatClientAttributes.TOOL_CALLING_ADVISOR_AUTO_REGISTER.getKey(), false))
-                .advisors(this.advisors);
-
-        ToolCallingChatOptions requestOptions = modelRequest.getOptions();
-
-        if (requestOptions != null) {
-			promptSpec.options(requestOptions.mutate().toolCallbacks(filteredToolCallbacks));
-        } else if (!filteredToolCallbacks.isEmpty()) {
-			promptSpec.tools(filteredToolCallbacks);
-        }
-
-        return promptSpec;
+	private io.github.agentic.ai.api.tool.ToolRegistry configuredRegistry() {
+		return toolRegistry;
 	}
 
-	private void registerDynamicToolCallbacks(List<ToolCallback> dynamicToolCallbacks) {
-		if (dynamicToolCallbacksRegistry == null) {
-			return;
+	private ChatRequest buildChatRequest(ModelRequest modelRequest, RunnableConfig config) {
+		List<ChatMessage> messages = appendSystemPromptIfNeeded(modelRequest);
+
+		// Static bindings win duplicate dynamic disclosures. Explicit selection filters
+		// both registries.
+		var available = new java.util.LinkedHashMap<String, io.github.agentic.ai.api.tool.Tool>();
+		for (var registry : List.of(modelRequest.getToolRegistry(), modelRequest.getDynamicToolRegistry())) {
+			for (var definition : registry.definitions()) {
+				available.putIfAbsent(definition.name(), registry.find(definition.name()).orElseThrow());
+			}
 		}
-		dynamicToolCallbacksRegistry.clear();
-		for (ToolCallback callback : dynamicToolCallbacks) {
-			dynamicToolCallbacksRegistry.put(callback.getToolDefinition().name(), callback);
+		var neutral = new ArrayList<io.github.agentic.ai.api.tool.Tool>();
+		var definitions = new ArrayList<io.github.agentic.ai.api.chat.ToolDefinition>();
+		for (var tool : available.values()) {
+			if (modelRequest.hasToolSelection() && !modelRequest.getTools().contains(tool.definition().name())) {
+				continue;
+			}
+			definitions.add(tool.definition());
+			neutral.add(tool);
 		}
+		toolBindings.publish(config, new AgentToolBindings(new io.github.agentic.ai.api.tool.ToolRegistry(neutral)));
+		return new ChatRequest(messages, definitions, modelRequest.getOptions(), modelRequest.getAttributes());
 	}
 
 	public String getName() {
@@ -547,6 +463,15 @@ public class AgentLlmNode implements NodeActionWithConfig {
 	}
 
 	public static class Builder {
+
+		private io.github.agentic.ai.api.tool.ToolRegistry toolRegistry = new io.github.agentic.ai.api.tool.ToolRegistry(
+				List.of());
+
+		public Builder toolRegistry(io.github.agentic.ai.api.tool.ToolRegistry toolRegistry) {
+			this.toolRegistry = java.util.Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
+			return this;
+		}
+
 		private String agentName;
 
 		private String outputKey;
@@ -555,15 +480,11 @@ public class AgentLlmNode implements NodeActionWithConfig {
 
 		private String systemPrompt;
 
-		private TemplateRenderer templateRenderer;
+		private BiFunction<String, Map<String, Object>, String> templateRenderer;
 
 		private ChatClient chatClient;
 
-		private List<Advisor> advisors;
-
-		private List<ToolCallback> toolCallbacks;
-
-		private Map<String, ToolCallback> dynamicToolCallbacksRegistry;
+		private AgentToolBindingStore toolBindingStore = new AgentToolBindingStore();
 
 		private List<ModelInterceptor> modelInterceptors;
 
@@ -575,7 +496,7 @@ public class AgentLlmNode implements NodeActionWithConfig {
 
 		private boolean throwOnModelError;
 
-		private ChatOptions chatOptions;
+		private GenerationOptions generationOptions;
 
 		public Builder agentName(String agentName) {
 			this.agentName = agentName;
@@ -597,23 +518,15 @@ public class AgentLlmNode implements NodeActionWithConfig {
 			return this;
 		}
 
-		public Builder templateRenderer(TemplateRenderer templateRenderer) {
+		/** Set a thread-safe, provider-neutral instruction template renderer. */
+		public Builder templateRenderer(BiFunction<String, Map<String, Object>, String> templateRenderer) {
 			this.templateRenderer = templateRenderer;
 			return this;
 		}
 
-		public Builder advisors(List<Advisor> advisors) {
-			this.advisors = advisors;
-			return this;
-		}
-
-		public Builder toolCallbacks(List<ToolCallback> toolCallbacks) {
-			this.toolCallbacks = toolCallbacks;
-			return this;
-		}
-
-		public Builder dynamicToolCallbacksRegistry(Map<String, ToolCallback> dynamicToolCallbacksRegistry) {
-			this.dynamicToolCallbacksRegistry = dynamicToolCallbacksRegistry;
+		public Builder toolBindingStore(AgentToolBindingStore toolBindingStore) {
+			this.toolBindingStore = java.util.Objects.requireNonNull(toolBindingStore,
+					"toolBindingStore must not be null");
 			return this;
 		}
 
@@ -654,8 +567,8 @@ public class AgentLlmNode implements NodeActionWithConfig {
 			return this;
 		}
 
-		public Builder chatOptions(ChatOptions chatOptions) {
-			this.chatOptions = chatOptions;
+		public Builder generationOptions(GenerationOptions generationOptions) {
+			this.generationOptions = generationOptions;
 			return this;
 		}
 

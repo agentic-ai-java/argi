@@ -15,48 +15,66 @@
  */
 package io.github.agentic.ai.graph.agent.interceptor;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatResponse;
-
-import reactor.core.publisher.Flux;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.ChatRole;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.Flow;
 
 /**
- * Response object for model calls.
- * Contains the model's response message.
+ * Response object for model calls. Contains the model's response message.
  */
-public class ModelResponse {
+public final class ModelResponse {
 
-	private ChatResponse chatResponse;
+	private final ChatResponse chatResponse;
 
-	private final Object message;
+	private final Flow.Publisher<ChatEvent> stream;
 
-	public ModelResponse(Object message) {
-		this.message = message;
-	}
-
-	public ModelResponse(Object message, ChatResponse chatResponse) {
-		this.message = message;
+	private ModelResponse(ChatResponse chatResponse, Flow.Publisher<ChatEvent> stream) {
 		this.chatResponse = chatResponse;
+		this.stream = stream;
 	}
 
-	public static ModelResponse of(AssistantMessage message) {
-		return new ModelResponse(message);
+	public static ModelResponse of(ChatMessage message) {
+		Objects.requireNonNull(message, "message must not be null");
+		return of(new ChatResponse(null, null, List.of(message), message.toolCalls(), null, null, Map.of()));
 	}
 
-	public static ModelResponse of(AssistantMessage message, ChatResponse chatResponse) {
-		return new ModelResponse(message, chatResponse);
+	public static ModelResponse of(ChatResponse response) {
+		Objects.requireNonNull(response, "response must not be null");
+		if (response.messages().size() != 1 || response.messages().get(0).role() != ChatRole.ASSISTANT) {
+			throw new IllegalArgumentException("Agent model turn requires exactly one assistant message");
+		}
+		return new ModelResponse(response, null);
 	}
 
-	public static ModelResponse of(Flux<ChatResponse> flux) {
-		return new ModelResponse(flux);
+	public static ModelResponse stream(Flow.Publisher<ChatEvent> stream) {
+		return new ModelResponse(null, Objects.requireNonNull(stream, "stream must not be null"));
 	}
 
-	public Object getMessage() {
-		return message;
+	public boolean isStreaming() {
+		return stream != null;
+	}
+
+	public ChatMessage getMessage() {
+		return getChatResponse().messages().get(0);
 	}
 
 	public ChatResponse getChatResponse() {
+		if (isStreaming()) {
+			throw new IllegalStateException("Streaming responses must be consumed through getStream()");
+		}
 		return chatResponse;
 	}
-}
 
+	public Flow.Publisher<ChatEvent> getStream() {
+		if (!isStreaming()) {
+			throw new IllegalStateException("Synchronous responses must be consumed through getChatResponse()");
+		}
+		return stream;
+	}
+
+}

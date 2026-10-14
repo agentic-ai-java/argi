@@ -18,7 +18,7 @@ package io.github.agentic.ai.graph.skills.registry;
 import io.github.agentic.ai.graph.skills.SkillMetadata;
 import io.github.agentic.ai.graph.skills.registry.filesystem.FileSystemSkillRegistry;
 
-import org.springframework.ai.chat.prompt.SystemPromptTemplate;
+import io.github.agentic.ai.graph.utils.PromptTemplate;
 
 import java.io.IOException;
 import java.util.Comparator;
@@ -39,7 +39,6 @@ public interface SkillRegistry {
 
 	/**
 	 * Get a skill by name.
-	 *
 	 * @param name the skill name (must not be null)
 	 * @return Optional containing the skill metadata if found, empty otherwise
 	 */
@@ -47,7 +46,6 @@ public interface SkillRegistry {
 
 	/**
 	 * Get a skill by its resolved skill path.
-	 *
 	 * @param skillPath the absolute or relative skill directory path
 	 * @return Optional containing the skill metadata if found, empty otherwise
 	 */
@@ -57,14 +55,12 @@ public interface SkillRegistry {
 
 	/**
 	 * List all registered skills.
-	 *
 	 * @return a list of all skill metadata (may be empty, never null)
 	 */
 	List<SkillMetadata> listAll();
 
 	/**
 	 * Check if a skill exists by name.
-	 *
 	 * @param name the skill name (must not be null)
 	 * @return true if the skill exists, false otherwise
 	 */
@@ -72,7 +68,6 @@ public interface SkillRegistry {
 
 	/**
 	 * Search skills by name, description, or path.
-	 *
 	 * @param query the search query
 	 * @return matching skills in ranked order
 	 */
@@ -82,23 +77,21 @@ public interface SkillRegistry {
 		}
 		String normalized = query.trim().toLowerCase(Locale.ROOT);
 		return listAll().stream()
-				.filter(skill -> containsIgnoreCase(skill.getName(), normalized)
-						|| containsIgnoreCase(skill.getDescription(), normalized)
-						|| containsIgnoreCase(skill.getSkillPath(), normalized))
-				.sorted(Comparator.comparing(SkillMetadata::getName))
-				.toList();
+			.filter(skill -> containsIgnoreCase(skill.getName(), normalized)
+					|| containsIgnoreCase(skill.getDescription(), normalized)
+					|| containsIgnoreCase(skill.getSkillPath(), normalized))
+			.sorted(Comparator.comparing(SkillMetadata::getName))
+			.toList();
 	}
 
 	/**
 	 * Get the total number of registered skills.
-	 *
 	 * @return the number of skills
 	 */
 	int size();
 
 	/**
 	 * Disable a skill in the current registry instance.
-	 *
 	 * @param name the skill name
 	 * @return true if the skill was disabled, false otherwise
 	 */
@@ -108,20 +101,15 @@ public interface SkillRegistry {
 
 	/**
 	 * Disable a skill in the current registry instance by path.
-	 *
 	 * @param skillPath the skill path
 	 * @return true if the skill was disabled, false otherwise
 	 */
 	default boolean disableByPath(String skillPath) {
-		return getByPath(skillPath)
-				.map(SkillMetadata::getName)
-				.map(this::disable)
-				.orElse(false);
+		return getByPath(skillPath).map(SkillMetadata::getName).map(this::disable).orElse(false);
 	}
 
 	/**
 	 * Check whether a skill is disabled in the current registry instance.
-	 *
 	 * @param name the skill name
 	 * @return true if disabled, false otherwise
 	 */
@@ -133,21 +121,21 @@ public interface SkillRegistry {
 	 * Reloads all skills from the underlying source.
 	 *
 	 * This method clears existing skills and reloads them from the configured source
-	 * (e.g., filesystem, database, etc.). The exact behavior depends on the implementation.
+	 * (e.g., filesystem, database, etc.). The exact behavior depends on the
+	 * implementation.
 	 *
 	 * Implementations should ensure thread-safety when reloading skills.
-	 *
-	 * @throws UnsupportedOperationException if the implementation does not support reloading
+	 * @throws UnsupportedOperationException if the implementation does not support
+	 * reloading
 	 */
 	void reload();
 
 	/**
 	 * Reads the full content of a skill by name.
 	 *
-	 * This method retrieves the complete content of a skill file (e.g., SKILL.md)
-	 * based on the skill name. The skill path is obtained from the SkillMetadata
-	 * associated with the skill name.
-	 *
+	 * This method retrieves the complete content of a skill file (e.g., SKILL.md) based
+	 * on the skill name. The skill path is obtained from the SkillMetadata associated
+	 * with the skill name.
 	 * @param name the skill name (must not be null)
 	 * @return the full content of the skill file
 	 * @throws IOException if the skill file cannot be read
@@ -158,7 +146,6 @@ public interface SkillRegistry {
 
 	/**
 	 * Reads the full content of a skill by path.
-	 *
 	 * @param skillPath the skill path
 	 * @return the full content of the skill file
 	 * @throws IOException if the skill file cannot be read
@@ -168,27 +155,27 @@ public interface SkillRegistry {
 			throw new IllegalArgumentException("Skill path cannot be null or empty");
 		}
 		SkillMetadata skill = getByPath(skillPath)
-				.orElseThrow(() -> new IllegalStateException("Skill not found: " + skillPath));
+			.orElseThrow(() -> new IllegalStateException("Skill not found: " + skillPath));
 		return skill.loadFullContent();
 	}
 
 	/**
 	 * Gets the skill load instructions for the system prompt.
 	 *
-	 * This method provides instructions on how skills are loaded and organized,
-	 * including information about skill locations, paths, and loading order.
-	 * The format and content depend on the specific implementation.
-	 *
-	 * @return the skill load instructions as a formatted string (may be empty, never null)
+	 * This method provides instructions on how skills are loaded and organized, including
+	 * information about skill locations, paths, and loading order. The format and content
+	 * depend on the specific implementation.
+	 * @return the skill load instructions as a formatted string (may be empty, never
+	 * null)
 	 */
 	String getSkillLoadInstructions();
 
 	/**
 	 * Gets the registry type name.
 	 *
-	 * This method returns a human-readable name for the registry type (e.g., "FileSystem", "Database").
-	 * This is used in system prompts to inform the model about the type of skill registry being used.
-	 *
+	 * This method returns a human-readable name for the registry type (e.g.,
+	 * "FileSystem", "Database"). This is used in system prompts to inform the model about
+	 * the type of skill registry being used.
 	 * @return the registry type name (never null)
 	 */
 	String getRegistryType();
@@ -196,18 +183,17 @@ public interface SkillRegistry {
 	/**
 	 * Gets the system prompt template for skills.
 	 *
-	 * This method returns a SystemPromptTemplate that defines how skills are presented
-	 * in the system prompt. Each implementation can provide its own template format.
-	 * The template should support the following variables:
-	 * - {skills_registry}: The registry type name
-	 * - {skills_list}: The formatted list of available skills
-	 * - {skills_load_instructions}: Instructions on how skills are loaded
-	 *
+	 * This method returns a SystemPromptTemplate that defines how skills are presented in
+	 * the system prompt. Each implementation can provide its own template format. The
+	 * template should support the following variables: - {skills_registry}: The registry
+	 * type name - {skills_list}: The formatted list of available skills -
+	 * {skills_load_instructions}: Instructions on how skills are loaded
 	 * @return the SystemPromptTemplate for skills (never null)
 	 */
-	SystemPromptTemplate getSystemPromptTemplate();
+	PromptTemplate getSystemPromptTemplate();
 
 	private static boolean containsIgnoreCase(String value, String normalizedQuery) {
 		return value != null && value.toLowerCase(Locale.ROOT).contains(normalizedQuery);
 	}
+
 }

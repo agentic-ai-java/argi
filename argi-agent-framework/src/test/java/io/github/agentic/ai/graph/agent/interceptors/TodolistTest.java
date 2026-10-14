@@ -37,20 +37,18 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class TodolistTest {
 
 	private ChatModel chatModel;
 
 	private static CompileConfig getCompileConfig() {
-		SaverConfig saverConfig = SaverConfig.builder()
-				.register(new MemorySaver())
-				.build();
+		SaverConfig saverConfig = SaverConfig.builder().register(new MemorySaver()).build();
 		CompileConfig compileConfig = CompileConfig.builder().saverConfig(saverConfig).build();
 		return compileConfig;
 	}
@@ -63,36 +61,37 @@ class TodolistTest {
 
 	@Test
 	public void testReactAgent() throws Exception {
-		
+
 		TodoListInterceptor todoListInterceptor = TodoListInterceptor.builder().build();
 
 		ToolCallback weatherTool = WeatherTool.createWeatherTool("weather_tool", new WeatherTool());
 		ToolCallback ticketTool = TicketTool.createTicketToolCallback("ticket_booking_tool", new TicketTool());
 		ToolCallback hotelTool = HotelTool.createHotelTool("hotel_booking_tool", new HotelTool());
 
-
-		ReactAgent agent =
-				ReactAgent.builder()
-						.name("single_agent")
-						.model(chatModel)
-						.interceptors(todoListInterceptor)
-						.tools(weatherTool, ticketTool, hotelTool)
-						.saver(new MemorySaver())
-						.build();
+		ReactAgent agent = ReactAgent.builder()
+			.name("single_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.interceptors(todoListInterceptor)
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherTool,
+					ticketTool, hotelTool))
+			.saver(new MemorySaver())
+			.build();
 
 		try {
-			Optional<OverAllState> result = agent.invoke("帮我制定一个12月30日开始去北京的3天旅游计划，并完成车票和酒店预订。这个任务比较复杂，你先分解成几个小任务，然后逐个完成每个小任务，最后汇总输出整个旅游计划。调用 `write_todos` 记录并跟踪任务执行过程。");
+			Optional<OverAllState> result = agent.invoke(
+					"帮我制定一个12月30日开始去北京的3天旅游计划，并完成车票和酒店预订。这个任务比较复杂，你先分解成几个小任务，然后逐个完成每个小任务，最后汇总输出整个旅游计划。调用 `write_todos` 记录并跟踪任务执行过程。");
 
 			assertTrue(result.isPresent(), "Agent result should be present");
 			result.ifPresent(overAllState -> {
 				List<Message> messages = overAllState.value("messages", new ArrayList<>());
 
-				// Assert that messages contain at least one ToolResponseMessage with name "write_todos"
+				// Assert that messages contain at least one ToolResponseMessage with name
+				// "write_todos"
 				boolean hasWriteTodosToolResponse = messages.stream()
-						.filter(msg -> msg instanceof ToolResponseMessage)
-						.map(msg -> (ToolResponseMessage) msg)
-						.flatMap(toolMsg -> toolMsg.getResponses().stream())
-						.anyMatch(response -> "write_todos".equals(response.name()));
+					.filter(msg -> msg instanceof ToolResponseMessage)
+					.map(msg -> (ToolResponseMessage) msg)
+					.flatMap(toolMsg -> toolMsg.getResponses().stream())
+					.anyMatch(response -> "write_todos".equals(response.name()));
 
 				assertTrue(hasWriteTodosToolResponse,
 						"Messages should contain at least one ToolResponseMessage with ToolResponse name 'write_todos'");

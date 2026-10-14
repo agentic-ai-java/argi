@@ -47,14 +47,14 @@ public class SerializerMapper {
 
 	public SerializerMapper register(Class<?> clazz, Serializer<?> serializer) {
 		Objects.requireNonNull(clazz, "class cannot be null ");
-		Objects.requireNonNull(clazz, "serializer cannot be null ");
+		Objects.requireNonNull(serializer, "serializer cannot be null ");
 
 		_serializers.put(Key.of(clazz), serializer);
 		return this;
 	}
 
-	public boolean unregister(Class<? extends Serializer<?>> clazz) {
-		Objects.requireNonNull(clazz, "Serializer's class cannot be null");
+	public boolean unregister(Class<?> clazz) {
+		Objects.requireNonNull(clazz, "class cannot be null");
 		Serializer<?> serializer = _serializers.remove(Key.of(clazz));
 		return serializer != null;
 	}
@@ -154,7 +154,7 @@ public class SerializerMapper {
 
 		@Override
 		public boolean equals(Object o) {
-			return Objects.equals(o, _className);
+			return o instanceof Key other && _className.equals(other._className);
 		}
 
 		@Override

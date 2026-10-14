@@ -23,7 +23,7 @@ import io.github.agentic.ai.graph.StateGraph;
 import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 import io.github.agentic.ai.graph.checkpoint.savers.redis.RedisSaver;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import io.github.agentic.ai.graph.state.strategy.ReplaceStrategy;
 
 import java.util.Map;
@@ -50,7 +50,7 @@ import static org.mockito.Mockito.when;
 
 class RedisSaverReadFailureTest {
 
-	private static final StateSerializer SERIALIZER = new SpringAIJacksonStateSerializer(OverAllState::new);
+	private static final StateSerializer SERIALIZER = new ArgiJacksonStateSerializer(OverAllState::new);
 
 	@AfterEach
 	void clearInterruptFlag() {
@@ -140,19 +140,18 @@ class RedisSaverReadFailureTest {
 		RedisSaver saver = saverWithLock(lock(false));
 		AtomicInteger executedNodes = new AtomicInteger();
 		StateGraph graph = new StateGraph(() -> Map.<String, KeyStrategy>of("value", new ReplaceStrategy()))
-				.addNode("node", node_async(state -> {
-					executedNodes.incrementAndGet();
-					return Map.of("value", "executed");
-				}))
-				.addEdge(START, "node")
-				.addEdge("node", END);
+			.addNode("node", node_async(state -> {
+				executedNodes.incrementAndGet();
+				return Map.of("value", "executed");
+			}))
+			.addEdge(START, "node")
+			.addEdge("node", END);
 		CompileConfig compileConfig = CompileConfig.builder()
-				.saverConfig(SaverConfig.builder().register(saver).build())
-				.build();
+			.saverConfig(SaverConfig.builder().register(saver).build())
+			.build();
 
-		assertThrows(IllegalStateException.class,
-				() -> graph.compile(compileConfig)
-						.invoke(Map.of(), RunnableConfig.builder().threadId("resume-failed-read").build().withResume()));
+		assertThrows(IllegalStateException.class, () -> graph.compile(compileConfig)
+			.invoke(Map.of(), RunnableConfig.builder().threadId("resume-failed-read").build().withResume()));
 		assertEquals(0, executedNodes.get());
 	}
 

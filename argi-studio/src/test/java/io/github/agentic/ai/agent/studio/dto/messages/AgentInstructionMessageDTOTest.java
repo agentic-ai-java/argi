@@ -15,6 +15,7 @@
  */
 package io.github.agentic.ai.agent.studio.dto.messages;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.graph.serializer.AgentInstructionMessage;
 
 import org.junit.jupiter.api.Test;
@@ -23,39 +24,29 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * Regression coverage for the bug where AgentInstructionMessage broke Studio's
- * MessageDTO conversion.
+ * Regression coverage for the bug where AgentInstructionMessage broke Studio's MessageDTO
+ * conversion.
  *
- * Background:
- *   - InstructionAgentHook (added by default to every ReactAgent that has an
- *     instruction) wraps the agent's instruction in an AgentInstructionMessage
- *     and pushes it into the state's messages list before each agent run.
- *   - AgentInstructionMessage extends AbstractMessage directly — it is NOT a
- *     UserMessage / AssistantMessage / ToolResponseMessage.
- *   - Studio's MessageDTOFactory.fromMessage previously ran an instanceof chain
- *     that didn't match AgentInstructionMessage and fell through to a default
- *     branch that threw IllegalArgumentException.
- *   - Symptom: any agent run that flowed through Studio (GraphRunResponse /
- *     AgentRunResponse) crashed the SSE stream with
- *       "Unsupported message type: io.github.agentic.ai.graph.serializer.AgentInstructionMessage".
- *
- * Fix: MessageDTOFactory.fromMessage now returns null for AgentInstructionMessage
- * so that the instruction is silently hidden from the rendered transcript.
+ * Instruction templates are ordinary neutral messages marked by metadata. They must
+ * remain hidden from the rendered transcript, including after template rendering.
  */
 class AgentInstructionMessageDTOTest {
 
 	@Test
 	void agentInstructionMessage_convertsToNullDTO() {
-		AgentInstructionMessage msg = AgentInstructionMessage.builder()
-				.text("你是一个专业翻译，能够准确翻译多种语言。")
-				.build();
+		ChatMessage msg = AgentInstructionMessage.builder().text("You are a professional translator.").build();
 
-		MessageDTO dto = assertDoesNotThrow(
-				() -> MessageDTO.MessageDTOFactory.fromMessage(msg),
-				"AgentInstructionMessage must not crash MessageDTOFactory.fromMessage"
-		);
+		MessageDTO dto = assertDoesNotThrow(() -> MessageDTO.MessageDTOFactory.fromMessage(msg),
+				"AgentInstructionMessage must not crash MessageDTOFactory.fromMessage");
 
 		assertNull(dto, "AgentInstructionMessage should be hidden from UI (return null)");
+	}
+
+	@Test
+	void renderedInstructionRemainsHidden() {
+		ChatMessage template = AgentInstructionMessage.builder().text("Translate {language}.").build();
+		ChatMessage rendered = AgentInstructionMessage.rendered(template, "Translate English.");
+		assertNull(MessageDTO.MessageDTOFactory.fromChatMessage(rendered));
 	}
 
 }

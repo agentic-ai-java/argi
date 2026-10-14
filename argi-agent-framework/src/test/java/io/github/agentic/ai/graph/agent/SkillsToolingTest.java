@@ -25,7 +25,7 @@ import io.github.agentic.ai.graph.skills.registry.filesystem.FileSystemSkillRegi
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.ai.chat.model.ToolContext;
+import io.github.agentic.ai.api.tool.ToolContext;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -57,9 +57,9 @@ class SkillsToolingTest {
 				allowed_tools:
 				  - record_result
 				---
-				
+
 				# Allowed Tools Test
-				
+
 				Test fixture content.
 				""");
 		registry = FileSystemSkillRegistry.builder().projectSkillsDirectory(skillsDir.toString()).build();
@@ -69,8 +69,10 @@ class SkillsToolingTest {
 	void readSkillToolSupportsNameAndPathResolution() {
 		ReadSkillTool tool = new ReadSkillTool(registry);
 
-		String byName = tool.apply(new ReadSkillTool.ReadSkillRequest("allowed-tools-test", null), new ToolContext(Map.of()));
-		String byPath = tool.apply(new ReadSkillTool.ReadSkillRequest(null, skillDir.toString()), new ToolContext(Map.of()));
+		String byName = tool.apply(new ReadSkillTool.ReadSkillRequest("allowed-tools-test", null),
+				new ToolContext(Map.of()));
+		String byPath = tool.apply(new ReadSkillTool.ReadSkillRequest(null, skillDir.toString()),
+				new ToolContext(Map.of()));
 
 		assertTrue(byName.contains("# Allowed Tools Test"));
 		assertEquals(byName, byPath);
@@ -87,18 +89,18 @@ class SkillsToolingTest {
 		assertTrue(searchResult.contains("source=project"));
 		assertTrue(searchResult.contains("allowed_tools=[record_result]"));
 
-		String disableResult = disableTool.apply(
-				new DisableSkillTool.DisableSkillRequest(null, skillDir.toString()), context);
+		String disableResult = disableTool.apply(new DisableSkillTool.DisableSkillRequest(null, skillDir.toString()),
+				context);
 		assertTrue(disableResult.contains("disabled"));
 
 		assertFalse(searchTool.apply(new SearchSkillsTool.SearchSkillsRequest("allowed-tools"), context)
-				.contains("allowed-tools-test"));
+			.contains("allowed-tools-test"));
 	}
 
 	@Test
 	void skillsAgentHookExposesRegistryTools() {
 		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
-		List<String> toolNames = hook.getTools().stream().map(tool -> tool.getToolDefinition().name()).toList();
+		List<String> toolNames = hook.getTools().stream().map(tool -> tool.definition().name()).toList();
 
 		assertEquals(List.of("read_skill", "search_skills", "disable_skill"), toolNames);
 		assertFalse(toolNames.contains("allowed-tools-test"));

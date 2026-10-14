@@ -233,7 +233,7 @@ pnpm deploy
 
 **调试方法**:
 
-在代码中临时添加日志（例如 `src/lib/spring-ai-api.ts`）：
+在代码中临时添加日志（例如 `src/lib/argi-api.ts`）：
 
 ```typescript
 export function createApiClient(): SpringAIApiClient {

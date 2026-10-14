@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.graph.agent.hook.returndirect;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.ContentPart;
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.agent.Prioritized;
 import io.github.agentic.ai.graph.agent.hook.HookPosition;
@@ -22,24 +25,15 @@ import io.github.agentic.ai.graph.agent.hook.HookPositions;
 import io.github.agentic.ai.graph.agent.hook.JumpTo;
 import io.github.agentic.ai.graph.agent.hook.messages.AgentCommand;
 import io.github.agentic.ai.graph.agent.hook.messages.MessagesModelHook;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-
+import io.github.agentic.ai.graph.agent.internal.JsonCodec;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-
 import static io.github.agentic.ai.graph.agent.hook.returndirect.ReturnDirectConstants.FINISH_REASON_METADATA_KEY;
-import static org.springframework.ai.model.tool.ToolExecutionResult.FINISH_REASON;
+import static io.github.agentic.ai.graph.agent.hook.returndirect.ReturnDirectConstants.FINISH_REASON;
 
-/**
- * MessagesModelHook that checks for FINISH_REASON in ToolResponseMessage metadata.
- * If found, generates an AssistantMessage and jumps to END node.
- * This hook is designed to execute first among all hooks.
- */
-@HookPositions({HookPosition.BEFORE_MODEL})
+/** Returns a completed direct-tool turn without another model call, retaining media. */
+@HookPositions({ HookPosition.BEFORE_MODEL })
 public class ReturnDirectModelHook extends MessagesModelHook {
 
 	@Override
@@ -58,128 +52,43 @@ public class ReturnDirectModelHook extends MessagesModelHook {
 	}
 
 	@Override
-	public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
-		// Check the last message - if it's a ToolResponseMessage, continue processing
+	public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 		if (previousMessages.isEmpty()) {
 			return new AgentCommand(previousMessages);
 		}
-
-		Message lastMessage = previousMessages.get(previousMessages.size() - 1);
-		if (!(lastMessage instanceof ToolResponseMessage toolResponseMessage)) {
-			// Last message is not a ToolResponseMessage, return normally
+		ChatMessage last = previousMessages.get(previousMessages.size() - 1);
+		if (last.role() != ChatRole.TOOL || !FINISH_REASON.equals(last.metadata().get(FINISH_REASON_METADATA_KEY))) {
 			return new AgentCommand(previousMessages);
 		}
-
-		// Check if ToolResponseMessage has FINISH_REASON in its metadata
-		// FINISH_REASON is set in ToolResponseMessage metadata by AgentToolNode when returnDirect=true
-		boolean returnDirect = false;
-		Map<String, Object> metadata = toolResponseMessage.getMetadata();
-		if (metadata.containsKey(FINISH_REASON_METADATA_KEY)) {
-			Object finishReason = metadata.get(FINISH_REASON_METADATA_KEY);
-			if (FINISH_REASON.equals(finishReason)) {
-				returnDirect = true;
-			}
+		int start = previousMessages.size() - 1;
+		while (start > 0 && previousMessages.get(start - 1).role() == ChatRole.TOOL) {
+			start--;
 		}
-
-		if (returnDirect) {
-			// Generate AssistantMessage from ToolResponseMessage
-			String generatedText = generateAssistantMessageText(toolResponseMessage);
-			AssistantMessage newAssistantMessage = AssistantMessage.builder()
-					.content(generatedText)
-					.build();
-
-			// Create new messages list with the generated AssistantMessage
-			List<Message> newMessages = new ArrayList<>(previousMessages);
-			newMessages.add(newAssistantMessage);
-
-			// Return with JumpTo.end to jump to END node
-			return new AgentCommand(JumpTo.end, newMessages);
+		List<ChatMessage> results = previousMessages.subList(start, previousMessages.size());
+		List<ContentPart> content = new ArrayList<>();
+		if (results.size() == 1) {
+			content.addAll(last.content());
 		}
-
-		// No FINISH_REASON found, return normally
-		return new AgentCommand(previousMessages);
-	}
-
-	/**
-	 * Generate AssistantMessage text from ToolResponseMessage responses.
-	 * If there's only one response, returns its responseData directly.
-	 * If there are multiple responses, generates a JSON array.
-	 */
-	private String generateAssistantMessageText(ToolResponseMessage toolResponseMessage) {
-		List<ToolResponseMessage.ToolResponse> responses = toolResponseMessage.getResponses();
-		if (responses.isEmpty()) {
-			return "";
-		} else if (responses.size() == 1) {
-			// If there's only one response, use responseData directly
-			// Handle null responseData: return empty string for single response
-			return responses.get(0).responseData();
-		} else {
-			// If there are multiple responses, generate a JSON array
-			StringBuilder jsonArray = new StringBuilder("[");
-			for (int i = 0; i < responses.size(); i++) {
-				if (i > 0) {
-					jsonArray.append(",");
+		else {
+			List<Object> values = new ArrayList<>();
+			JsonCodec codec = new JsonCodec();
+			for (ChatMessage result : results) {
+				try {
+					values.add(codec.fromJson(result.text(), Object.class));
 				}
-				String responseData = responses.get(i).responseData();
-				// Handle null responseData: treat as JSON null
-				if (responseData == null) {
-					jsonArray.append("null");
-				} else {
-					String trimmed = responseData.trim();
-					// If responseData is already in JSON format, add it directly; otherwise add it as a string
-					if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-						jsonArray.append(responseData);
-					} else {
-						// Escape JSON string
-						jsonArray.append("\"").append(escapeJsonString(responseData)).append("\"");
-					}
+				catch (IllegalArgumentException exception) {
+					values.add(result.text());
 				}
 			}
-			jsonArray.append("]");
-			return jsonArray.toString();
+			content.add(ContentPart.json(codec.toJson(values)));
+			results.stream()
+				.flatMap(result -> result.content().stream())
+				.filter(part -> part.type() != ContentPart.Type.TEXT && part.type() != ContentPart.Type.JSON)
+				.forEach(content::add);
 		}
+		List<ChatMessage> messages = new ArrayList<>(previousMessages);
+		messages.add(new ChatMessage(ChatRole.ASSISTANT, content, List.of(), null, null, Map.of()));
+		return new AgentCommand(JumpTo.end, messages);
 	}
 
-	/**
-	 * Escape special characters in a JSON string.
-	 */
-	private String escapeJsonString(String str) {
-		if (str == null) {
-			return "";
-		}
-		StringBuilder sb = new StringBuilder();
-		for (char c : str.toCharArray()) {
-			switch (c) {
-				case '"':
-					sb.append("\\\"");
-					break;
-				case '\\':
-					sb.append("\\\\");
-					break;
-				case '\b':
-					sb.append("\\b");
-					break;
-				case '\f':
-					sb.append("\\f");
-					break;
-				case '\n':
-					sb.append("\\n");
-					break;
-				case '\r':
-					sb.append("\\r");
-					break;
-				case '\t':
-					sb.append("\\t");
-					break;
-				default:
-					if (c < 0x20) {
-						sb.append(String.format("\\u%04x", (int) c));
-					} else {
-						sb.append(c);
-					}
-					break;
-			}
-		}
-		return sb.toString();
-	}
 }

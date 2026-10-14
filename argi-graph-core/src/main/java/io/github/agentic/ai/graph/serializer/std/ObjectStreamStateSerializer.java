@@ -19,6 +19,7 @@ import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.serializer.Serializer;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
 import io.github.agentic.ai.graph.state.AgentStateFactory;
+import io.github.agentic.ai.graph.streaming.StreamingOutput;
 
 import java.io.IOException;
 import java.io.ObjectInput;
@@ -41,6 +42,8 @@ public class ObjectStreamStateSerializer extends StateSerializer {
 		super(stateFactory);
 		mapper.register(Collection.class, new ListSerializer());
 		mapper.register(Map.class, new MapSerializer());
+		ArgiChatSerializers.register(mapper);
+		mapper.register(StreamingOutput.class, new StreamingOutputSerializer(stateFactory));
 	}
 
 	public SerializerMapper mapper() {

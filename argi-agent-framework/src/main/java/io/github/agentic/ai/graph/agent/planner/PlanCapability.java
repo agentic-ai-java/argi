@@ -18,7 +18,7 @@ package io.github.agentic.ai.graph.agent.planner;
 import java.util.Objects;
 
 import io.github.agentic.ai.graph.agent.Agent;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.tool.Tool;
 
 /**
  * Application-owned capability descriptor. The target is an opaque, exact registry key
@@ -32,8 +32,8 @@ public record PlanCapability(String executionTarget, String description, String 
 	 * Snapshot an already authorized tool's actual definition without retaining its
 	 * callback.
 	 */
-	public static PlanCapability tool(ToolCallback tool, String outputSchema) {
-		var definition = Objects.requireNonNull(tool, "tool").getToolDefinition();
+	public static PlanCapability tool(Tool tool, String outputSchema) {
+		var definition = Objects.requireNonNull(tool, "tool").definition();
 		return new PlanCapability("tool:" + definition.name(), definition.description(), definition.inputSchema(),
 				outputSchema);
 	}

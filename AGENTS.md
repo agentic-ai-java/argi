@@ -4,7 +4,7 @@ This file provides guidance for AI assistants working with the ARGI codebase.
 
 ## Project Overview
 
-ARGI (Agent Runtime and Graph Intelligence, pronounced "AR-jee") is a production-ready framework for building agents, workflows, and multi-agent applications. It is forked from Spring AI Alibaba and focuses on stateful agent runtime capabilities: graph orchestration, persistence, context engineering, and human-in-the-loop support. It also supports the multi-model integration capabilities provided by Spring AI.
+ARGI (Agent Runtime and Graph Intelligence, pronounced "AR-jee") is a production-ready framework for building agents, workflows, and multi-agent applications. It is forked from Spring AI Alibaba and focuses on stateful agent runtime capabilities: graph orchestration, persistence, context engineering, and human-in-the-loop support. Its runtime consumes framework-neutral `argi-api` contracts. Spring AI, LangChain4j, Google ADK Java, and AgentScope Java are isolated in optional adapters.
 
 > **Naming:** the product display name is *ARGI*. Published Maven coordinates use `io.github.agentic-ai-java:argi-*`, Java packages use `io.github.agentic.ai`, configuration prefixes use `argi.*`, and framework-specific public class names use the `Argi*` prefix.
 
@@ -14,22 +14,38 @@ ARGI (Agent Runtime and Graph Intelligence, pronounced "AR-jee") is a production
 - Context Engineering with human-in-the-loop, context compaction, editing, model call limits
 - Graph-based workflow with conditional routing, nested graphs, parallel execution
 - A2A (Agent-to-Agent) client support (Nacos service discovery lives in the Extensions repository)
-- Multi-model integration through Spring AI, plus MCP (Model Context Protocol)
+- Multi-model integration through four optional ChatClient adapters, plus MCP (Model Context Protocol)
 - Embedded visual debugging studio
 
 ## Repository Structure
 
 ```
 argi/
+├── argi-api/                    # ChatClient contracts and framework adapters (directory group)
+│   ├── argi-api-base/           # Publishes argi-api; JDK-only public contracts
+│   ├── argi-adapter-spring-ai/
+│   ├── argi-adapter-langchain4j/
+│   ├── argi-adapter-google-adk/
+│   └── argi-adapter-agentscope/
 ├── argi-agent-framework/        # Multi-agent framework (Sequential, Parallel, Routing, etc.)
 ├── argi-graph-core/             # Runtime providing persistence, workflow orchestration, state mgmt
 ├── argi-studio/                 # Embedded UI for debugging agents visually
 ├── argi-bom/                    # Bill of Materials for dependency management
-├── spring-boot-starters/              # Spring Boot Starters
+├── argi-spring-boot-starter/           # Spring Boot Starters (directory group)
 │   ├── argi-starter-builtin-nodes/     # Built-in workflow nodes
-│   └── argi-starter-graph-observation/ # Observability
+│   ├── argi-starter-graph-observation/ # Observability
+│   ├── argi-starter-adapter-spring-ai/
+│   ├── argi-starter-adapter-langchain4j/
+│   ├── argi-starter-adapter-google-adk/
+│   └── argi-starter-adapter-agentscope/
 └── tools/                             # Build and linting tools
 ```
+
+The directory groups are not additional Maven artifacts. The root `pom.xml` lists
+their child modules directly; every child inherits the root parent using
+`../../pom.xml`. The public API artifact remains `argi-api`, and its Java packages
+remain `io.github.agentic.ai.api.*`. Use artifact selectors such as `-pl :argi-api`
+or the complete child directory path when selecting a module for a build.
 
 This repository holds the core only. Optional integrations live in separate repositories:
 
@@ -77,9 +93,11 @@ make licenses-check
 
 ### Technology Stack
 
-- **Framework**: Spring Boot 4.1.x, Spring AI 2.0.x
-- **Model and Integration Layer**: Spring AI multi-model integrations, model starters, MCP, A2A, and Nacos
-- **Observability**: Spring Cloud Observation (Micrometer/OpenTelemetry)
+- **Framework**: Java 17; Spring Boot 4.1.x for optional starters and Studio
+- **Model and Integration Layer**: `argi-api` contracts and four isolated provider adapters; MCP and A2A integrations
+- **Observability**: Lightweight Micrometer observation; no required OpenTelemetry deployment
+
+Core production sources, bytecode, and runtime dependency trees must remain free of provider SDKs. Native SDKs in core test fixtures must use test scope. This is a breaking replacement, not a deprecated compatibility bridge.
 
 ## Code Style & Conventions
 
@@ -139,10 +157,10 @@ The project uses `make` for linting tasks:
 ## Tips for AI Assistants
 
 1.  **JDK Version**: Project targets JDK 17. Use appropriate language features.
-2.  **Spring Boot**: Uses Spring Boot 4.1.1 with Spring AI 2.0.1. The `jakarta.*` namespace applies throughout; there is no `javax.*` code.
+2.  **Spring Boot**: Uses Spring Boot 4.1.1. Spring AI 2.0.1 belongs only to its adapter and native test fixtures. The `jakarta.*` namespace applies throughout; there is no `javax.*` code.
 3.  **Dependencies**: Check `argi-bom` or parent pom for version management.
 4.  **Makefile**: Use the Makefile in the root for project maintenance tasks (linting, license checks).
-5.  **Structure**: When adding new features, prefer creating or updating modules within `argi-agent-framework` or `spring-boot-starters` depending on the scope.
+5.  **Structure**: Keep neutral contracts and framework adapters in `argi-api`, Spring Boot auto-configuration in `argi-spring-boot-starter`, and agent runtime features in `argi-agent-framework`.
 
 ## Important Links
 

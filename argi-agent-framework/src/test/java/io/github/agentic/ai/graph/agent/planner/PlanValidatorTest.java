@@ -25,8 +25,8 @@ import io.github.agentic.ai.graph.agent.Agent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.definition.ToolDefinition;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.chat.ToolDefinition;
 
 import static io.github.agentic.ai.graph.agent.planner.PlannerFixtures.INPUT;
 import static io.github.agentic.ai.graph.agent.planner.PlannerFixtures.OUTPUT;
@@ -205,15 +205,14 @@ class PlanValidatorTest {
 
 	@Test
 	void descriptorsComeFromRealRegisteredDefinitionsWithoutInvokingThem() {
-		ToolCallback tool = mock(ToolCallback.class);
-		when(tool.getToolDefinition()).thenReturn(
-				ToolDefinition.builder().name("search").description("Search documents").inputSchema(INPUT).build());
+		Tool tool = mock(Tool.class);
+		when(tool.definition()).thenReturn(new ToolDefinition("search", "Search documents", INPUT));
 		Agent agent = mock(Agent.class);
 		when(agent.name()).thenReturn("writer");
 		when(agent.description()).thenReturn("Write a summary");
 		assertEquals(SEARCH, PlanCapability.tool(tool, OUTPUT));
 		assertEquals(PlannerFixtures.WRITER, PlanCapability.agent(agent, INPUT, OUTPUT));
-		verify(tool).getToolDefinition();
+		verify(tool).definition();
 		verify(agent).name();
 		verify(agent).description();
 		verifyNoMoreInteractions(tool, agent);

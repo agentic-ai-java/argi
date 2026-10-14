@@ -15,8 +15,9 @@
  */
 package io.github.agentic.ai.graph.agent;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.tool.ToolContext;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
-import io.github.agentic.ai.graph.serializer.AgentInstructionMessage;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -24,11 +25,9 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import reactor.core.publisher.Flux;
@@ -40,10 +39,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Reproduction for <a href="https://github.com/agentic-ai-java/argi/issues/77">issue #77</a>:
- * when a ReactAgent with an instruction runs through {@link AgentTool}, the instruction used to be
- * injected twice (once manually by the tool executor, once by the default InstructionAgentHook),
- * so the model context carried two copies. It must appear exactly once.
+ * Reproduction for <a href="https://github.com/agentic-ai-java/argi/issues/77">issue
+ * #77</a>: when a ReactAgent with an instruction runs through {@link AgentTool}, the
+ * instruction used to be injected twice (once manually by the tool executor, once by the
+ * default InstructionAgentHook), so the model context carried two copies. It must appear
+ * exactly once.
  */
 class Issue77DuplicateInstructionTest {
 
@@ -71,23 +71,23 @@ class Issue77DuplicateInstructionTest {
 	void instructionAppearsExactlyOnceWhenAgentRunsAsTool() {
 		CapturingChatModel model = new CapturingChatModel();
 		ReactAgent childAgent = ReactAgent.builder()
-				.name("issue77_child")
-				.model(model)
-				.saver(new MemorySaver())
-				.instruction(INSTRUCTION)
-				.build();
+			.name("issue77_child")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.saver(new MemorySaver())
+			.instruction(INSTRUCTION)
+			.build();
 
 		AgentTool.AgentToolExecutor executor = new AgentTool.AgentToolExecutor(childAgent);
-		AssistantMessage result = executor.executeAgent("{\"input\": \"hello\"}", new ToolContext(Map.of()));
+		ChatMessage result = executor.executeAgent("{\"input\": \"hello\"}", ToolContext.empty());
 
 		assertNotNull(result);
 		assertTrue(!model.prompts.isEmpty(), "the child agent must call the model at least once");
 		for (Prompt prompt : model.prompts) {
-			long instructionCopies = prompt.getInstructions().stream()
-					.filter(AgentInstructionMessage.class::isInstance)
-					.map(message -> ((AgentInstructionMessage) message).getText())
-					.filter(INSTRUCTION::equals)
-					.count();
+			long instructionCopies = prompt.getInstructions()
+				.stream()
+				.map(Message::getText)
+				.filter(INSTRUCTION::equals)
+				.count();
 			assertEquals(1, instructionCopies, "each model call must carry the instruction exactly once");
 		}
 	}
@@ -96,21 +96,21 @@ class Issue77DuplicateInstructionTest {
 	void userMessageIsStillPassedThroughWhenInstructionIsInjectedOnce() {
 		CapturingChatModel model = new CapturingChatModel();
 		ReactAgent childAgent = ReactAgent.builder()
-				.name("issue77_child_user")
-				.model(model)
-				.saver(new MemorySaver())
-				.instruction(INSTRUCTION)
-				.build();
+			.name("issue77_child_user")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.saver(new MemorySaver())
+			.instruction(INSTRUCTION)
+			.build();
 
 		AgentTool.AgentToolExecutor executor = new AgentTool.AgentToolExecutor(childAgent);
-		executor.executeAgent("{\"input\": \"hello\"}", new ToolContext(Map.of()));
+		executor.executeAgent("{\"input\": \"hello\"}", ToolContext.empty());
 
 		long userMessageCopies = model.prompts.stream()
-				.flatMap(prompt -> prompt.getInstructions().stream())
-				.filter(message -> message.getClass() == UserMessage.class)
-				.map(Message::getText)
-				.filter("hello"::equals)
-				.count();
+			.flatMap(prompt -> prompt.getInstructions().stream())
+			.filter(message -> message.getClass() == UserMessage.class)
+			.map(Message::getText)
+			.filter("hello"::equals)
+			.count();
 		assertEquals(1, userMessageCopies, "the user input must not be duplicated either");
 	}
 

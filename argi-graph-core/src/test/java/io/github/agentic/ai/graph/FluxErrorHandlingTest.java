@@ -15,11 +15,10 @@
  */
 package io.github.agentic.ai.graph;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatResponse;
+
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
@@ -63,11 +62,8 @@ public class FluxErrorHandlingTest {
 		StateGraph workflow = new StateGraph();
 
 		workflow.addNode("normalNode", state -> {
-			Flux<ChatResponse> validFlux = Flux.just(
-				new ChatResponse(List.of(
-					new Generation(new AssistantMessage("Hello"), ChatGenerationMetadata.NULL)
-				))
-			);
+			Flux<ChatResponse> validFlux = Flux.just(new ChatResponse(null, null,
+					List.of(ChatMessage.assistant("Hello")), List.of(), null, null, Map.of()));
 			Map<String, Object> result = new HashMap<>();
 			result.put("messages", validFlux);
 			return CompletableFuture.completedFuture(result);
@@ -80,10 +76,9 @@ public class FluxErrorHandlingTest {
 
 		AtomicInteger responseCount = new AtomicInteger(0);
 
-		app.stream(Map.of())
-				.doOnNext(response -> responseCount.incrementAndGet())
-				.blockLast(Duration.ofSeconds(2));
+		app.stream(Map.of()).doOnNext(response -> responseCount.incrementAndGet()).blockLast(Duration.ofSeconds(2));
 
 		assertTrue(responseCount.get() > 0, "Should receive responses");
 	}
+
 }

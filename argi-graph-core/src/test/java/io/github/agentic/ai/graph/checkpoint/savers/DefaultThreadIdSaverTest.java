@@ -28,7 +28,7 @@ import io.github.agentic.ai.graph.checkpoint.BaseCheckpointSaver;
 import io.github.agentic.ai.graph.checkpoint.savers.mongo.MongoSaver;
 import io.github.agentic.ai.graph.checkpoint.savers.redis.RedisSaver;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import org.bson.Document;
 import org.bson.conversions.Bson;
 import org.junit.jupiter.api.Test;
@@ -51,7 +51,7 @@ import static org.mockito.Mockito.when;
 
 class DefaultThreadIdSaverTest {
 
-	private static final StateSerializer SERIALIZER = new SpringAIJacksonStateSerializer(OverAllState::new);
+	private static final StateSerializer SERIALIZER = new ArgiJacksonStateSerializer(OverAllState::new);
 
 	@Test
 	void redisListWithoutThreadIdUsesDefaultThreadName() throws Exception {
@@ -95,8 +95,7 @@ class DefaultThreadIdSaverTest {
 		org.mockito.ArgumentCaptor<Bson> filterCaptor = org.mockito.ArgumentCaptor.forClass(Bson.class);
 		verify(threadMeta).find(eq(session), filterCaptor.capture());
 		BasicDBObject filter = assertInstanceOf(BasicDBObject.class, filterCaptor.getValue());
-		assertEquals("mongo:thread:meta:" + BaseCheckpointSaver.THREAD_ID_DEFAULT,
-				filter.getString("_id"));
+		assertEquals("mongo:thread:meta:" + BaseCheckpointSaver.THREAD_ID_DEFAULT, filter.getString("_id"));
 	}
 
 }

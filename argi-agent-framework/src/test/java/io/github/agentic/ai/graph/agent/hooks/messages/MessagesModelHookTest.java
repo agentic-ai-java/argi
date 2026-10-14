@@ -31,10 +31,9 @@ import io.github.agentic.ai.graph.exception.GraphStateException;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
@@ -54,7 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 public class MessagesModelHookTest {
 
 	private ChatModel chatModel;
@@ -78,8 +77,8 @@ public class MessagesModelHookTest {
 
 		System.out.println("\n=== 测试 MessagesModelHook 被正确加载且执行 ===");
 
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("你好，请简单介绍一下自己。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("你好，请简单介绍一下自己。"));
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
@@ -102,9 +101,9 @@ public class MessagesModelHookTest {
 
 		System.out.println("\n=== 测试 REPLACE 策略 ===");
 
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("原始消息1"));
-		messages.add(new UserMessage("原始消息2"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("原始消息1"));
+		messages.add(ChatMessage.user("原始消息2"));
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
@@ -113,7 +112,7 @@ public class MessagesModelHookTest {
 		assertNotNull(messagesObj, "消息应该存在于结果中");
 
 		if (messagesObj instanceof List) {
-			List<Message> resultMessages = (List<Message>) messagesObj;
+			List<ChatMessage> resultMessages = (List<ChatMessage>) messagesObj;
 			System.out.println("返回消息数量: " + resultMessages.size());
 
 			// 验证消息被替换：应该包含替换后的系统消息，且不包含原始消息
@@ -121,14 +120,15 @@ public class MessagesModelHookTest {
 			boolean foundOriginalMessage1 = false;
 			boolean foundOriginalMessage2 = false;
 
-			for (Message message : resultMessages) {
-				if (message instanceof SystemMessage) {
-					String content = message.getText();
+			for (ChatMessage message : resultMessages) {
+				if (message.role() == ChatRole.SYSTEM) {
+					String content = message.text();
 					if (content.contains("这是替换后的系统消息")) {
 						foundSystemMessage = true;
 					}
-				} else if (message instanceof UserMessage) {
-					String content = message.getText();
+				}
+				else if (message.role() == ChatRole.USER) {
+					String content = message.text();
 					if (content.equals("原始消息1")) {
 						foundOriginalMessage1 = true;
 					}
@@ -158,8 +158,8 @@ public class MessagesModelHookTest {
 
 		System.out.println("\n=== 测试 APPEND 策略 ===");
 
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("原始用户消息"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("原始用户消息"));
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
@@ -168,15 +168,15 @@ public class MessagesModelHookTest {
 		assertNotNull(messagesObj, "消息应该存在于结果中");
 
 		if (messagesObj instanceof List) {
-			List<Message> resultMessages = (List<Message>) messagesObj;
+			List<ChatMessage> resultMessages = (List<ChatMessage>) messagesObj;
 			System.out.println("返回消息数量: " + resultMessages.size());
 
 			// 验证消息被追加而不是替换
 			boolean foundOriginalMessage = false;
 			boolean foundAppendedMessage = false;
-			for (Message message : resultMessages) {
-				if (message instanceof UserMessage) {
-					String content = message.getText();
+			for (ChatMessage message : resultMessages) {
+				if (message.role() == ChatRole.USER) {
+					String content = message.text();
 					if (content.equals("原始用户消息")) {
 						foundOriginalMessage = true;
 					}
@@ -204,26 +204,26 @@ public class MessagesModelHookTest {
 		AtomicInteger thirdHookAfterCount = new AtomicInteger(0);
 
 		// First hook will jump to end, skipping subsequent hooks
-		JumpToEndMessagesHook firstHook = new JumpToEndMessagesHook("jump_to_end_hook",
-				firstHookBeforeCount, firstHookAfterCount);
+		JumpToEndMessagesHook firstHook = new JumpToEndMessagesHook("jump_to_end_hook", firstHookBeforeCount,
+				firstHookAfterCount);
 		// Second hook should be skipped
-		TestMessagesModelHook secondHook = new TestMessagesModelHook("second_hook",
-				secondHookBeforeCount, secondHookAfterCount);
+		TestMessagesModelHook secondHook = new TestMessagesModelHook("second_hook", secondHookBeforeCount,
+				secondHookAfterCount);
 		// Third hook should also be skipped
-		TestMessagesModelHook thirdHook = new TestMessagesModelHook("third_hook",
-				thirdHookBeforeCount, thirdHookAfterCount);
+		TestMessagesModelHook thirdHook = new TestMessagesModelHook("third_hook", thirdHookBeforeCount,
+				thirdHookAfterCount);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("test-agent-jump-to-end")
-				.model(chatModel)
-				.hooks(List.of(firstHook, secondHook, thirdHook))
-				.saver(new MemorySaver())
-				.build();
+			.name("test-agent-jump-to-end")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(List.of(firstHook, secondHook, thirdHook))
+			.saver(new MemorySaver())
+			.build();
 
 		System.out.println("\n=== 测试 JumpTo End 功能 ===");
 
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("你好，请简单介绍一下自己。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("你好，请简单介绍一下自己。"));
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
@@ -264,23 +264,22 @@ public class MessagesModelHookTest {
 		JumpToEndMessagesHook firstMessagesHook = new JumpToEndMessagesHook("first_messages_hook",
 				messagesHookBeforeCount, messagesHookAfterCount);
 		// ModelHook should be skipped
-		TestModelHook modelHook = new TestModelHook("test_model_hook",
-				modelHookBeforeCount, modelHookAfterCount);
+		TestModelHook modelHook = new TestModelHook("test_model_hook", modelHookBeforeCount, modelHookAfterCount);
 		// Second MessagesModelHook should also be skipped
 		TestMessagesModelHook secondMessagesHook = new TestMessagesModelHook("second_messages_hook",
 				secondMessagesHookBeforeCount, secondMessagesHookAfterCount);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("test-agent-jump-to-end-mixed")
-				.model(chatModel)
-				.hooks(List.of(firstMessagesHook, modelHook, secondMessagesHook))
-				.saver(new MemorySaver())
-				.build();
+			.name("test-agent-jump-to-end-mixed")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(List.of(firstMessagesHook, modelHook, secondMessagesHook))
+			.saver(new MemorySaver())
+			.build();
 
 		System.out.println("\n=== 测试 JumpTo End 功能（混合 MessagesModelHook 和 ModelHook）===");
 
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("你好，请简单介绍一下自己。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("你好，请简单介绍一下自己。"));
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
@@ -314,22 +313,21 @@ public class MessagesModelHookTest {
 		AtomicInteger modelHookBeforeCount = new AtomicInteger(0);
 		AtomicInteger modelHookAfterCount = new AtomicInteger(0);
 
-		TestMessagesModelHook messagesHook = new TestMessagesModelHook("test_messages_hook",
-				messagesHookBeforeCount, messagesHookAfterCount);
-		TestModelHook modelHook = new TestModelHook("test_model_hook",
-				modelHookBeforeCount, modelHookAfterCount);
+		TestMessagesModelHook messagesHook = new TestMessagesModelHook("test_messages_hook", messagesHookBeforeCount,
+				messagesHookAfterCount);
+		TestModelHook modelHook = new TestModelHook("test_model_hook", modelHookBeforeCount, modelHookAfterCount);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("test-agent-both-hooks")
-				.model(chatModel)
-				.hooks(List.of(messagesHook, modelHook))
-				.saver(new MemorySaver())
-				.build();
+			.name("test-agent-both-hooks")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(List.of(messagesHook, modelHook))
+			.saver(new MemorySaver())
+			.build();
 
 		System.out.println("\n=== 测试 MessagesModelHook 和 ModelHook 同时使用 ===");
 
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("你好，请简单介绍一下自己。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("你好，请简单介绍一下自己。"));
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
@@ -348,20 +346,23 @@ public class MessagesModelHookTest {
 
 	private ReactAgent createAgentWithMessagesHook(MessagesModelHook hook, String name) throws GraphStateException {
 		return ReactAgent.builder()
-				.name(name)
-				.model(chatModel)
-				.hooks(List.of(hook))
-				.saver(new MemorySaver())
-				.build();
+			.name(name)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(List.of(hook))
+			.saver(new MemorySaver())
+			.build();
 	}
 
 	/**
 	 * Test MessagesModelHook implementation for testing
 	 */
-	@HookPositions({HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL})
+	@HookPositions({ HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL })
 	private static class TestMessagesModelHook extends MessagesModelHook {
+
 		private final String name;
+
 		private final AtomicInteger beforeModelCallCount;
+
 		private final AtomicInteger afterModelCallCount;
 
 		public TestMessagesModelHook(String name, AtomicInteger beforeModelCallCount,
@@ -377,73 +378,83 @@ public class MessagesModelHookTest {
 		}
 
 		@Override
-		public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
+		public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 			beforeModelCallCount.incrementAndGet();
-			System.out.println("TestMessagesModelHook.beforeModel called with " + previousMessages.size() + " messages");
+			System.out
+				.println("TestMessagesModelHook.beforeModel called with " + previousMessages.size() + " messages");
 			return new AgentCommand(previousMessages);
 		}
 
 		@Override
-		public AgentCommand afterModel(List<Message> previousMessages, RunnableConfig config) {
+		public AgentCommand afterModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 			afterModelCallCount.incrementAndGet();
 			System.out.println("TestMessagesModelHook.afterModel called with " + previousMessages.size() + " messages");
 			return new AgentCommand(previousMessages);
 		}
+
 	}
 
 	/**
 	 * MessagesModelHook implementation that uses REPLACE policy
 	 */
-	@HookPositions({HookPosition.BEFORE_MODEL})
+	@HookPositions({ HookPosition.BEFORE_MODEL })
 	private static class ReplacePolicyMessagesHook extends MessagesModelHook {
+
 		@Override
 		public String getName() {
 			return "replace_policy_hook";
 		}
 
 		@Override
-		public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
-			// Replace all messages with a new system message and keep the last user message
+		public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
+			// Replace all messages with a new system message and keep the last user
+			// message
 			// This ensures agent can still function while demonstrating REPLACE policy
-			List<Message> newMessages = new ArrayList<>();
-			newMessages.add(new SystemMessage("这是替换后的系统消息"));
+			List<ChatMessage> newMessages = new ArrayList<>();
+			newMessages.add(ChatMessage.system("这是替换后的系统消息"));
 			// Keep the last user message so agent can still respond
 			if (!previousMessages.isEmpty()) {
-				Message lastMessage = previousMessages.get(previousMessages.size() - 1);
-				if (lastMessage instanceof UserMessage) {
+				ChatMessage lastMessage = previousMessages.get(previousMessages.size() - 1);
+				if (lastMessage.role() == ChatRole.USER) {
 					newMessages.add(lastMessage);
 				}
 			}
 			return new AgentCommand(newMessages, UpdatePolicy.REPLACE);
 		}
+
 	}
 
 	/**
 	 * MessagesModelHook implementation that uses APPEND policy
 	 */
-	@HookPositions({HookPosition.BEFORE_MODEL})
+	@HookPositions({ HookPosition.BEFORE_MODEL })
 	private static class AppendPolicyMessagesHook extends MessagesModelHook {
+
 		@Override
 		public String getName() {
 			return "append_policy_hook";
 		}
 
 		@Override
-		public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
+		public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 			// Append a new message to existing messages
-			List<Message> newMessages = new ArrayList<>();
-			newMessages.add(new UserMessage("这是追加的消息"));
+			List<ChatMessage> newMessages = new ArrayList<>();
+			newMessages.add(ChatMessage.user("这是追加的消息"));
 			return new AgentCommand(newMessages, UpdatePolicy.APPEND);
 		}
+
 	}
 
 	/**
 	 * MessagesModelHook implementation that jumps to end
 	 */
-	@HookPositions({HookPosition.BEFORE_MODEL})
+	@HookPositions({ HookPosition.BEFORE_MODEL })
 	private static class JumpToEndMessagesHook extends MessagesModelHook {
+
 		private final String name;
+
 		private final AtomicInteger beforeModelCallCount;
+
 		private final AtomicInteger afterModelCallCount;
 
 		public JumpToEndMessagesHook(String name, AtomicInteger beforeModelCallCount,
@@ -464,7 +475,7 @@ public class MessagesModelHookTest {
 		}
 
 		@Override
-		public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
+		public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 			beforeModelCallCount.incrementAndGet();
 			System.out.println("JumpToEndMessagesHook.beforeModel called - jumping to end");
 			// Return jumpTo end to skip subsequent hooks and model call
@@ -472,20 +483,24 @@ public class MessagesModelHookTest {
 		}
 
 		@Override
-		public AgentCommand afterModel(List<Message> previousMessages, RunnableConfig config) {
+		public AgentCommand afterModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 			afterModelCallCount.incrementAndGet();
 			System.out.println("JumpToEndMessagesHook.afterModel called");
 			return new AgentCommand(previousMessages);
 		}
+
 	}
 
 	/**
 	 * Test ModelHook implementation for testing
 	 */
-	@HookPositions({HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL})
+	@HookPositions({ HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL })
 	private static class TestModelHook extends ModelHook {
+
 		private final String name;
+
 		private final AtomicInteger beforeModelCallCount;
+
 		private final AtomicInteger afterModelCallCount;
 
 		public TestModelHook(String name, AtomicInteger beforeModelCallCount, AtomicInteger afterModelCallCount) {
@@ -512,11 +527,12 @@ public class MessagesModelHookTest {
 			System.out.println("TestModelHook.afterModel called");
 			return CompletableFuture.completedFuture(Map.of());
 		}
+
 	}
 
 	/**
-	 * Test 7: Verify JumpTo.end works in afterModel hook when agent has tools
-	 * This test addresses the bug where JumpTo in afterModel was ignored when tools were configured
+	 * Test 7: Verify JumpTo.end works in afterModel hook when agent has tools This test
+	 * addresses the bug where JumpTo in afterModel was ignored when tools were configured
 	 */
 	@Test
 	public void testJumpToEndInAfterModelWithTools() throws Exception {
@@ -524,8 +540,9 @@ public class MessagesModelHookTest {
 		AtomicInteger toolCallCount = new AtomicInteger(0);
 
 		// Hook that only overrides afterModel and uses JumpTo.end
-		@HookPositions({HookPosition.AFTER_MODEL})
+		@HookPositions({ HookPosition.AFTER_MODEL })
 		class AfterModelOnlyJumpHook extends MessagesModelHook {
+
 			@Override
 			public String getName() {
 				return "after_model_jump_hook";
@@ -537,38 +554,36 @@ public class MessagesModelHookTest {
 			}
 
 			@Override
-			public AgentCommand afterModel(List<Message> previousMessages, RunnableConfig config) {
+			public AgentCommand afterModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 				afterModelCallCount.incrementAndGet();
 				System.out.println("AfterModelOnlyJumpHook.afterModel called - jumping to end");
 				// Return JumpTo.end to skip tool execution and end immediately
 				return new AgentCommand(JumpTo.end, previousMessages);
 			}
+
 		}
 
 		AfterModelOnlyJumpHook hook = new AfterModelOnlyJumpHook();
 
 		// Create a simple test tool
 		ToolCallback testTool = FunctionToolCallback.builder("test_tool", args -> {
-					toolCallCount.incrementAndGet();
-					System.out.println("Test tool called - this should NOT happen!");
-					return "Tool executed";
-				})
-				.description("A test tool")
-				.inputType(String.class)
-				.build();
+			toolCallCount.incrementAndGet();
+			System.out.println("Test tool called - this should NOT happen!");
+			return "Tool executed";
+		}).description("A test tool").inputType(String.class).build();
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("test-agent-after-model-jump-with-tools")
-				.model(chatModel)
-				.tools(List.of(testTool))
-				.hooks(List.of(hook))
-				.saver(new MemorySaver())
-				.build();
+			.name("test-agent-after-model-jump-with-tools")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(List.of(testTool)))
+			.hooks(List.of(hook))
+			.saver(new MemorySaver())
+			.build();
 
 		System.out.println("\n=== 测试 afterModel 中的 JumpTo.end（配置了工具）===");
 
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("你好，请简单介绍一下自己。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("你好，请简单介绍一下自己。"));
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
@@ -593,8 +608,9 @@ public class MessagesModelHookTest {
 		AtomicInteger toolCallCount = new AtomicInteger(0);
 
 		// Hook that only overrides afterModel and uses JumpTo.model on first call
-		@HookPositions({HookPosition.AFTER_MODEL})
+		@HookPositions({ HookPosition.AFTER_MODEL })
 		class AfterModelJumpToModelHook extends MessagesModelHook {
+
 			@Override
 			public String getName() {
 				return "after_model_jump_to_model_hook";
@@ -606,7 +622,7 @@ public class MessagesModelHookTest {
 			}
 
 			@Override
-			public AgentCommand afterModel(List<Message> previousMessages, RunnableConfig config) {
+			public AgentCommand afterModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 				afterModelCallCount.incrementAndGet();
 				System.out.println("AfterModelJumpToModelHook.afterModel called, count: " + afterModelCallCount.get());
 
@@ -614,24 +630,23 @@ public class MessagesModelHookTest {
 				if (afterModelCallCount.get() == 1) {
 					System.out.println("First call - jumping back to model");
 					return new AgentCommand(JumpTo.model, previousMessages);
-				} else {
+				}
+				else {
 					System.out.println("Second call - ending");
 					return new AgentCommand(JumpTo.end, previousMessages);
 				}
 			}
+
 		}
 
 		AfterModelJumpToModelHook hook = new AfterModelJumpToModelHook();
 
 		// Create a test tool (required to trigger makeModelToTools routing)
 		ToolCallback testTool = FunctionToolCallback.builder("test_tool", args -> {
-					toolCallCount.incrementAndGet();
-					System.out.println("Test tool called");
-					return "Tool executed";
-				})
-				.description("A test tool")
-				.inputType(String.class)
-				.build();
+			toolCallCount.incrementAndGet();
+			System.out.println("Test tool called");
+			return "Tool executed";
+		}).description("A test tool").inputType(String.class).build();
 
 		// Track model calls
 		ChatModel trackingChatModel = new ChatModel() {
@@ -649,17 +664,17 @@ public class MessagesModelHookTest {
 		};
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("test-agent-after-model-jump-to-model")
-				.model(trackingChatModel)
-				.tools(List.of(testTool))
-				.hooks(List.of(hook))
-				.saver(new MemorySaver())
-				.build();
+			.name("test-agent-after-model-jump-to-model")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(trackingChatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(List.of(testTool)))
+			.hooks(List.of(hook))
+			.saver(new MemorySaver())
+			.build();
 
 		System.out.println("\n=== 测试 afterModel 中的 JumpTo.model ===");
 
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("你好"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("你好"));
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
@@ -674,4 +689,5 @@ public class MessagesModelHookTest {
 		System.out.println("工具调用次数: " + toolCallCount.get());
 		System.out.println("成功验证 afterModel 中的 JumpTo.model 在有工具配置时正常工作");
 	}
+
 }

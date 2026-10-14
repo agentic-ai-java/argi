@@ -16,6 +16,9 @@
 
 package io.github.agentic.ai.agent.studio.controller;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.agent.studio.dto.GraphRunRequest;
 import io.github.agentic.ai.agent.studio.dto.GraphRunResponse;
 import io.github.agentic.ai.agent.studio.dto.messages.MessageDTO;
@@ -28,9 +31,7 @@ import io.github.agentic.ai.graph.action.InterruptionMetadata;
 import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.metadata.Usage;
+import io.github.agentic.ai.api.chat.Usage;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -51,11 +52,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.springframework.ai.chat.messages.UserMessage;
-
 /**
- * Controller handling graph execution endpoints. Registered only when a {@link GraphLoader}
- * bean exists. Uses independent logic from Agent execution.
+ * Controller handling graph execution endpoints. Registered only when a
+ * {@link GraphLoader} bean exists. Uses independent logic from Agent execution.
  */
 @RestController
 public class GraphExecutionController {
@@ -79,8 +78,8 @@ public class GraphExecutionController {
 	}
 
 	/**
-	 * Executes a graph run and streams the resulting events using Server-Sent Events (SSE).
-	 *
+	 * Executes a graph run and streams the resulting events using Server-Sent Events
+	 * (SSE).
 	 * @param request The GraphRunRequest containing run details.
 	 * @return A Flux that streams events to the client in standard SSE format.
 	 */
@@ -107,14 +106,14 @@ public class GraphExecutionController {
 			else {
 				String content = (request.newMessage != null && request.newMessage.getContent() != null)
 						? request.newMessage.getContent() : "";
-				inputs = Map.of("input", content, "messages", List.of(new UserMessage(content)));
+				inputs = Map.of("input", content, "messages", List.of(ChatMessage.user(content)));
 			}
 
 			RunnableConfig runnableConfig = RunnableConfig.builder()
-					.threadId(request.threadId)
-					.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, "graph:" + request.graphName)
-					.addMetadata("user_id", request.userId != null ? request.userId : "user-001")
-					.build();
+				.threadId(request.threadId)
+				.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, "graph:" + request.graphName)
+				.addMetadata("user_id", request.userId != null ? request.userId : "user-001")
+				.build();
 
 			Flux<NodeOutput> graphStream = graph.stream(inputs, runnableConfig);
 
@@ -122,78 +121,70 @@ public class GraphExecutionController {
 		}
 		catch (Exception e) {
 			log.error("Error during graph run for thread {}", request.threadId, e);
-			return Flux.error(new ResponseStatusException(
-					org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR, "Graph run failed", e));
+			return Flux.error(new ResponseStatusException(org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR,
+					"Graph run failed", e));
 		}
 	}
 
 	private Flux<ServerSentEvent<String>> executeGraph(Flux<NodeOutput> graphStream) {
 		return graphStream
-				.filter(nodeOutput -> !(nodeOutput instanceof StreamingOutput<?> so
-						&& so.getOutputType() == OutputType.AGENT_MODEL_FINISHED))
-				.map(nodeOutput -> {
-					String node = nodeOutput.node();
-					String agentName = nodeOutput.agent();
-					Usage tokenUsage = nodeOutput.tokenUsage();
-					Map<String, Object> stateData = nodeOutput.state() != null
-							? new LinkedHashMap<>(nodeOutput.state().data()) : null;
-					GraphRunResponse graphResponse = null;
+			.filter(nodeOutput -> !(nodeOutput instanceof StreamingOutput<?> so
+					&& so.getOutputType() == OutputType.AGENT_MODEL_FINISHED))
+			.concatMapIterable(StreamingMessages::split)
+			.map(nodeOutput -> {
+				String node = nodeOutput.node();
+				String agentName = nodeOutput.agent();
+				Usage tokenUsage = nodeOutput.tokenUsage();
+				Map<String, Object> stateData = nodeOutput.state() != null
+						? new LinkedHashMap<>(nodeOutput.state().data()) : null;
+				GraphRunResponse graphResponse = null;
 
-					if (nodeOutput instanceof StreamingOutput<?> streamingOutput) {
-						Message message = streamingOutput.message();
-						if (message == null) {
-							graphResponse = new GraphRunResponse(node, agentName, (MessageDTO) null, tokenUsage, "",
-									stateData);
-						}
-						else if (message instanceof AssistantMessage assistantMessage) {
-							if (assistantMessage.hasToolCalls()) {
-								graphResponse = new GraphRunResponse(node, agentName, assistantMessage, tokenUsage, "",
-										stateData);
-							}
-							else {
-								graphResponse = new GraphRunResponse(node, agentName, assistantMessage, tokenUsage,
-										assistantMessage.getText(), stateData);
-							}
-						}
-						else {
-							graphResponse = new GraphRunResponse(node, agentName, message, tokenUsage, "", stateData);
-						}
-					}
-					else if (nodeOutput instanceof InterruptionMetadata interruptionMetadata) {
-						ToolRequestConfirmMessageDTO toolRequestMessage =
-								MessageDTO.MessageDTOFactory.fromInterruptionMetadata(interruptionMetadata);
-						graphResponse = new GraphRunResponse(node, agentName, toolRequestMessage, tokenUsage, "",
-								stateData);
-					}
-					else {
+				if (nodeOutput instanceof StreamingOutput<?> streamingOutput) {
+					ChatMessage message = streamingOutput.messages().isEmpty() ? null
+							: streamingOutput.messages().get(0);
+					if (message == null) {
 						graphResponse = new GraphRunResponse(node, agentName, (MessageDTO) null, tokenUsage, "",
 								stateData);
 					}
+					else {
+						graphResponse = new GraphRunResponse(node, agentName, message, tokenUsage,
+								message.role() == ChatRole.ASSISTANT && message.toolCalls().isEmpty() ? message.text()
+										: "",
+								stateData);
+					}
+				}
+				else if (nodeOutput instanceof InterruptionMetadata interruptionMetadata) {
+					ToolRequestConfirmMessageDTO toolRequestMessage = MessageDTO.MessageDTOFactory
+						.fromInterruptionMetadata(interruptionMetadata);
+					graphResponse = new GraphRunResponse(node, agentName, toolRequestMessage, tokenUsage, "",
+							stateData);
+				}
+				else {
+					graphResponse = new GraphRunResponse(node, agentName, (MessageDTO) null, tokenUsage, "", stateData);
+				}
 
-					try {
-						if (graphResponse != null) {
-							String jsonData = mapper.writeValueAsString(graphResponse);
-							return ServerSentEvent.<String>builder().data(jsonData).build();
-						}
+				try {
+					if (graphResponse != null) {
+						String jsonData = mapper.writeValueAsString(graphResponse);
+						return ServerSentEvent.<String>builder().data(jsonData).build();
 					}
-					catch (Exception e) {
-						log.error("Failed to serialize GraphRunResponse to JSON", e);
-						return ServerSentEvent.<String>builder()
-								.data("{\"error\":\"Failed to serialize response\"}")
-								.build();
-					}
-					return ServerSentEvent.<String>builder().data("{}").build();
-				})
-				.onErrorResume(error -> {
-					log.error("Error occurred during graph stream execution", error);
-					String errorMessage = error.getMessage() != null ? error.getMessage() : "Unknown error occurred";
-					String errorType = error.getClass().getSimpleName();
-					String errorJson = String.format(
-							"{\"error\":true,\"errorType\":\"%s\",\"errorMessage\":\"%s\"}",
-							errorType.replace("\"", "\\\""),
-							errorMessage.replace("\"", "\\\"").replace("\n", "\\n"));
-					return Flux.just(
-							ServerSentEvent.<String>builder().event("error").data(errorJson).build());
-				});
+				}
+				catch (Exception e) {
+					log.error("Failed to serialize GraphRunResponse to JSON", e);
+					return ServerSentEvent.<String>builder()
+						.data("{\"error\":\"Failed to serialize response\"}")
+						.build();
+				}
+				return ServerSentEvent.<String>builder().data("{}").build();
+			})
+			.onErrorResume(error -> {
+				log.error("Error occurred during graph stream execution", error);
+				String errorMessage = error.getMessage() != null ? error.getMessage() : "Unknown error occurred";
+				String errorType = error.getClass().getSimpleName();
+				String errorJson = String.format("{\"error\":true,\"errorType\":\"%s\",\"errorMessage\":\"%s\"}",
+						errorType.replace("\"", "\\\""), errorMessage.replace("\"", "\\\"").replace("\n", "\\n"));
+				return Flux.just(ServerSentEvent.<String>builder().event("error").data(errorJson).build());
+			});
 	}
+
 }

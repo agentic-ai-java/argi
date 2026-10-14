@@ -20,7 +20,8 @@ import io.github.agentic.ai.graph.agent.interceptor.ToolCallResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
@@ -201,33 +202,45 @@ class ToolCallResponseTest {
 	}
 
 	@Nested
-	@DisplayName("toToolResponse() Conversion Tests")
-	class ToToolResponseTests {
+	@DisplayName("toMessage() Conversion Tests")
+	class ToMessageTests {
 
 		@Test
-		@DisplayName("toToolResponse() should convert success response correctly")
-		void toToolResponse_convertsSuccessResponse() {
+		@DisplayName("toMessage() should convert success response correctly")
+		void toMessage_convertsSuccessResponse() {
 			ToolCallResponse response = ToolCallResponse.of("call-id", "myTool", "my result");
 
-			ToolResponseMessage.ToolResponse toolResponse = response.toToolResponse();
+			ChatMessage toolResponse = response.toMessage();
 
 			assertNotNull(toolResponse);
-			assertEquals("call-id", toolResponse.id());
-			assertEquals("myTool", toolResponse.name());
-			assertEquals("my result", toolResponse.responseData());
+			assertEquals(ChatRole.TOOL, toolResponse.role());
+			assertEquals("call-id", toolResponse.toolCallId());
+			assertEquals("myTool", toolResponse.toolName());
+			assertEquals("my result", toolResponse.text());
+			assertEquals(false, toolResponse.metadata().get("tool.error"));
 		}
 
 		@Test
-		@DisplayName("toToolResponse() should convert error response correctly")
-		void toToolResponse_convertsErrorResponse() {
-			ToolCallResponse response = ToolCallResponse.error("error-id", "errorTool", "Something failed");
+		@DisplayName("toMessage() should preserve error and application metadata")
+		void toMessage_convertsErrorResponse() {
+			ToolCallResponse response = ToolCallResponse.error("error-id", "errorTool", "Something failed",
+					Map.of("failureKind", "timeout", "auditId", "audit-1", "tool.error", false));
 
-			ToolResponseMessage.ToolResponse toolResponse = response.toToolResponse();
+			ChatMessage toolResponse = response.toMessage();
 
 			assertNotNull(toolResponse);
-			assertEquals("error-id", toolResponse.id());
-			assertEquals("errorTool", toolResponse.name());
-			assertEquals("Error: Something failed", toolResponse.responseData());
+			assertEquals("error-id", toolResponse.toolCallId());
+			assertEquals("errorTool", toolResponse.toolName());
+			assertEquals("Error: Something failed", toolResponse.text());
+			assertEquals(true, toolResponse.metadata().get("tool.error"));
+			assertEquals("timeout", toolResponse.metadata().get("failureKind"));
+			assertEquals("audit-1", toolResponse.metadata().get("auditId"));
+		}
+
+		@Test
+		void toMessage_preservesEmptyAndNullContent() {
+			assertTrue(ToolCallResponse.of("id", "tool", null).toMessage().content().isEmpty());
+			assertEquals("", ToolCallResponse.of("id", "tool", "").toMessage().text());
 		}
 
 	}

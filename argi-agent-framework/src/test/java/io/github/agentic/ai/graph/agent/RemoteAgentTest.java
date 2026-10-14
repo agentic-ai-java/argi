@@ -26,9 +26,9 @@ import java.util.HashMap;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class RemoteAgentTest {
 
 	private ChatModel chatModel;

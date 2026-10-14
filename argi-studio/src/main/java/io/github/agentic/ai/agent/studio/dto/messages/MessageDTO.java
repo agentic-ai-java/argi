@@ -15,33 +15,25 @@
  */
 package io.github.agentic.ai.agent.studio.dto.messages;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.graph.action.InterruptionMetadata;
 import io.github.agentic.ai.graph.serializer.AgentInstructionMessage;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
 /**
- * Base interface for message DTOs with polymorphic serialization support.
- * Uses Jackson annotations for type discrimination during JSON serialization/deserialization.
+ * Base interface for message DTOs with polymorphic serialization support. Uses Jackson
+ * annotations for type discrimination during JSON serialization/deserialization.
  */
-@JsonTypeInfo(
-		use = JsonTypeInfo.Id.NAME,
-		include = JsonTypeInfo.As.PROPERTY,
-		property = "messageType"
-)
-@JsonSubTypes({
-		@JsonSubTypes.Type(value = AssistantMessageDTO.class, name = "assistant"),
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "messageType")
+@JsonSubTypes({ @JsonSubTypes.Type(value = AssistantMessageDTO.class, name = "assistant"),
 		@JsonSubTypes.Type(value = UserMessageDTO.class, name = "user"),
 		@JsonSubTypes.Type(value = ToolResponseMessageDTO.class, name = "tool"),
 		@JsonSubTypes.Type(value = ToolRequestMessageDTO.class, name = "tool-request"),
-		@JsonSubTypes.Type(value = ToolRequestConfirmMessageDTO.class, name = "tool-confirm")
-})
+		@JsonSubTypes.Type(value = ToolRequestConfirmMessageDTO.class, name = "tool-confirm") })
 public interface MessageDTO {
 
 	/**
@@ -55,49 +47,59 @@ public interface MessageDTO {
 	String getContent();
 
 	/**
-	 * Factory class for converting between Spring AI Message and DTO types.
+	 * Factory class for converting between provider-neutral ChatMessage and DTO types.
 	 */
 	class MessageDTOFactory {
 
-		/**
-		 * Convert Spring AI Message to appropriate DTO type.
-		 */
-		public static MessageDTO fromMessage(Message message) {
-			if (message == null) {
+		/** Converts neutral output without constructing provider-native messages. */
+		public static MessageDTO fromChatMessage(ChatMessage message) {
+			if (message == null || AgentInstructionMessage.isTemplate(message)) {
 				return null;
 			}
-
-			// AgentInstructionMessage carries an agent's instruction (a system-prompt-like
-			// directive injected by InstructionAgentHook). It's intended for the LLM, not
-			// the UI, so we hide it from the rendered transcript by returning null here.
-			if (message instanceof AgentInstructionMessage) {
-				return null;
-			}
-
-			if (message instanceof AssistantMessage assistantMessage) {
-				if (assistantMessage.hasToolCalls()) {
-					return new ToolRequestMessageDTO(assistantMessage);
+			return switch (message.role()) {
+				case SYSTEM -> null;
+				case USER -> new UserMessageDTO(message);
+				case ASSISTANT -> {
+					if (message.toolCalls().isEmpty()) {
+						AssistantMessageDTO dto = new AssistantMessageDTO(message.text());
+						dto.setMetadata(message.metadata());
+						yield dto;
+					}
+					ToolRequestMessageDTO dto = new ToolRequestMessageDTO(message.text());
+					dto.setMetadata(message.metadata());
+					dto.setToolCalls(message.toolCalls().stream().map(call -> {
+						ToolRequestMessageDTO.ToolCallDTO tool = new ToolRequestMessageDTO.ToolCallDTO();
+						tool.setId(call.id());
+						tool.setName(call.name());
+						tool.setArguments(call.arguments());
+						tool.setType("function");
+						return tool;
+					}).toList());
+					yield dto;
 				}
-				else {
-					return new AssistantMessageDTO(assistantMessage);
+				case TOOL -> {
+					ToolResponseMessageDTO dto = new ToolResponseMessageDTO(message.text());
+					dto.setMetadata(message.metadata());
+					ToolResponseMessageDTO.ToolResponseDTO result = new ToolResponseMessageDTO.ToolResponseDTO();
+					result.setId(message.toolCallId());
+					result.setName(message.toolName());
+					result.setResponseData(message.text());
+					dto.setResponses(List.of(result));
+					yield dto;
 				}
-			}
-			else if (message instanceof UserMessage) {
-				return new UserMessageDTO((UserMessage) message);
-			}
-			else if (message instanceof ToolResponseMessage) {
-				return new ToolResponseMessageDTO((ToolResponseMessage) message);
-			}
-			else {
-				throw new IllegalArgumentException(
-						"Unsupported message type: " + message.getClass().getName()
-				);
-			}
+			};
 		}
 
 		/**
-		 * Convert InterruptionMetadata to ToolRequestMessageDTO.
-		 * This is a specialized method for handling interruption metadata from agent execution.
+		 * Convert provider-neutral ChatMessage to appropriate DTO type.
+		 */
+		public static MessageDTO fromMessage(ChatMessage message) {
+			return fromChatMessage(message);
+		}
+
+		/**
+		 * Convert InterruptionMetadata to ToolRequestMessageDTO. This is a specialized
+		 * method for handling interruption metadata from agent execution.
 		 */
 		public static ToolRequestConfirmMessageDTO fromInterruptionMetadata(InterruptionMetadata interruptionMetadata) {
 			if (interruptionMetadata == null) {
@@ -107,9 +109,9 @@ public interface MessageDTO {
 		}
 
 		/**
-		 * Convert DTO to Spring AI Message.
+		 * Convert DTO to provider-neutral ChatMessage.
 		 */
-		public static Message toMessage(MessageDTO dto) {
+		public static ChatMessage toMessage(MessageDTO dto) {
 			if (dto == null) {
 				return null;
 			}
@@ -127,11 +129,10 @@ public interface MessageDTO {
 				return ((ToolResponseMessageDTO) dto).toToolResponseMessage();
 			}
 			else {
-				throw new IllegalArgumentException(
-						"Unsupported DTO type: " + dto.getClass().getName()
-				);
+				throw new IllegalArgumentException("Unsupported DTO type: " + dto.getClass().getName());
 			}
 		}
-	}
-}
 
+	}
+
+}

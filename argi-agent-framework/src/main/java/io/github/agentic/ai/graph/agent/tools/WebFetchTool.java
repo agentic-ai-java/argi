@@ -32,6 +32,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.function.BiFunction;
@@ -55,10 +56,17 @@ import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRequest;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.GenerationOptions;
+import io.github.agentic.ai.api.chat.ToolChoice;
+import io.github.agentic.ai.graph.utils.PromptTemplate;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 import org.springframework.util.StringUtils;
 
 /**
@@ -159,21 +167,16 @@ public class WebFetchTool implements BiFunction<WebFetchTool.Request, ToolContex
 		this.addressResolver = addressResolver != null ? addressResolver : InetAddress::getAllByName;
 		this.httpTransport = httpTransport != null ? httpTransport : new ApachePinnedHttpTransport();
 		this.htmlToMarkdownConverter = FlexmarkHtmlConverter.builder().build();
-		this.urlCache = Caffeine.newBuilder()
-			.maximumSize(maxCacheSize)
-			.expireAfterWrite(CACHE_TTL)
-			.build();
+		this.urlCache = Caffeine.newBuilder().maximumSize(maxCacheSize).expireAfterWrite(CACHE_TTL).build();
 	}
 
 	@JsonClassDescription("Request to fetch and process web content")
 	public record Request(
-			@JsonProperty(required = true, value = "url")
-			@JsonPropertyDescription("The URL to fetch content from")
-			String url,
+			@JsonProperty(required = true,
+					value = "url") @JsonPropertyDescription("The URL to fetch content from") String url,
 
-			@JsonProperty(required = true, value = "prompt")
-			@JsonPropertyDescription("The prompt to run on the fetched content (e.g., 'Summarize the main points', 'Extract the key takeaways')")
-			String prompt) {
+			@JsonProperty(required = true,
+					value = "prompt") @JsonPropertyDescription("The prompt to run on the fetched content (e.g., 'Summarize the main points', 'Extract the key takeaways')") String prompt) {
 	}
 
 	@Override
@@ -358,7 +361,8 @@ public class WebFetchTool implements BiFunction<WebFetchTool.Request, ToolContex
 			throw new WebFetchException("Only HTTP and HTTPS URLs are supported", null);
 		}
 
-		return scheme.equals("http") ? uri.resolve("https://" + uri.getRawAuthority() + rawPathQueryFragment(uri)) : uri;
+		return scheme.equals("http") ? uri.resolve("https://" + uri.getRawAuthority() + rawPathQueryFragment(uri))
+				: uri;
 	}
 
 	private String rawPathQueryFragment(URI uri) {
@@ -428,32 +432,44 @@ public class WebFetchTool implements BiFunction<WebFetchTool.Request, ToolContex
 	}
 
 	private static Optional<Charset> extractCharset(FetchResponse response) {
-		return response.firstHeader("Content-Type")
-			.flatMap(contentType -> {
-				Matcher matcher = CHARSET_PATTERN.matcher(contentType);
-				if (matcher.find()) {
-					String charsetName = matcher.group(1);
-					try {
-						return Optional.of(Charset.forName(charsetName));
-					}
-					catch (Exception e) {
-						logger.warn("Unsupported charset '{}', falling back to UTF-8", charsetName);
-						return Optional.empty();
-					}
+		return response.firstHeader("Content-Type").flatMap(contentType -> {
+			Matcher matcher = CHARSET_PATTERN.matcher(contentType);
+			if (matcher.find()) {
+				String charsetName = matcher.group(1);
+				try {
+					return Optional.of(Charset.forName(charsetName));
 				}
-				return Optional.empty();
-			});
+				catch (Exception e) {
+					logger.warn("Unsupported charset '{}', falling back to UTF-8", charsetName);
+					return Optional.empty();
+				}
+			}
+			return Optional.empty();
+		});
 	}
 
 	private String summarize(String content, String userQuery) {
 		try {
-			String response = this.chatClient.prompt()
-				.user(u -> u.text(FETCH_SUMMARIZE_PROMPT).param("content", content).param("userQuery", userQuery))
-				.call()
-				.content();
-			return response != null ? response : "Error: Received empty response from AI model";
+			String prompt = PromptTemplate.of(FETCH_SUMMARIZE_PROMPT)
+				.render(Map.of("content", content, "userQuery", userQuery == null ? "" : userQuery));
+			ChatResponse response = this.chatClient.callBlocking(new ChatRequest(List.of(ChatMessage.user(prompt)),
+					List.of(), GenerationOptions.builder().toolChoice(ToolChoice.none()).build(), Map.of()));
+			if (response == null || response.messages().size() != 1
+					|| response.messages().get(0).role() != ChatRole.ASSISTANT || response.text().isBlank()) {
+				return "Error: Received empty or invalid response from AI model";
+			}
+			if (!response.toolCalls().isEmpty() || !response.messages().get(0).toolCalls().isEmpty()) {
+				throw new IllegalStateException("Web summary must not return tool calls");
+			}
+			return response.text();
 		}
 		catch (Exception e) {
+			if (e instanceof CancellationException cancelled) {
+				throw cancelled;
+			}
+			if (Thread.currentThread().isInterrupted()) {
+				throw new CancellationException("Web summary interrupted");
+			}
 			logger.error("Failed to summarize content", e);
 			return "Error summarizing content: " + e.getMessage();
 		}
@@ -509,7 +525,8 @@ public class WebFetchTool implements BiFunction<WebFetchTool.Request, ToolContex
 				.setConnectTimeout(Timeout.ofMilliseconds(DEFAULT_CONNECT_TIMEOUT.toMillis()))
 				.setResponseTimeout(Timeout.ofMilliseconds(DEFAULT_REQUEST_TIMEOUT.toMillis()))
 				.build();
-			try (PoolingHttpClientConnectionManager connectionManager = PoolingHttpClientConnectionManagerBuilder.create()
+			try (PoolingHttpClientConnectionManager connectionManager = PoolingHttpClientConnectionManagerBuilder
+				.create()
 				.setDnsResolver(new PinnedDnsResolver(uri.getHost(), pinnedAddresses))
 				.build();
 					CloseableHttpClient client = HttpClients.custom()
@@ -653,8 +670,8 @@ public class WebFetchTool implements BiFunction<WebFetchTool.Request, ToolContex
 			return this;
 		}
 
-		public ToolCallback build() {
-			return FunctionToolCallback.builder(this.name, buildWebFetchTool())
+		public Tool build() {
+			return TypedTool.builder(this.name, buildWebFetchTool())
 				.description(this.description)
 				.inputType(Request.class)
 				.build();

@@ -23,24 +23,28 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 
 import com.github.benmanes.caffeine.cache.Cache;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRequest;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.ToolChoice;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.prompt.Prompt;
+import org.mockito.ArgumentCaptor;
+import io.github.agentic.ai.api.tool.ToolContext;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class WebFetchToolTest {
@@ -49,12 +53,7 @@ class WebFetchToolTest {
 
 	@BeforeEach
 	void setUp() {
-		ChatModel chatModel = mock(ChatModel.class);
-		ChatResponse mockResponse = new ChatResponse(
-				List.of(new Generation(new AssistantMessage("Mocked summary"))));
-		when(chatModel.call(any(Prompt.class))).thenReturn(mockResponse);
-
-		ChatClient chatClient = ChatClient.builder(chatModel).build();
+		ChatClient chatClient = chatClient("Mocked summary");
 		webFetchTool = WebFetchTool.builder(chatClient)
 			.maxContentLength(100_000)
 			.maxCacheSize(100)
@@ -64,14 +63,16 @@ class WebFetchToolTest {
 
 	@Test
 	void testEmptyUrlReturnsError() {
-		String result = webFetchTool.apply(new WebFetchTool.Request("", "Summarize"), new ToolContext(Collections.emptyMap()));
+		String result = webFetchTool.apply(new WebFetchTool.Request("", "Summarize"),
+				new ToolContext(Collections.emptyMap()));
 		assertTrue(result.startsWith("Error:"));
 		assertTrue(result.contains("URL cannot be empty"));
 	}
 
 	@Test
 	void testBlankUrlReturnsError() {
-		String result = webFetchTool.apply(new WebFetchTool.Request("   ", "Summarize"), new ToolContext(Collections.emptyMap()));
+		String result = webFetchTool.apply(new WebFetchTool.Request("   ", "Summarize"),
+				new ToolContext(Collections.emptyMap()));
 		assertTrue(result.startsWith("Error:"));
 		assertTrue(result.contains("URL cannot be empty"));
 	}
@@ -103,11 +104,10 @@ class WebFetchToolTest {
 
 	@Test
 	void rejectsRedirectToLoopbackUrl() throws Exception {
-		ChatModel chatModel = mock(ChatModel.class);
-		ChatClient chatClient = ChatClient.builder(chatModel).build();
-		FakeAddressResolver resolver = new FakeAddressResolver(Map.of(
-				"93.184.216.34", new InetAddress[] { InetAddress.getByName("93.184.216.34") },
-				"127.0.0.1", new InetAddress[] { InetAddress.getByName("127.0.0.1") }));
+		ChatClient chatClient = mock(ChatClient.class);
+		FakeAddressResolver resolver = new FakeAddressResolver(
+				Map.of("93.184.216.34", new InetAddress[] { InetAddress.getByName("93.184.216.34") }, "127.0.0.1",
+						new InetAddress[] { InetAddress.getByName("127.0.0.1") }));
 		CapturingTransport transport = new CapturingTransport(WebFetchTool.FetchResponse.of(302,
 				URI.create("https://93.184.216.34"), Map.of("Location", List.of("https://127.0.0.1/admin")), ""));
 		WebFetchTool tool = WebFetchTool.builder(chatClient)
@@ -127,8 +127,8 @@ class WebFetchToolTest {
 	@Test
 	void pinsFetchToValidatedAddressWhileKeepingOriginalHost() throws Exception {
 		ChatClient chatClient = chatClient("Pinned summary");
-		FakeAddressResolver resolver = new FakeAddressResolver(Map.of("example.com",
-				new InetAddress[] { InetAddress.getByName("93.184.216.34") }));
+		FakeAddressResolver resolver = new FakeAddressResolver(
+				Map.of("example.com", new InetAddress[] { InetAddress.getByName("93.184.216.34") }));
 		CapturingTransport transport = new CapturingTransport(WebFetchTool.FetchResponse.of(200,
 				URI.create("https://example.com/article"), Map.of(), "<html>ok</html>"));
 
@@ -150,9 +150,9 @@ class WebFetchToolTest {
 	@Test
 	void resolvesAndPinsEachRedirectHop() throws Exception {
 		ChatClient chatClient = chatClient("Redirect summary");
-		FakeAddressResolver resolver = new FakeAddressResolver(Map.of(
-				"example.com", new InetAddress[] { InetAddress.getByName("93.184.216.34") },
-				"example.org", new InetAddress[] { InetAddress.getByName("93.184.216.35") }));
+		FakeAddressResolver resolver = new FakeAddressResolver(
+				Map.of("example.com", new InetAddress[] { InetAddress.getByName("93.184.216.34") }, "example.org",
+						new InetAddress[] { InetAddress.getByName("93.184.216.35") }));
 		CapturingTransport transport = new CapturingTransport(
 				WebFetchTool.FetchResponse.of(302, URI.create("https://example.com/start"),
 						Map.of("Location", List.of("https://example.org/final")), ""),
@@ -179,14 +179,12 @@ class WebFetchToolTest {
 	@Test
 	void cacheKeyDistinguishesPromptsWithSameJavaHashCode() throws Exception {
 		assertEquals("FB".hashCode(), "Ea".hashCode());
-		ChatModel chatModel = mock(ChatModel.class);
-		when(chatModel.getOptions()).thenReturn(ChatOptions.builder().build());
-		when(chatModel.call(any(Prompt.class))).thenReturn(
-				new ChatResponse(List.of(new Generation(new AssistantMessage("First summary")))),
-				new ChatResponse(List.of(new Generation(new AssistantMessage("Second summary")))));
-		ChatClient chatClient = ChatClient.builder(chatModel).build();
-		FakeAddressResolver resolver = new FakeAddressResolver(Map.of("example.com",
-				new InetAddress[] { InetAddress.getByName("93.184.216.34") }));
+		ChatClient chatClient = mock(ChatClient.class, CALLS_REAL_METHODS);
+		when(chatClient.call(any(ChatRequest.class))).thenReturn(
+				CompletableFuture.completedFuture(response("First summary")),
+				CompletableFuture.completedFuture(response("Second summary")));
+		FakeAddressResolver resolver = new FakeAddressResolver(
+				Map.of("example.com", new InetAddress[] { InetAddress.getByName("93.184.216.34") }));
 		CapturingTransport transport = new CapturingTransport(
 				WebFetchTool.FetchResponse.of(200, URI.create("https://example.com/article"), Map.of(),
 						"<html>first</html>"),
@@ -213,8 +211,7 @@ class WebFetchToolTest {
 	@SuppressWarnings("unchecked")
 	void testCacheRespectsMaxCacheSize() throws Exception {
 		int maxCacheSize = 10;
-		ChatModel chatModel = mock(ChatModel.class);
-		ChatClient chatClient = ChatClient.builder(chatModel).build();
+		ChatClient chatClient = mock(ChatClient.class);
 		WebFetchTool tool = WebFetchTool.builder(chatClient).maxCacheSize(maxCacheSize).buildWebFetchTool();
 
 		Field cacheField = WebFetchTool.class.getDeclaredField("urlCache");
@@ -231,20 +228,65 @@ class WebFetchToolTest {
 	}
 
 	@Test
-	void testBuilderBuildsToolCallback() {
-		ChatModel chatModel = mock(ChatModel.class);
-		ChatClient chatClient = ChatClient.builder(chatModel).build();
-		var toolCallback = WebFetchTool.builder(chatClient).build();
-		assertNotNull(toolCallback);
+	void testBuilderBuildsNeutralTool() {
+		ChatClient chatClient = mock(ChatClient.class);
+		io.github.agentic.ai.api.tool.Tool tool = WebFetchTool.builder(chatClient).build();
+		assertEquals("web_fetch", tool.definition().name());
 	}
 
 	private static ChatClient chatClient(String responseContent) {
-		ChatModel chatModel = mock(ChatModel.class);
-		ChatResponse mockResponse = new ChatResponse(
-				List.of(new Generation(new AssistantMessage(responseContent))));
-		when(chatModel.getOptions()).thenReturn(ChatOptions.builder().build());
-		when(chatModel.call(any(Prompt.class))).thenReturn(mockResponse);
-		return ChatClient.builder(chatModel).build();
+		ChatClient client = mock(ChatClient.class, CALLS_REAL_METHODS);
+		when(client.call(any(ChatRequest.class)))
+			.thenReturn(CompletableFuture.completedFuture(response(responseContent)));
+		return client;
+	}
+
+	private static ChatResponse response(String text) {
+		return new ChatResponse(null, null, List.of(ChatMessage.assistant(text)), List.of(), null, null, Map.of());
+	}
+
+	@Test
+	void summaryUsesNeutralToolFreeRequestAndCachesResult() throws Exception {
+		ChatClient client = chatClient("Summary");
+		CapturingTransport transport = new CapturingTransport(WebFetchTool.FetchResponse.of(200,
+				URI.create("https://example.com/article"), Map.of(), "<html>Article content</html>"));
+		WebFetchTool tool = tool(client, transport);
+		var request = new WebFetchTool.Request("https://example.com/article", "Explain {topic}");
+		assertEquals("Summary", tool.apply(request, new ToolContext(Map.of())));
+		assertEquals("Summary", tool.apply(request, new ToolContext(Map.of())));
+		ArgumentCaptor<ChatRequest> captured = ArgumentCaptor.forClass(ChatRequest.class);
+		verify(client).call(captured.capture());
+		assertTrue(captured.getValue().tools().isEmpty());
+		assertEquals(ToolChoice.none(), captured.getValue().options().toolChoice());
+		assertTrue(captured.getValue().messages().get(0).text().contains("Article content"));
+		assertTrue(captured.getValue().messages().get(0).text().contains("Explain {topic}"));
+		assertEquals(1, transport.requestedUris.size());
+	}
+
+	@Test
+	void cancellationDoesNotBecomeACachedSummary() throws Exception {
+		ChatClient client = mock(ChatClient.class, CALLS_REAL_METHODS);
+		when(client.call(any(ChatRequest.class))).thenReturn(
+				CompletableFuture.failedFuture(new CancellationException("Cancelled")),
+				CompletableFuture.completedFuture(response("Recovered")));
+		var fetched = WebFetchTool.FetchResponse.of(200, URI.create("https://example.com/article"), Map.of(),
+				"<html>Article</html>");
+		CapturingTransport transport = new CapturingTransport(fetched, fetched);
+		WebFetchTool tool = tool(client, transport);
+		var request = new WebFetchTool.Request("https://example.com/article", "Summarize");
+		assertThrows(CancellationException.class, () -> tool.apply(request, new ToolContext(Map.of())));
+		assertEquals("Recovered", tool.apply(request, new ToolContext(Map.of())));
+		verify(client, times(2)).call(any(ChatRequest.class));
+		assertEquals(2, transport.requestedUris.size());
+	}
+
+	private static WebFetchTool tool(ChatClient client, CapturingTransport transport) throws Exception {
+		return WebFetchTool.builder(client)
+			.addressResolver(new FakeAddressResolver(
+					Map.of("example.com", new InetAddress[] { InetAddress.getByName("93.184.216.34") })))
+			.httpTransport(transport)
+			.maxRetries(0)
+			.buildWebFetchTool();
 	}
 
 	private static class FakeAddressResolver implements WebFetchTool.AddressResolver {
@@ -266,6 +308,7 @@ class WebFetchToolTest {
 			}
 			return addresses;
 		}
+
 	}
 
 	private static class CapturingTransport implements WebFetchTool.HttpTransport {
@@ -286,6 +329,7 @@ class WebFetchToolTest {
 			this.pinnedAddresses.add(pinnedAddresses);
 			return this.responses.get(this.requestedUris.size() - 1);
 		}
+
 	}
 
 }

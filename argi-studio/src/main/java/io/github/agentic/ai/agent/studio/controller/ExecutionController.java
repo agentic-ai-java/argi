@@ -31,10 +31,9 @@ import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 
 import org.jspecify.annotations.NonNull;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.metadata.Usage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.Usage;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -61,8 +60,11 @@ import reactor.core.publisher.Flux;
 public class ExecutionController {
 
 	private static final Logger log = LoggerFactory.getLogger(ExecutionController.class);
+
 	final ObjectMapper mapper = new ObjectMapper();
+
 	private final AgentLoader agentLoader;
+
 	private final StudioExecutionAccess executionAccess;
 
 	@Autowired
@@ -77,90 +79,98 @@ public class ExecutionController {
 
 	/**
 	 * Executes a non-streaming agent run for a given session and message.
-	 *
 	 * @param request The AgentRunRequest containing run details.
 	 * @return A list of events generated during the run.
 	 * @throws ResponseStatusException if the session is not found or the run fails.
 	 */
-//	@PostMapping("/run")
-//	public NodeOutput agentRun(@RequestBody AgentRunRequest request) {
-//		if (request.appName == null || request.appName.trim().isEmpty()) {
-//			log.warn("appName cannot be null or empty in POST /run request.");
-//			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or empty");
-//		}
-//		if (request.threadId == null || request.threadId.trim().isEmpty()) {
-//			log.warn("sessionId cannot be null or empty in POST /run request.");
-//			throw new ResponseStatusException(
-//					HttpStatus.BAD_REQUEST, "sessionId cannot be null or empty");
-//		}
-//		log.info("Request received for POST /run for session: {}", request.threadId);
-//
-//		try {
-//			BaseAgent agent = agentLoader.loadAgent(request.appName);
-//			RunnableConfig runnableConfig = RunnableConfig.builder().threadId(request.threadId)
-//					.addMetadata("user_id", request.userId).build();
-//			// request.stateDelta 目前用不到
-//			Optional<NodeOutput> state = agent.invokeAndGetOutput(request.newMessage, runnableConfig);
-//
-//			return state.orElseThrow(() -> {
-//				log.error("Agent run for session {} did not produce any output.", request.threadId);
-//				return new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent run produced no output");
-//			});
-//		}
-//		catch (Exception e) {
-//			log.error("Error during agent run for session {}", request.threadId, e);
-//			throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent run failed", e);
-//		}
-//	}
+	// @PostMapping("/run")
+	// public NodeOutput agentRun(@RequestBody AgentRunRequest request) {
+	// if (request.appName == null || request.appName.trim().isEmpty()) {
+	// log.warn("appName cannot be null or empty in POST /run request.");
+	// throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null
+	// or empty");
+	// }
+	// if (request.threadId == null || request.threadId.trim().isEmpty()) {
+	// log.warn("sessionId cannot be null or empty in POST /run request.");
+	// throw new ResponseStatusException(
+	// HttpStatus.BAD_REQUEST, "sessionId cannot be null or empty");
+	// }
+	// log.info("Request received for POST /run for session: {}", request.threadId);
+	//
+	// try {
+	// BaseAgent agent = agentLoader.loadAgent(request.appName);
+	// RunnableConfig runnableConfig = RunnableConfig.builder().threadId(request.threadId)
+	// .addMetadata("user_id", request.userId).build();
+	// // request.stateDelta 目前用不到
+	// Optional<NodeOutput> state = agent.invokeAndGetOutput(request.newMessage,
+	// runnableConfig);
+	//
+	// return state.orElseThrow(() -> {
+	// log.error("Agent run for session {} did not produce any output.",
+	// request.threadId);
+	// return new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent run
+	// produced no output");
+	// });
+	// }
+	// catch (Exception e) {
+	// log.error("Error during agent run for session {}", request.threadId, e);
+	// throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent run
+	// failed", e);
+	// }
+	// }
 
-//	@PostMapping(path = "/run_sse_saa",
-//			consumes = MediaType.APPLICATION_JSON_VALUE,
-//			produces = MediaType.TEXT_EVENT_STREAM_VALUE
-//	)
-//	public Flux<ServerSentEvent<String>> agentRunSseSaa(@RequestBody AgentRunRequest request) throws Exception {
-//		if (request.appName == null || request.appName.trim().isEmpty()) {
-//			log.warn(
-//					"appName cannot be null or empty in SSE request for appName: {}, session: {}",
-//					request.appName,
-//					request.threadId);
-//			return Flux.error(
-//					new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or empty"));
-//		}
-//		if (request.threadId == null || request.threadId.trim().isEmpty()) {
-//			log.warn(
-//					"sessionId cannot be null or empty in SSE request for appName: {}, session: {}",
-//					request.appName,
-//					request.threadId);
-//			return Flux.error(
-//					new ResponseStatusException(HttpStatus.BAD_REQUEST, "sessionId cannot be null or empty"));
-//		}
-//
-//		try {
-//			BaseAgent agent = agentLoader.loadAgent(request.appName);
-//			RunnableConfig runnableConfig = RunnableConfig.builder()
-//					.threadId(request.threadId)
-//					.addMetadata("user_id", request.userId)
-//					.build();
-//			// request.stateDelta 目前用不到
-//			Flux<NodeOutput> agentStream = agent.stream(request.newMessage, runnableConfig);
-//
-//			// Create a heartbeat Flux to keep connection alive (emit every 15 seconds)
-//			Flux<NodeOutput> heartBeat = Flux.interval(java.time.Duration.ofSeconds(5))
-//					.map(tick -> NodeOutput.of("heartbeat", OverAllStateBuilder.builder().build()))
-//					.takeUntilOther(agentStream.last());
-//
-//			// Merge the agent stream with heartbeat
-//			return Flux.merge(agentStream, heartBeat);
-//		}
-//		catch (Exception e) {
-//			log.error("Error during agent run for session {}", request.threadId, e);
-//			return Flux.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent run failed", e));
-//		}
-//	}
+	// @PostMapping(path = "/run_sse_saa",
+	// consumes = MediaType.APPLICATION_JSON_VALUE,
+	// produces = MediaType.TEXT_EVENT_STREAM_VALUE
+	// )
+	// public Flux<ServerSentEvent<String>> agentRunSseSaa(@RequestBody AgentRunRequest
+	// request) throws Exception {
+	// if (request.appName == null || request.appName.trim().isEmpty()) {
+	// log.warn(
+	// "appName cannot be null or empty in SSE request for appName: {}, session: {}",
+	// request.appName,
+	// request.threadId);
+	// return Flux.error(
+	// new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or
+	// empty"));
+	// }
+	// if (request.threadId == null || request.threadId.trim().isEmpty()) {
+	// log.warn(
+	// "sessionId cannot be null or empty in SSE request for appName: {}, session: {}",
+	// request.appName,
+	// request.threadId);
+	// return Flux.error(
+	// new ResponseStatusException(HttpStatus.BAD_REQUEST, "sessionId cannot be null or
+	// empty"));
+	// }
+	//
+	// try {
+	// BaseAgent agent = agentLoader.loadAgent(request.appName);
+	// RunnableConfig runnableConfig = RunnableConfig.builder()
+	// .threadId(request.threadId)
+	// .addMetadata("user_id", request.userId)
+	// .build();
+	// // request.stateDelta 目前用不到
+	// Flux<NodeOutput> agentStream = agent.stream(request.newMessage, runnableConfig);
+	//
+	// // Create a heartbeat Flux to keep connection alive (emit every 15 seconds)
+	// Flux<NodeOutput> heartBeat = Flux.interval(java.time.Duration.ofSeconds(5))
+	// .map(tick -> NodeOutput.of("heartbeat", OverAllStateBuilder.builder().build()))
+	// .takeUntilOther(agentStream.last());
+	//
+	// // Merge the agent stream with heartbeat
+	// return Flux.merge(agentStream, heartBeat);
+	// }
+	// catch (Exception e) {
+	// log.error("Error during agent run for session {}", request.threadId, e);
+	// return Flux.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+	// "Agent run failed", e));
+	// }
+	// }
 
 	/**
-	 * Executes an agent run and streams the resulting events using Server-Sent Events (SSE).
-	 *
+	 * Executes an agent run and streams the resulting events using Server-Sent Events
+	 * (SSE).
 	 * @param request The AgentRunRequest containing run details.
 	 * @return A Flux that will stream events to the client in standard SSE format.
 	 */
@@ -169,31 +179,25 @@ public class ExecutionController {
 			@RequestHeader(name = StudioExecutionAccess.TOKEN_HEADER, required = false) String accessToken) {
 		executionAccess.assertAllowed(accessToken);
 		if (request.appName == null || request.appName.trim().isEmpty()) {
-			log.warn(
-					"appName cannot be null or empty in SSE request for appName: {}, session: {}",
-					request.appName,
+			log.warn("appName cannot be null or empty in SSE request for appName: {}, session: {}", request.appName,
 					request.threadId);
-			return Flux.error(
-					new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or empty"));
+			return Flux.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or empty"));
 		}
 		if (request.threadId == null || request.threadId.trim().isEmpty()) {
-			log.warn(
-					"threadId cannot be null or empty in SSE request for appName: {}, session: {}",
-					request.appName,
+			log.warn("threadId cannot be null or empty in SSE request for appName: {}, session: {}", request.appName,
 					request.threadId);
-			return Flux.error(
-					new ResponseStatusException(HttpStatus.BAD_REQUEST, "threadId cannot be null or empty"));
+			return Flux.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "threadId cannot be null or empty"));
 		}
 
 		try {
 			Agent agent = agentLoader.loadAgent(request.appName);
 			RunnableConfig runnableConfig = RunnableConfig.builder()
-					.threadId(request.threadId)
-					.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, request.appName)
-					.addMetadata("user_id", request.userId)
-					.build();
+				.threadId(request.threadId)
+				.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, request.appName)
+				.addMetadata("user_id", request.userId)
+				.build();
 
-			return executeAgent(request.newMessage.toUserMessage(), agent, runnableConfig, request.stateDelta);
+			return executeAgent(request.newMessage.toChatMessage(), agent, runnableConfig, request.stateDelta);
 		}
 		catch (Exception e) {
 			log.error("Error during agent run for session {}", request.threadId, e);
@@ -206,20 +210,14 @@ public class ExecutionController {
 			@RequestHeader(name = StudioExecutionAccess.TOKEN_HEADER, required = false) String accessToken) {
 		executionAccess.assertAllowed(accessToken);
 		if (request.appName == null || request.appName.trim().isEmpty()) {
-			log.warn(
-					"appName cannot be null or empty in SSE request for appName: {}, session: {}",
-					request.appName,
+			log.warn("appName cannot be null or empty in SSE request for appName: {}, session: {}", request.appName,
 					request.threadId);
-			return Flux.error(
-					new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or empty"));
+			return Flux.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or empty"));
 		}
 		if (request.threadId == null || request.threadId.trim().isEmpty()) {
-			log.warn(
-					"threadId cannot be null or empty in SSE request for appName: {}, session: {}",
-					request.appName,
+			log.warn("threadId cannot be null or empty in SSE request for appName: {}, session: {}", request.appName,
 					request.threadId);
-			return Flux.error(
-					new ResponseStatusException(HttpStatus.BAD_REQUEST, "threadId cannot be null or empty"));
+			return Flux.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "threadId cannot be null or empty"));
 		}
 
 		try {
@@ -231,31 +229,25 @@ public class ExecutionController {
 			if (request.toolFeedbacks != null && !request.toolFeedbacks.isEmpty()) {
 				for (ToolRequestConfirmMessageDTO.ToolFeedback toolFeedback : request.toolFeedbacks) {
 					// Convert FeedbackResult from DTO to InterruptionMetadata enum
-					InterruptionMetadata.ToolFeedback.FeedbackResult result =
-							toolFeedback.getResult() != null
-									? InterruptionMetadata.ToolFeedback.FeedbackResult.valueOf(toolFeedback.getResult()
-									.name())
-									: InterruptionMetadata.ToolFeedback.FeedbackResult.APPROVED;
+					InterruptionMetadata.ToolFeedback.FeedbackResult result = toolFeedback.getResult() != null
+							? InterruptionMetadata.ToolFeedback.FeedbackResult.valueOf(toolFeedback.getResult().name())
+							: null;
 
 					// Create InterruptionMetadata.ToolFeedback
 					InterruptionMetadata.ToolFeedback feedback = new InterruptionMetadata.ToolFeedback(
-							toolFeedback.getId(),
-							toolFeedback.getName(),
-							toolFeedback.getArguments(),
-							result,
-							toolFeedback.getDescription()
-					);
+							toolFeedback.getId(), toolFeedback.getName(), toolFeedback.getArguments(), result,
+							toolFeedback.getDescription());
 
 					metadataBuilder.addToolFeedback(feedback);
 				}
 			}
 
 			RunnableConfig runnableConfig = RunnableConfig.builder()
-					.threadId(request.threadId)
-					.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, request.appName)
-					.addMetadata("user_id", request.userId)
-					.addHumanFeedback(metadataBuilder.build())
-					.build();
+				.threadId(request.threadId)
+				.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, request.appName)
+				.addMetadata("user_id", request.userId)
+				.addHumanFeedback(metadataBuilder.build())
+				.build();
 
 			return executeAgent(null, agent, runnableConfig, request.stateDelta);
 		}
@@ -265,18 +257,17 @@ public class ExecutionController {
 		}
 	}
 
-	@NonNull
-	private Flux<ServerSentEvent<String>> executeAgent(UserMessage userMessage, Agent agent, RunnableConfig runnableConfig,
-			Map<String, Object> stateDelta) throws GraphRunnerException {
+	@NonNull private Flux<ServerSentEvent<String>> executeAgent(io.github.agentic.ai.api.chat.ChatMessage userMessage,
+			Agent agent, RunnableConfig runnableConfig, Map<String, Object> stateDelta) throws GraphRunnerException {
 
 		Flux<NodeOutput> agentStream;
 
 		if (!CollectionUtils.isEmpty(stateDelta)) {
 			Map<String, Object> updates = new HashMap<>(stateDelta);
 			Map<String, Object> inputs = new HashMap<>(updates);
-			UserMessage message = userMessage != null ? userMessage : new UserMessage("");
+			var message = userMessage != null ? userMessage : io.github.agentic.ai.api.chat.ChatMessage.user("");
 			inputs.put("messages", List.of(message));
-			inputs.put("input", message.getText());
+			inputs.put("input", message.text());
 			if (userMessage != null) {
 				agentStream = agent.stream(inputs, runnableConfig);
 			}
@@ -303,103 +294,83 @@ public class ExecutionController {
 			agentStream = agent.stream("", runnableConfig);
 		}
 
-		// Skip AGENT_MODEL_FINISHED: it is the framework's aggregation of AGENT_MODEL_STREAMING
+		// Skip AGENT_MODEL_FINISHED: it is the framework's aggregation of
+		// AGENT_MODEL_STREAMING
 		// chunks; sending it to the frontend would duplicate the final message.
 		return agentStream
-				.filter(nodeOutput -> !(nodeOutput instanceof StreamingOutput<?> so
-						&& so.getOutputType() == OutputType.AGENT_MODEL_FINISHED))
-				.map(nodeOutput -> {
-					String node = nodeOutput.node();
-					String agentName = nodeOutput.agent();
-					Usage tokenUsage = nodeOutput.tokenUsage();
+			.filter(nodeOutput -> !(nodeOutput instanceof StreamingOutput<?> so
+					&& so.getOutputType() == OutputType.AGENT_MODEL_FINISHED))
+			.concatMapIterable(StreamingMessages::split)
+			.map(nodeOutput -> {
+				String node = nodeOutput.node();
+				String agentName = nodeOutput.agent();
+				Usage tokenUsage = nodeOutput.tokenUsage();
 
+				// For streaming, we can use the message content as chunk
+				AgentRunResponse agentResponse = null;
+				if (nodeOutput instanceof StreamingOutput<?> streamingOutput) {
+					ChatMessage message = streamingOutput.messages().isEmpty() ? null
+							: streamingOutput.messages().get(0);
+					if (message == null) { // no update, typically output responses from
+											// nodes that does not produce messages
+						return ServerSentEvent.<String>builder().data("{}").build();
+					}
+					agentResponse = new AgentRunResponse(node, agentName, message, tokenUsage,
+							message.role() == ChatRole.ASSISTANT && message.toolCalls().isEmpty() ? message.text()
+									: "");
+				}
+				else if (nodeOutput instanceof InterruptionMetadata interruptionMetadata) {
+					// Use the specialized method to convert InterruptionMetadata to
+					// ToolRequestMessageDTO
+					ToolRequestConfirmMessageDTO toolRequestMessage = MessageDTO.MessageDTOFactory
+						.fromInterruptionMetadata(interruptionMetadata);
+					agentResponse = new AgentRunResponse(node, agentName, toolRequestMessage, tokenUsage, "");
+				}
+				else {
+					// Handle other NodeOutput types if necessary
+					// agentResponse = new AgentRunResponse(node, agentName, null,
+					// tokenUsage, "");
+				}
 
-					// For streaming, we can use the message content as chunk
-					StringBuilder chunkBuilder = new StringBuilder();
-					AgentRunResponse agentResponse = null;
-					if (nodeOutput instanceof StreamingOutput<?> streamingOutput) {
-						Message message = streamingOutput.message();
-						if (message == null) { // no update, typically output responses from nodes that does not produce messages
-							return ServerSentEvent.<String>builder()
-									.data("{}")
-									.build();
-						}
-						if (message instanceof AssistantMessage assistantMessage) {
-							if (assistantMessage.hasToolCalls()) {
-								agentResponse = new AgentRunResponse(node, agentName, assistantMessage, tokenUsage, "");
-							}
-							else {
-//						chunkBuilder.append(assistantMessage.getText());
-								agentResponse = new AgentRunResponse(node, agentName, assistantMessage, tokenUsage, assistantMessage.getText());
-							}
-						}
-						else {
-							agentResponse = new AgentRunResponse(node, agentName, message, tokenUsage, "");
-						}
+				// Serialize to JSON string
+				try {
+					if (agentResponse != null) {
+						String jsonData = mapper.writeValueAsString(agentResponse);
+						return ServerSentEvent.<String>builder().data(jsonData).build();
 					}
-					else if (nodeOutput instanceof InterruptionMetadata interruptionMetadata) {
-						// Use the specialized method to convert InterruptionMetadata to ToolRequestMessageDTO
-						ToolRequestConfirmMessageDTO toolRequestMessage = MessageDTO.MessageDTOFactory.fromInterruptionMetadata(interruptionMetadata);
-						agentResponse = new AgentRunResponse(node, agentName, toolRequestMessage, tokenUsage, "");
-					}
-					else {
-						// Handle other NodeOutput types if necessary
-//					agentResponse = new AgentRunResponse(node, agentName, null, tokenUsage, "");
-					}
-
-
-					// Serialize to JSON string
-					try {
-						if (agentResponse != null) {
-							String jsonData = mapper.writeValueAsString(agentResponse);
-							return ServerSentEvent.<String>builder()
-									.data(jsonData)
-									.build();
-						}
-					}
-					catch (Exception e) {
-						log.error("Failed to serialize AgentRunResponse to JSON", e);
-						return ServerSentEvent.<String>builder()
-								.data("{\"error\":\"Failed to serialize response\"}")
-								.build();
-					}
+				}
+				catch (Exception e) {
+					log.error("Failed to serialize AgentRunResponse to JSON", e);
 					return ServerSentEvent.<String>builder()
-							.data("{}")
-							.build();
-				})
-				.onErrorResume(error -> {
-					// Handle errors from the agent stream and convert to SSE error event
-					log.error("Error occurred during agent stream execution", error);
+						.data("{\"error\":\"Failed to serialize response\"}")
+						.build();
+				}
+				return ServerSentEvent.<String>builder().data("{}").build();
+			})
+			.onErrorResume(error -> {
+				// Handle errors from the agent stream and convert to SSE error event
+				log.error("Error occurred during agent stream execution", error);
 
-					// Create error response
-					String errorMessage = error.getMessage() != null ? error.getMessage() : "Unknown error occurred";
-					String errorType = error.getClass().getSimpleName();
+				// Create error response
+				String errorMessage = error.getMessage() != null ? error.getMessage() : "Unknown error occurred";
+				String errorType = error.getClass().getSimpleName();
 
-					try {
-						// Create a structured error response
-						String errorJson = String.format(
-								"{\"error\":true,\"errorType\":\"%s\",\"errorMessage\":\"%s\"}",
-								errorType.replace("\"", "\\\""),
-								errorMessage.replace("\"", "\\\"").replace("\n", "\\n")
-						);
+				try {
+					// Create a structured error response
+					String errorJson = String.format("{\"error\":true,\"errorType\":\"%s\",\"errorMessage\":\"%s\"}",
+							errorType.replace("\"", "\\\""), errorMessage.replace("\"", "\\\"").replace("\n", "\\n"));
 
-						// Return the error as an SSE event and complete the stream
-						return Flux.just(
-								ServerSentEvent.<String>builder()
-										.event("error")
-										.data(errorJson)
-										.build()
-						);
-					}
-					catch (Exception e) {
-						log.error("Failed to create error SSE event", e);
-						return Flux.just(
-								ServerSentEvent.<String>builder()
-										.event("error")
-										.data("{\"error\":true,\"errorMessage\":\"Internal error occurred\"}")
-										.build()
-						);
-					}
-				});
+					// Return the error as an SSE event and complete the stream
+					return Flux.just(ServerSentEvent.<String>builder().event("error").data(errorJson).build());
+				}
+				catch (Exception e) {
+					log.error("Failed to create error SSE event", e);
+					return Flux.just(ServerSentEvent.<String>builder()
+						.event("error")
+						.data("{\"error\":true,\"errorMessage\":\"Internal error occurred\"}")
+						.build());
+				}
+			});
 	}
+
 }

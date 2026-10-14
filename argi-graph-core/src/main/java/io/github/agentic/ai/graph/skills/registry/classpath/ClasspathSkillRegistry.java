@@ -19,7 +19,7 @@ import io.github.agentic.ai.graph.skills.SkillMetadata;
 import io.github.agentic.ai.graph.skills.registry.AbstractSkillRegistry;
 import io.github.agentic.ai.graph.skills.registry.filesystem.SkillScanner;
 
-import org.springframework.ai.chat.prompt.SystemPromptTemplate;
+import io.github.agentic.ai.graph.utils.PromptTemplate;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -51,15 +51,17 @@ import static io.github.agentic.ai.graph.skills.registry.filesystem.FileSystemSk
  * This implementation loads skills from classpath:resources/skills, supporting both
  * filesystem (development) and JAR (production) environments.
  *
- * <p>Key features:
+ * <p>
+ * Key features:
  * <ul>
- *   <li>Automatically detects if resources are in filesystem or JAR</li>
- *   <li>Manages JAR FileSystem lifecycle</li>
- *   <li>Caches skill content for JAR resources (since Path.of() cannot access JAR paths)</li>
+ * <li>Automatically detects if resources are in filesystem or JAR</li>
+ * <li>Manages JAR FileSystem lifecycle</li>
+ * <li>Caches skill content for JAR resources (since Path.of() cannot access JAR
+ * paths)</li>
  * </ul>
  *
- * <p><b>Example Usage:</b>
- * <pre>{@code
+ * <p>
+ * <b>Example Usage:</b> <pre>{@code
  * // Use default classpath location (resources/skills)
  * ClasspathSkillRegistry registry = ClasspathSkillRegistry.builder().build();
  *
@@ -72,25 +74,31 @@ import static io.github.agentic.ai.graph.skills.registry.filesystem.FileSystemSk
 public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 
 	private static final Logger logger = LoggerFactory.getLogger(ClasspathSkillRegistry.class);
+
 	private final String classpathPath;
+
 	private final Path basePath;
+
 	private final SkillScanner scanner = new SkillScanner();
-	private final SystemPromptTemplate systemPromptTemplate;
+
+	private final PromptTemplate systemPromptTemplate;
+
 	// Map to cache fullContent for skills loaded from JAR (skill name -> fullContent)
-	// This is needed because JAR paths cannot be accessed via Path.of() with default filesystem
+	// This is needed because JAR paths cannot be accessed via Path.of() with default
+	// filesystem
 	private final Map<String, String> jarSkillContentCache = new HashMap<>();
+
 	// JAR FileSystem for classpath resources (only created if resource is in JAR)
 	private FileSystem jarFileSystem;
+
 	private boolean ownsJarFileSystem;
 
 	private ClasspathSkillRegistry(Builder builder) {
-		this.classpathPath = builder.classpathPath != null && !builder.classpathPath.isEmpty()
-				? builder.classpathPath
+		this.classpathPath = builder.classpathPath != null && !builder.classpathPath.isEmpty() ? builder.classpathPath
 				: "skills";
 
 		// Set basePath - default to /tmp if not specified
-		this.basePath = builder.basePath != null && !builder.basePath.isEmpty()
-				? Path.of(builder.basePath)
+		this.basePath = builder.basePath != null && !builder.basePath.isEmpty() ? Path.of(builder.basePath)
 				: Path.of("/tmp");
 
 		// Ensure basePath directory exists
@@ -106,9 +114,7 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 			this.systemPromptTemplate = builder.systemPromptTemplate;
 		}
 		else {
-			this.systemPromptTemplate = SystemPromptTemplate.builder()
-					.template(DEFAULT_SYSTEM_PROMPT_TEMPLATE)
-					.build();
+			this.systemPromptTemplate = PromptTemplate.of(DEFAULT_SYSTEM_PROMPT_TEMPLATE);
 		}
 
 		// Load skills during initialization if auto-load is enabled (default: true)
@@ -122,8 +128,8 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 	}
 
 	/**
-	 * Loads skills from classpath into the registry.
-	 * Supports both filesystem (development) and JAR (production) environments.
+	 * Loads skills from classpath into the registry. Supports both filesystem
+	 * (development) and JAR (production) environments.
 	 */
 	@Override
 	protected void loadSkillsToRegistry() {
@@ -221,9 +227,8 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 	}
 
 	/**
-	 * Scans a directory (filesystem or JAR) for skills.
-	 * This method works with both regular filesystem paths and JAR FileSystem paths.
-	 *
+	 * Scans a directory (filesystem or JAR) for skills. This method works with both
+	 * regular filesystem paths and JAR FileSystem paths.
 	 * @param skillsPath the path to the skills directory
 	 * @param source the source identifier for the skills
 	 * @return list of discovered skills
@@ -244,35 +249,36 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 		boolean isJarPath = (jarFileSystem != null && skillsPath.getFileSystem() == jarFileSystem);
 
 		try (var stream = Files.list(skillsPath)) {
-			stream.filter(Files::isDirectory)
-					.forEach(skillDir -> {
-						try {
-							SkillMetadata metadata = scanner.loadSkill(skillDir, source);
-							if (metadata != null) {
-								// Copy skill resources (references, scripts, assets, etc.) to basePath
-								Path targetSkillPath = copySkillResources(skillDir, metadata.getName(), isJarPath);
+			stream.filter(Files::isDirectory).forEach(skillDir -> {
+				try {
+					SkillMetadata metadata = scanner.loadSkill(skillDir, source);
+					if (metadata != null) {
+						// Copy skill resources (references, scripts, assets, etc.) to
+						// basePath
+						Path targetSkillPath = copySkillResources(skillDir, metadata.getName(), isJarPath);
 
-								// Update skillPath to point to the copied location in basePath
-								if (targetSkillPath != null) {
-									metadata.setSkillPath(targetSkillPath.toString());
-								}
+						// Update skillPath to point to the copied location in basePath
+						if (targetSkillPath != null) {
+							metadata.setSkillPath(targetSkillPath.toString());
+						}
 
-								// For JAR resources, cache the content that was already loaded by scanner.loadSkill()
-								// because Path.of() cannot access JAR filesystem paths
-								if (isJarPath) {
-									String fullContent = metadata.getFullContent();
-									if (fullContent != null) {
-										jarSkillContentCache.put(metadata.getName(), fullContent);
-									}
-								}
-								skills.add(metadata);
-								logger.debug("Loaded skill from classpath: {} from {}", metadata.getName(), skillDir);
+						// For JAR resources, cache the content that was already loaded by
+						// scanner.loadSkill()
+						// because Path.of() cannot access JAR filesystem paths
+						if (isJarPath) {
+							String fullContent = metadata.getFullContent();
+							if (fullContent != null) {
+								jarSkillContentCache.put(metadata.getName(), fullContent);
 							}
 						}
-						catch (Exception e) {
-							logger.error("Failed to load skill from classpath {}: {}", skillDir, e.getMessage(), e);
-						}
-					});
+						skills.add(metadata);
+						logger.debug("Loaded skill from classpath: {} from {}", metadata.getName(), skillDir);
+					}
+				}
+				catch (Exception e) {
+					logger.error("Failed to load skill from classpath {}: {}", skillDir, e.getMessage(), e);
+				}
+			});
 		}
 		catch (IOException e) {
 			logger.error("Failed to scan classpath skills directory {}: {}", skillsPath, e.getMessage(), e);
@@ -282,10 +288,10 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 	}
 
 	/**
-	 * Copies skill resources (SKILL.md and subdirectories like references, scripts, assets)
-	 * from classpath to basePath, maintaining the same directory structure.
-	 *
-	 * @param skillDir the source skill directory (from classpath, may be JAR or filesystem)
+	 * Copies skill resources (SKILL.md and subdirectories like references, scripts,
+	 * assets) from classpath to basePath, maintaining the same directory structure.
+	 * @param skillDir the source skill directory (from classpath, may be JAR or
+	 * filesystem)
 	 * @param skillName the skill name (e.g., "web-research/web-research")
 	 * @param isJarPath whether the source is from a JAR file
 	 * @return the target skill directory path in basePath, or null if copy failed
@@ -293,9 +299,7 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 	private Path copySkillResources(Path skillDir, String skillName, boolean isJarPath) {
 		try {
 			// Extract the skill directory name from skillName (format: "dirName/name")
-			String skillDirName = skillName.contains("/")
-					? skillName.substring(0, skillName.indexOf("/"))
-					: skillName;
+			String skillDirName = skillName.contains("/") ? skillName.substring(0, skillName.indexOf("/")) : skillName;
 
 			// Create target path: basePath/classpathPath/skillDirName
 			Path targetSkillPath = basePath.resolve(classpathPath).resolve(skillDirName);
@@ -460,11 +464,8 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 
 	@Override
 	public String getSkillLoadInstructions() {
-		return "**Skill Location:**\n"
-				+ String.format("- **Classpath Skills**: `classpath:%s`\n", classpathPath)
-				+ "\n"
-				+ "**Skill Path Format:**\n"
-				+ "Each skill has a unique id shown in the skill list above. "
+		return "**Skill Location:**\n" + String.format("- **Classpath Skills**: `classpath:%s`\n", classpathPath) + "\n"
+				+ "**Skill Path Format:**\n" + "Each skill has a unique id shown in the skill list above. "
 				+ "Skill ids identify registry entries and are not direct tool names. "
 				+ "Use the exact id shown when calling `read_skill` to read the SKILL.md file.\n";
 	}
@@ -475,13 +476,13 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 	}
 
 	@Override
-	public SystemPromptTemplate getSystemPromptTemplate() {
+	public PromptTemplate getSystemPromptTemplate() {
 		return systemPromptTemplate;
 	}
 
 	/**
-	 * Closes the JAR FileSystem if it was created.
-	 * Should be called when the registry is no longer needed.
+	 * Closes the JAR FileSystem if it was created. Should be called when the registry is
+	 * no longer needed.
 	 */
 	public void close() {
 		if (ownsJarFileSystem && jarFileSystem != null) {
@@ -490,25 +491,29 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 			}
 			catch (IOException e) {
 				logger.warn("Failed to close JAR filesystem: {}", e.getMessage());
+			}
+			jarFileSystem = null;
+			ownsJarFileSystem = false;
 		}
-		jarFileSystem = null;
-		ownsJarFileSystem = false;
-	}
 	}
 
 	/**
 	 * Builder for creating ClasspathSkillRegistry instances.
 	 */
 	public static class Builder {
+
 		private String classpathPath;
+
 		private String basePath;
+
 		private boolean autoLoad = true;
-		private SystemPromptTemplate systemPromptTemplate;
+
+		private PromptTemplate systemPromptTemplate;
 
 		/**
 		 * Sets the classpath path for skills.
-		 * <p><b>Optional</b>: If not set, defaults to <code>skills</code>
-		 *
+		 * <p>
+		 * <b>Optional</b>: If not set, defaults to <code>skills</code>
 		 * @param classpathPath the classpath path (e.g., "skills", "custom/skills")
 		 * @return this builder
 		 */
@@ -519,9 +524,10 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 
 		/**
 		 * Sets the base path for storing copied skill resources.
-		 * <p><b>Optional</b>: If not set, defaults to <code>/tmp</code>
-		 *
-		 * @param basePath the base path for storing skill resources (e.g., "/tmp", "/var/skills")
+		 * <p>
+		 * <b>Optional</b>: If not set, defaults to <code>/tmp</code>
+		 * @param basePath the base path for storing skill resources (e.g., "/tmp",
+		 * "/var/skills")
 		 * @return this builder
 		 */
 		public Builder basePath(String basePath) {
@@ -531,8 +537,8 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 
 		/**
 		 * Sets whether to automatically load skills during initialization.
-		 * <p><b>Optional</b>: Defaults to <code>true</code>
-		 *
+		 * <p>
+		 * <b>Optional</b>: Defaults to <code>true</code>
 		 * @param autoLoad true to auto-load skills, false to skip auto-loading
 		 * @return this builder
 		 */
@@ -543,37 +549,38 @@ public class ClasspathSkillRegistry extends AbstractSkillRegistry {
 
 		/**
 		 * Sets a custom system prompt template for skills.
-		 * <p><b>Optional</b>: If not set, uses the default template for ClasspathSkillRegistry.
-		 *
-		 * @param systemPromptTemplate the custom SystemPromptTemplate to use
+		 * <p>
+		 * <b>Optional</b>: If not set, uses the default template for
+		 * ClasspathSkillRegistry.
+		 * @param systemPromptTemplate the custom prompt renderer to use
 		 * @return this builder
 		 */
-		public Builder systemPromptTemplate(SystemPromptTemplate systemPromptTemplate) {
+		public Builder systemPromptTemplate(PromptTemplate systemPromptTemplate) {
 			this.systemPromptTemplate = systemPromptTemplate;
 			return this;
 		}
 
 		/**
 		 * Sets a custom system prompt template from a template string.
-		 * <p><b>Optional</b>: If not set, uses the default template for ClasspathSkillRegistry.
-		 *
+		 * <p>
+		 * <b>Optional</b>: If not set, uses the default template for
+		 * ClasspathSkillRegistry.
 		 * @param template the template string
 		 * @return this builder
 		 */
 		public Builder systemPromptTemplate(String template) {
-			this.systemPromptTemplate = SystemPromptTemplate.builder()
-					.template(template)
-					.build();
+			this.systemPromptTemplate = PromptTemplate.of(template);
 			return this;
 		}
 
 		/**
 		 * Builds the ClasspathSkillRegistry instance with the configured parameters.
-		 *
 		 * @return a new ClasspathSkillRegistry instance
 		 */
 		public ClasspathSkillRegistry build() {
 			return new ClasspathSkillRegistry(this);
 		}
+
 	}
+
 }

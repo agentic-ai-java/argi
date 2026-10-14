@@ -25,7 +25,7 @@ import io.github.agentic.ai.graph.checkpoint.lease.LeaseBusyException;
 import io.github.agentic.ai.graph.checkpoint.lease.LeaseLostException;
 import io.github.agentic.ai.graph.checkpoint.lease.LeaseOptions;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 
 import java.time.Clock;
 import java.util.Collection;
@@ -56,7 +56,7 @@ public class MemoryLeasedCheckpointSaver implements LeasedCheckpointSaver {
 	private final Map<String, Long> retainedFencesByNamespace = new HashMap<>();
 
 	public MemoryLeasedCheckpointSaver() {
-		this(new SpringAIJacksonStateSerializer(OverAllState::new, new ObjectMapper()), LeaseOptions.defaults(),
+		this(new ArgiJacksonStateSerializer(OverAllState::new, new ObjectMapper()), LeaseOptions.defaults(),
 				Clock.systemUTC());
 	}
 

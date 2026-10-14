@@ -10,7 +10,7 @@ import React, {
   useMemo,
   ReactNode,
 } from "react";
-import { createApiClient, GraphRunResponse } from "@/lib/spring-ai-api";
+import { createApiClient, GraphRunResponse } from "@/lib/argi-api";
 import { toast } from "sonner";
 import { useGraphThreads } from "./GraphThread";
 

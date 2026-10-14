@@ -35,6 +35,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -67,7 +69,8 @@ class ReactAgentCheckpointExecutionQueueTest {
 			waiting.dispose();
 
 			assertEquals(readsBefore, fixture.saver.reads.get(), "A waiting turn must not capture a rewind baseline");
-			assertEquals(writesBefore, fixture.saver.writes.get(), "Cancelling a waiting turn must not rewind the active turn");
+			assertEquals(writesBefore, fixture.saver.writes.get(),
+					"Cancelling a waiting turn must not rewind the active turn");
 			assertEquals(1, fixture.model.calls.get("B").entered.getCount());
 
 			fixture.model.complete("A");
@@ -111,7 +114,8 @@ class ReactAgentCheckpointExecutionQueueTest {
 			fixture.saver.expectRewind(SEED_MESSAGES, true);
 
 			final CompletableFuture<Void> cancellation = CompletableFuture.runAsync(active::dispose);
-			assertTrue(fixture.saver.rewindEntered.await(10, TimeUnit.SECONDS), "Cancellation must reach the rewind write");
+			assertTrue(fixture.saver.rewindEntered.await(10, TimeUnit.SECONDS),
+					"Cancellation must reach the rewind write");
 			assertFalse(fixture.model.calls.get("B").entered.await(200, TimeUnit.MILLISECONDS),
 					"The next turn must stay queued while its predecessor is still rewinding");
 
@@ -130,8 +134,10 @@ class ReactAgentCheckpointExecutionQueueTest {
 	}
 
 	private static List<String> texts(List<Message> messages) {
-		return messages.stream().filter(message -> message instanceof UserMessage || message instanceof AssistantMessage)
-			.map(Message::getText).toList();
+		return messages.stream()
+			.filter(message -> message instanceof UserMessage || message instanceof AssistantMessage)
+			.map(Message::getText)
+			.toList();
 	}
 
 	private static List<String> checkpointTexts(Checkpoint checkpoint) {
@@ -139,7 +145,11 @@ class ReactAgentCheckpointExecutionQueueTest {
 		if (!(value instanceof List<?> messages)) {
 			return List.of();
 		}
-		return texts(messages.stream().filter(Message.class::isInstance).map(Message.class::cast).toList());
+		return messages.stream()
+			.map(ChatMessage.class::cast)
+			.filter(message -> message.role() == ChatRole.USER || message.role() == ChatRole.ASSISTANT)
+			.map(ChatMessage::text)
+			.toList();
 	}
 
 	private static ChatResponse response(String text) {
@@ -159,8 +169,11 @@ class ReactAgentCheckpointExecutionQueueTest {
 		public Flux<ChatResponse> stream(Prompt prompt) {
 			return Flux.defer(() -> {
 				final List<Message> messages = prompt.getInstructions();
-				final String request = messages.stream().filter(UserMessage.class::isInstance)
-					.map(Message::getText).reduce((first, second) -> second).orElseThrow();
+				final String request = messages.stream()
+					.filter(UserMessage.class::isInstance)
+					.map(Message::getText)
+					.reduce((first, second) -> second)
+					.orElseThrow();
 				if ("seed".equals(request)) {
 					return Flux.just(response("answer-seed"));
 				}
@@ -261,13 +274,18 @@ class ReactAgentCheckpointExecutionQueueTest {
 
 		private final RunnableConfig config = RunnableConfig.builder().threadId("queued-turns").build();
 
-		private final ReactAgent agent = ReactAgent.builder().name("queued-turn-agent").model(model).saver(saver).build();
+		private final ReactAgent agent = ReactAgent.builder()
+			.name("queued-turn-agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.saver(saver)
+			.build();
 
 		private final List<Disposable> subscriptions = new CopyOnWriteArrayList<>();
 
 		private final List<Throwable> errors = new CopyOnWriteArrayList<>();
 
-		private final Map<String, CountDownLatch> completed = Map.of("A", new CountDownLatch(1), "B", new CountDownLatch(1));
+		private final Map<String, CountDownLatch> completed = Map.of("A", new CountDownLatch(1), "B",
+				new CountDownLatch(1));
 
 		private void seed() throws Exception {
 			agent.stream("seed", config).collectList().block(Duration.ofSeconds(10));
@@ -276,7 +294,9 @@ class ReactAgentCheckpointExecutionQueueTest {
 
 		private Disposable subscribe(String request) throws Exception {
 			final Disposable subscription = agent.stream(request, config)
-				.doOnComplete(() -> completed.get(request).countDown()).subscribe(output -> { }, errors::add);
+				.doOnComplete(() -> completed.get(request).countDown())
+				.subscribe(output -> {
+				}, errors::add);
 			subscriptions.add(subscription);
 			return subscription;
 		}

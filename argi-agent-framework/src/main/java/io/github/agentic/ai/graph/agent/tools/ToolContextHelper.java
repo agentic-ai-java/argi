@@ -17,7 +17,8 @@ package io.github.agentic.ai.graph.agent.tools;
 
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
-import org.springframework.ai.chat.model.ToolContext;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.graph.execution.TrustedExecutionContext;
 import org.springframework.lang.Nullable;
 
 import java.util.Map;
@@ -26,13 +27,19 @@ import java.util.Optional;
 /**
  * Utility class for accessing common metadata from ToolContext.
  *
- * <p>This class provides type-safe, user-friendly methods to access frequently used
- * context data. For custom metadata or advanced use cases, you can still use
- * {@link ToolContextConstants} keys directly with {@link ToolContext#getContext()}.</p>
+ * <p>
+ * This class provides type-safe, user-friendly methods to access frequently used context
+ * data. For custom metadata or advanced use cases, you can still use
+ * {@link ToolContextConstants} keys directly with {@link ToolContext#attributes()}.
+ * </p>
  *
- * <p><strong>Two ways to access ToolContext data:</strong></p>
+ * <p>
+ * <strong>Two ways to access ToolContext data:</strong>
+ * </p>
  *
- * <p>1. <strong>Helper way</strong> (recommended for standard data):</p>
+ * <p>
+ * 1. <strong>Helper way</strong> (recommended for standard data):
+ * </p>
  * <pre>
  * // Get RunnableConfig - type-safe, no casting needed
  * Optional&lt;RunnableConfig&gt; config = ToolContextHelper.getConfig(toolContext);
@@ -44,10 +51,12 @@ import java.util.Optional;
  * Optional&lt;String&gt; userId = ToolContextHelper.getMetadata(toolContext, "user_id", String.class);
  * </pre>
  *
- * <p>2. <strong>Direct key access</strong> (for custom data or batch operations):</p>
+ * <p>
+ * 2. <strong>Direct key access</strong> (for custom data or batch operations):
+ * </p>
  * <pre>
  * // Access using ToolContextConstants
- * Map&lt;String, Object&gt; context = toolContext.getContext();
+ * Map&lt;String, Object&gt; context = toolContext.attributes();
  * RunnableConfig config = (RunnableConfig) context.get(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY);
  *
  * // Or access your custom keys
@@ -66,9 +75,10 @@ public final class ToolContextHelper {
 	/**
 	 * Get the RunnableConfig from ToolContext.
 	 *
-	 * <p>This is a convenience method equivalent to:
-	 * {@code toolContext.getContext().get(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY)}</p>
-	 *
+	 * <p>
+	 * This is a convenience method equivalent to:
+	 * {@code toolContext.attributes().get(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY)}
+	 * </p>
 	 * @param toolContext the tool context
 	 * @return Optional containing RunnableConfig if present
 	 */
@@ -80,11 +90,23 @@ public final class ToolContextHelper {
 	}
 
 	/**
+	 * Get trusted identity facts from the framework-injected {@link RunnableConfig}.
+	 * Arbitrary ToolContext entries and ordinary metadata are never interpreted as
+	 * trusted identity.
+	 * @param toolContext the tool context
+	 * @return the explicitly attached trusted execution context, if present
+	 */
+	public static Optional<TrustedExecutionContext> getTrustedExecutionContext(@Nullable ToolContext toolContext) {
+		return getConfig(toolContext).flatMap(RunnableConfig::trustedExecutionContext);
+	}
+
+	/**
 	 * Get the agent state (OverAllState) from ToolContext.
 	 *
-	 * <p>This is a convenience method equivalent to:
-	 * {@code toolContext.getContext().get(ToolContextConstants.AGENT_STATE_CONTEXT_KEY)}</p>
-	 *
+	 * <p>
+	 * This is a convenience method equivalent to:
+	 * {@code toolContext.attributes().get(ToolContextConstants.AGENT_STATE_CONTEXT_KEY)}
+	 * </p>
 	 * @param toolContext the tool context
 	 * @return Optional containing OverAllState if present
 	 */
@@ -96,12 +118,13 @@ public final class ToolContextHelper {
 	}
 
 	/**
-	 * Get the state map for update from ToolContext.
-	 * This is used when the tool needs to modify state.
+	 * Get the state map for update from ToolContext. This is used when the tool needs to
+	 * modify state.
 	 *
-	 * <p>This is a convenience method equivalent to:
-	 * {@code toolContext.getContext().get(ToolContextConstants.AGENT_STATE_FOR_UPDATE_CONTEXT_KEY)}</p>
-	 *
+	 * <p>
+	 * This is a convenience method equivalent to:
+	 * {@code toolContext.attributes().get(ToolContextConstants.AGENT_STATE_FOR_UPDATE_CONTEXT_KEY)}
+	 * </p>
 	 * @param toolContext the tool context
 	 * @return Optional containing state map if present
 	 */
@@ -110,13 +133,15 @@ public final class ToolContextHelper {
 			return Optional.empty();
 		}
 		return getMetadata(toolContext, ToolContextConstants.AGENT_STATE_FOR_UPDATE_CONTEXT_KEY, Map.class)
-				.map(map -> (Map<String, Object>) map);
+			.map(map -> (Map<String, Object>) map);
 	}
 
 	/**
 	 * Get metadata value by key with type safety.
 	 *
-	 * <p>Works with both framework keys and your custom keys:</p>
+	 * <p>
+	 * Works with both framework keys and your custom keys:
+	 * </p>
 	 * <pre>
 	 * // Framework key via constant
 	 * Optional&lt;RunnableConfig&gt; config = ToolContextHelper.getMetadata(
@@ -125,7 +150,6 @@ public final class ToolContextHelper {
 	 * // Your custom key
 	 * Optional&lt;String&gt; myData = ToolContextHelper.getMetadata(toolContext, "my_key", String.class);
 	 * </pre>
-	 *
 	 * @param toolContext the tool context
 	 * @param key the metadata key (can be from {@link ToolContextConstants} or custom)
 	 * @param type the expected type class
@@ -137,7 +161,7 @@ public final class ToolContextHelper {
 			return Optional.empty();
 		}
 
-		Map<String, Object> context = toolContext.getContext();
+		Map<String, Object> context = toolContext.attributes();
 		if (context == null) {
 			return Optional.empty();
 		}
@@ -156,7 +180,6 @@ public final class ToolContextHelper {
 
 	/**
 	 * Get metadata value with default fallback.
-	 *
 	 * @param toolContext the tool context
 	 * @param key the metadata key
 	 * @param type the expected type class
@@ -171,7 +194,6 @@ public final class ToolContextHelper {
 
 	/**
 	 * Check if ToolContext contains a specific key.
-	 *
 	 * @param toolContext the tool context
 	 * @param key the key to check
 	 * @return true if the key exists
@@ -181,7 +203,7 @@ public final class ToolContextHelper {
 			return false;
 		}
 
-		Map<String, Object> context = toolContext.getContext();
+		Map<String, Object> context = toolContext.attributes();
 		if (context == null) {
 			return false;
 		}
@@ -190,9 +212,7 @@ public final class ToolContextHelper {
 	}
 
 	/**
-	 * Get all context data as a Map.
-	 * Returns empty map if context is null.
-	 *
+	 * Get all context data as a Map. Returns empty map if context is null.
 	 * @param toolContext the tool context
 	 * @return unmodifiable view of context data, or empty map
 	 */
@@ -201,7 +221,7 @@ public final class ToolContextHelper {
 			return Map.of();
 		}
 
-		Map<String, Object> context = toolContext.getContext();
+		Map<String, Object> context = toolContext.attributes();
 		if (context == null) {
 			return Map.of();
 		}

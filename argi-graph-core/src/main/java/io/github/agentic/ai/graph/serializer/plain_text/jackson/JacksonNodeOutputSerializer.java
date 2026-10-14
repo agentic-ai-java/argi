@@ -30,28 +30,31 @@ import java.io.IOException;
  */
 public class JacksonNodeOutputSerializer extends StdSerializer<NodeOutput> {
 
-    public JacksonNodeOutputSerializer() {
-        super(NodeOutput.class);
-    }
+	public JacksonNodeOutputSerializer() {
+		super(NodeOutput.class);
+	}
 
-    @Override
-    public void serialize(NodeOutput value, JsonGenerator gen, SerializerProvider provider) throws IOException {
-        gen.writeStartObject();
-        serializeFields(value, gen, provider);
-        gen.writeEndObject();
-    }
+	@Override
+	public void serialize(NodeOutput value, JsonGenerator gen, SerializerProvider provider) throws IOException {
+		gen.writeStartObject();
+		serializeFields(value, gen, provider);
+		gen.writeEndObject();
+	}
 
-    @Override
-    public void serializeWithType(NodeOutput value, JsonGenerator gen, SerializerProvider provider, TypeSerializer typeSer) throws IOException {
-        WritableTypeId typeIdDef = typeSer.writeTypePrefix(gen, typeSer.typeId(value, JsonToken.START_OBJECT));
-        serializeFields(value, gen, provider);
-        typeSer.writeTypeSuffix(gen, typeIdDef);
-    }
+	@Override
+	public void serializeWithType(NodeOutput value, JsonGenerator gen, SerializerProvider provider,
+			TypeSerializer typeSer) throws IOException {
+		WritableTypeId typeIdDef = typeSer.writeTypePrefix(gen, typeSer.typeId(value, JsonToken.START_OBJECT));
+		serializeFields(value, gen, provider);
+		typeSer.writeTypeSuffix(gen, typeIdDef);
+	}
 
-    private void serializeFields(NodeOutput value, JsonGenerator gen, SerializerProvider provider) throws IOException {
-        gen.writeStringField("node", value.node());
-        gen.writeStringField("agent", value.agent());
-        gen.writeObjectField("state", value.state());
-        gen.writeBooleanField("subGraph", value.isSubGraph());
-    }
+	private void serializeFields(NodeOutput value, JsonGenerator gen, SerializerProvider provider) throws IOException {
+		gen.writeStringField("node", value.node());
+		gen.writeStringField("agent", value.agent());
+		gen.writeObjectField("tokenUsage", value.tokenUsage());
+		gen.writeObjectField("state", value.state());
+		gen.writeBooleanField("subGraph", value.isSubGraph());
+	}
+
 }

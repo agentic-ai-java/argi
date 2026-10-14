@@ -29,7 +29,7 @@ import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 import io.github.agentic.ai.graph.checkpoint.savers.postgresql.CreateOption;
 import io.github.agentic.ai.graph.checkpoint.savers.postgresql.PostgresSaver;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -70,378 +70,353 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @EnabledIf(value = "isCI", disabledReason = "this test is designed to run only in the GitHub CI environment.")
 @Testcontainers
 public class PostgresSaverTest {
-    private static boolean isCI() {
-        return "true".equalsIgnoreCase(System.getProperty("CI", System.getenv("CI")));
-    }
-
-    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PostgresSaverTest.class);
-
-    private static String DATABASE_NAME = "lg4j-store";
-
-    private static String[] IMAGES = {
-            "postgres:16-alpine",
-            "pgvector/pgvector:pg16"
-    };
-
-    static PostgreSQLContainer<?> postgres =
-            new PostgreSQLContainer<>(IMAGES[1])
-                            .withDatabaseName(DATABASE_NAME);
-
-    static KeyStrategyFactory keyStrategyFactory = () -> {
-        Map<String, KeyStrategy> keyStrategyMap = new HashMap<>();
-        keyStrategyMap.put("agent_1:prop1", (o, o2) -> o2);
-        return keyStrategyMap;
-    };
-    static StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new, new ObjectMapper());
-
-    @BeforeAll
-    public static void init() throws IOException {
-        // initialize log
-        try( var is = PostgresSaverTest.class.getResourceAsStream("/logging.properties") ) {
-            if( is!=null ) LogManager.getLogManager().readConfiguration(is);
-        }
-
-        // start postgres container
-        postgres.start();
-
-    }
-
-    @AfterAll
-    public static void shutdown() {
-        postgres.stop();
-    }
-
-    PostgresSaver.Builder buildPostgresSaver() throws SQLException {
-        return PostgresSaver.builder()
-                //.host("localhost")
-                .host(postgres.getHost())
-                //.port(5432)
-                .port(postgres.getFirstMappedPort())
-                //.user("admin")
-                .user(postgres.getUsername())
-                //.password("bsorrentino")
-                .password(postgres.getPassword())
-                .database(DATABASE_NAME)
-                .stateSerializer(serializer)
-                ;
-    }
-
-    private static DataSource dataSource() {
-        var dataSource = new PGSimpleDataSource();
-        dataSource.setServerNames(new String[] {postgres.getHost()});
-        dataSource.setPortNumbers(new int[] {postgres.getFirstMappedPort()});
-        dataSource.setDatabaseName(DATABASE_NAME);
-        dataSource.setUser(postgres.getUsername());
-        dataSource.setPassword(postgres.getPassword());
-        return dataSource;
-    }
-
-    private static RunnableConfig config(String threadId) {
-        return RunnableConfig.builder().threadId(threadId).build();
-    }
-
-    private static RunnableConfig config(String threadId, String checkpointId) {
-        return RunnableConfig.builder().threadId(threadId).checkPointId(checkpointId).build();
-    }
-
-    private static Checkpoint checkpoint(String value) {
-        return Checkpoint.builder()
-                .nodeId("agent_1")
-                .nextNodeId(END)
-                .state(Map.of("value", value))
-                .build();
-    }
-
-    @Test
-    public void testCheckpointWithReleasedThread() throws Exception {
-
-        var saver = buildPostgresSaver()
-                        .dropTablesFirst(true)
-                        .build();
-
-        NodeAction agent_1 = state -> {
-            log.info( "agent_1");
-            return Map.of("agent_1:prop1", "agent_1:test");
-        };
-
-        var graph = new StateGraph(keyStrategyFactory)
-                .addNode("agent_1", node_async( agent_1 ))
-                .addEdge( START,"agent_1")
-                .addEdge( "agent_1",  END)
-                ;
-
-        var compileConfig = CompileConfig.builder()
-                                .saverConfig(SaverConfig.builder().register(saver).build())
-                                .releaseThread(true)
-                                .build();
 
-        var runnableConfig = RunnableConfig.builder()
-                            .build();
-        var workflow = graph.compile( compileConfig );
+	private static boolean isCI() {
+		return "true".equalsIgnoreCase(System.getProperty("CI", System.getenv("CI")));
+	}
 
-        Map<String, Object> inputs = Map.of( "input", "test1");
+	private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PostgresSaverTest.class);
 
-        var result = workflow.invoke( inputs, runnableConfig );
+	private static String DATABASE_NAME = "lg4j-store";
 
-        assertTrue( result.isPresent() );
+	private static String[] IMAGES = { "postgres:16-alpine", "pgvector/pgvector:pg16" };
 
-        var history = workflow.getStateHistory( runnableConfig );
+	static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(IMAGES[1]).withDatabaseName(DATABASE_NAME);
 
-        assertTrue( history.isEmpty() );
+	static KeyStrategyFactory keyStrategyFactory = () -> {
+		Map<String, KeyStrategy> keyStrategyMap = new HashMap<>();
+		keyStrategyMap.put("agent_1:prop1", (o, o2) -> o2);
+		return keyStrategyMap;
+	};
+	static StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new, new ObjectMapper());
 
-    }
+	@BeforeAll
+	public static void init() throws IOException {
+		// initialize log
+		try (var is = PostgresSaverTest.class.getResourceAsStream("/logging.properties")) {
+			if (is != null)
+				LogManager.getLogManager().readConfiguration(is);
+		}
 
-    @Test
-    public void testCheckpointWithNotReleasedThread() throws Exception {
-        var saver = buildPostgresSaver()
-                        .dropTablesFirst(true)
-                        .build();
+		// start postgres container
+		postgres.start();
 
+	}
 
-        NodeAction agent_1 = state -> {
-            log.info( "agent_1");
-            return Map.of("agent_1:prop1", "agent_1:test");
-        };
+	@AfterAll
+	public static void shutdown() {
+		postgres.stop();
+	}
 
-        var graph = new StateGraph(keyStrategyFactory)
-                .addNode("agent_1", node_async( agent_1 ))
-                .addEdge( START,"agent_1")
-                .addEdge( "agent_1",  END)
-                ;
+	PostgresSaver.Builder buildPostgresSaver() throws SQLException {
+		return PostgresSaver.builder()
+			// .host("localhost")
+			.host(postgres.getHost())
+			// .port(5432)
+			.port(postgres.getFirstMappedPort())
+			// .user("admin")
+			.user(postgres.getUsername())
+			// .password("bsorrentino")
+			.password(postgres.getPassword())
+			.database(DATABASE_NAME)
+			.stateSerializer(serializer);
+	}
 
-        var compileConfig = CompileConfig.builder()
-                .saverConfig(SaverConfig.builder().register(saver).build())
-                .releaseThread(false)
-                .build();
+	private static DataSource dataSource() {
+		var dataSource = new PGSimpleDataSource();
+		dataSource.setServerNames(new String[] { postgres.getHost() });
+		dataSource.setPortNumbers(new int[] { postgres.getFirstMappedPort() });
+		dataSource.setDatabaseName(DATABASE_NAME);
+		dataSource.setUser(postgres.getUsername());
+		dataSource.setPassword(postgres.getPassword());
+		return dataSource;
+	}
 
-        var runnableConfig = RunnableConfig.builder().build();
-        var workflow = graph.compile( compileConfig );
+	private static RunnableConfig config(String threadId) {
+		return RunnableConfig.builder().threadId(threadId).build();
+	}
 
-        Map<String, Object> inputs = Map.of( "input", "test1");
+	private static RunnableConfig config(String threadId, String checkpointId) {
+		return RunnableConfig.builder().threadId(threadId).checkPointId(checkpointId).build();
+	}
 
-        var result = workflow.invoke( inputs, runnableConfig );
+	private static Checkpoint checkpoint(String value) {
+		return Checkpoint.builder().nodeId("agent_1").nextNodeId(END).state(Map.of("value", value)).build();
+	}
 
-        assertTrue( result.isPresent() );
+	@Test
+	public void testCheckpointWithReleasedThread() throws Exception {
 
-        var history = workflow.getStateHistory( runnableConfig );
+		var saver = buildPostgresSaver().dropTablesFirst(true).build();
 
-        assertFalse( history.isEmpty() );
-        assertEquals( 2, history.size() );
+		NodeAction agent_1 = state -> {
+			log.info("agent_1");
+			return Map.of("agent_1:prop1", "agent_1:test");
+		};
 
-        var lastSnapshot = workflow.lastStateOf( runnableConfig );
+		var graph = new StateGraph(keyStrategyFactory).addNode("agent_1", node_async(agent_1))
+			.addEdge(START, "agent_1")
+			.addEdge("agent_1", END);
 
-        assertTrue( lastSnapshot.isPresent() );
-        assertEquals( "agent_1", lastSnapshot.get().node() );
-        assertEquals( END, lastSnapshot.get().next() );
+		var compileConfig = CompileConfig.builder()
+			.saverConfig(SaverConfig.builder().register(saver).build())
+			.releaseThread(true)
+			.build();
 
-        // UPDATE STATE
-        final var updatedConfig = workflow.updateState( lastSnapshot.get().config(), Map.of( "update", "update test") );
+		var runnableConfig = RunnableConfig.builder().build();
+		var workflow = graph.compile(compileConfig);
 
-        var updatedSnapshot = workflow.stateOf( updatedConfig );
-        assertTrue( updatedSnapshot.isPresent() );
-        assertEquals( "agent_1", updatedSnapshot.get().node() );
-        assertTrue( updatedSnapshot.get().state().value("update").isPresent() );
-        assertEquals( "update test", updatedSnapshot.get().state().value("update").get() );
-        assertEquals( END, lastSnapshot.get().next() );
-
-        // test checkpoints reloading from database
-        saver = buildPostgresSaver().build(); // create a new saver (reset cache)
-
-        compileConfig = CompileConfig.builder()
-                .saverConfig(SaverConfig.builder().register(saver).build())
-                .releaseThread(false)
-                .build();
-
-        runnableConfig = RunnableConfig.builder().build();
-        workflow = graph.compile( compileConfig );
-
-        history = workflow.getStateHistory( runnableConfig );
-
-        assertFalse( history.isEmpty() );
-        assertEquals( 2, history.size() );
-
-        lastSnapshot = workflow.stateOf(updatedConfig);
-        // lastSnapshot = workflow.lastStateOf( runnableConfig );
-
-        assertTrue( lastSnapshot.isPresent() );
-        assertEquals( "agent_1", lastSnapshot.get().node() );
-        assertEquals( END, lastSnapshot.get().next() );
-        assertTrue( lastSnapshot.get().state().value("update").isPresent() );
-        assertEquals( "update test", lastSnapshot.get().state().value("update").get() );
-        assertEquals( END, lastSnapshot.get().next() );
-
-
-        saver.release( runnableConfig );
-
-    }
-
-    @Test
-    public void testLatestCheckpointCacheIsBoundedByThreadCount() throws Exception {
-        var countingDataSource = new CountingDataSource(dataSource());
-        var saver = enableLatestCheckpointCache(PostgresSaver.builder()
-                .datasource(countingDataSource)
-                .stateSerializer(serializer)
-                .createOption(CreateOption.CREATE_OR_REPLACE)
-                .maxCachedThreads(2)
-                .build());
-
-        var firstCheckpoint = checkpoint("first");
-        var firstConfig = config("postgres-cache-thread-1");
-        saver.put(firstConfig, firstCheckpoint);
-        saver.put(config("postgres-cache-thread-2"), checkpoint("second"));
-        saver.put(config("postgres-cache-thread-3"), checkpoint("third"));
-
-        countingDataSource.reset();
-        var reloaded = saver.get(firstConfig);
-        assertTrue(reloaded.isPresent());
-        assertEquals(firstCheckpoint.getId(), reloaded.get().getId());
-        assertEquals(1, countingDataSource.latestCheckpointSelects());
-    }
-
-    @Test
-    public void testPostgresSaverKeepsOnlyLatestCheckpointInMemory() throws Exception {
-        var countingDataSource = new CountingDataSource(dataSource());
-        var saver = enableLatestCheckpointCache(PostgresSaver.builder()
-                .datasource(countingDataSource)
-                .stateSerializer(serializer)
-                .createOption(CreateOption.CREATE_OR_REPLACE)
-                .maxCachedThreads(16)
-                .build());
-
-        String threadId = "postgres-cache-single-thread";
-        var firstCheckpoint = checkpoint("first");
-        var secondCheckpoint = checkpoint("second");
-        var thirdCheckpoint = checkpoint("third");
-
-        saver.put(config(threadId), firstCheckpoint);
-        saver.put(config(threadId), secondCheckpoint);
-        saver.put(config(threadId), thirdCheckpoint);
-
-        countingDataSource.reset();
-        var latest = saver.get(config(threadId));
-        assertTrue(latest.isPresent());
-        assertEquals(thirdCheckpoint.getId(), latest.get().getId());
-        assertEquals(0, countingDataSource.latestCheckpointSelects());
-
-        Collection<Checkpoint> history = saver.list(config(threadId));
-        assertEquals(3, history.size());
-
-        countingDataSource.reset();
-        var firstFromDatabase = saver.get(config(threadId, firstCheckpoint.getId()));
-        assertTrue(firstFromDatabase.isPresent());
-        assertEquals(firstCheckpoint.getId(), firstFromDatabase.get().getId());
-        assertEquals(1, countingDataSource.checkpointByIdSelects());
-    }
-
-    @Test
-    public void testPostgresSaverRefreshesLatestCacheWhenLatestCheckpointIsUpdated() throws Exception {
-        var countingDataSource = new CountingDataSource(dataSource());
-        var saver = enableLatestCheckpointCache(PostgresSaver.builder()
-                .datasource(countingDataSource)
-                .stateSerializer(serializer)
-                .createOption(CreateOption.CREATE_OR_REPLACE)
-                .maxCachedThreads(16)
-                .build());
-
-        String threadId = "postgres-cache-update-latest-thread";
-        var originalCheckpoint = checkpoint("original");
-        var updatedCheckpoint = checkpoint("updated");
-        var checkpointConfig = saver.put(config(threadId), originalCheckpoint);
-
-        saver.put(checkpointConfig, updatedCheckpoint);
-
-        countingDataSource.reset();
-        var latest = saver.get(config(threadId));
-        assertTrue(latest.isPresent());
-        assertEquals(updatedCheckpoint.getId(), latest.get().getId());
-        assertEquals(0, countingDataSource.latestCheckpointSelects());
-    }
-
-    @Test
-    public void testPostgresSaverClearsLatestCacheWhenThreadIsReleased() throws Exception {
-        var countingDataSource = new CountingDataSource(dataSource());
-        var saver = enableLatestCheckpointCache(PostgresSaver.builder()
-                .datasource(countingDataSource)
-                .stateSerializer(serializer)
-                .createOption(CreateOption.CREATE_OR_REPLACE)
-                .maxCachedThreads(16)
-                .build());
-
-        String threadId = "postgres-cache-release-thread";
-        saver.put(config(threadId), checkpoint("released"));
-
-        countingDataSource.reset();
-        saver.release(config(threadId));
-        var latest = saver.get(config(threadId));
-        assertTrue(latest.isEmpty());
-        assertEquals(1, countingDataSource.latestCheckpointSelects());
-    }
-
-    @Test
-    public void testPostgresSaverCanDisableLatestCheckpointCache() throws Exception {
-        var countingDataSource = new CountingDataSource(dataSource());
-        var saver = PostgresSaver.builder()
-                .datasource(countingDataSource)
-                .stateSerializer(serializer)
-                .createOption(CreateOption.CREATE_OR_REPLACE)
-                .maxCachedThreads(0)
-                .build();
-
-        String threadId = "postgres-cache-disabled-thread";
-        var latestCheckpoint = checkpoint("latest");
-        saver.put(config(threadId), latestCheckpoint);
-
-        countingDataSource.reset();
-        var firstRead = saver.get(config(threadId));
-        assertTrue(firstRead.isPresent());
-        assertEquals(latestCheckpoint.getId(), firstRead.get().getId());
-        assertEquals(1, countingDataSource.latestCheckpointSelects());
-
-        countingDataSource.reset();
-        var secondRead = saver.get(config(threadId));
-        assertTrue(secondRead.isPresent());
-        assertEquals(latestCheckpoint.getId(), secondRead.get().getId());
-        assertEquals(1, countingDataSource.latestCheckpointSelects());
-    }
-
-    @Test
-    public void testPostgresSaverRetainsOnlyLatestCheckpoints() throws Exception {
-        var countingDataSource = new CountingDataSource(dataSource());
-        var saver = PostgresSaver.builder()
-                .datasource(countingDataSource)
-                .stateSerializer(serializer)
-                .createOption(CreateOption.CREATE_OR_REPLACE)
-                .maxCachedThreads(16)
-                .build();
-
-        String threadId = "postgres-retention-thread";
-        var config = RunnableConfig.builder()
-                .threadId(threadId)
-                .checkpointsNumRetained(2)
-                .build();
-        var firstCheckpoint = checkpoint("first");
-        var secondCheckpoint = checkpoint("second");
-        var thirdCheckpoint = checkpoint("third");
-
-        saver.put(config, firstCheckpoint);
-        saver.put(config, secondCheckpoint);
-        countingDataSource.reset();
-        saver.put(config, thirdCheckpoint);
-
-        assertEquals(1, countingDataSource.deleteCheckpointStatements());
-        Collection<Checkpoint> history = saver.list(config);
-        assertEquals(2, history.size());
-        assertEquals(thirdCheckpoint.getId(), history.iterator().next().getId());
-        assertTrue(saver.get(config(threadId, firstCheckpoint.getId())).isEmpty());
-    }
+		Map<String, Object> inputs = Map.of("input", "test1");
 
+		var result = workflow.invoke(inputs, runnableConfig);
+
+		assertTrue(result.isPresent());
+
+		var history = workflow.getStateHistory(runnableConfig);
+
+		assertTrue(history.isEmpty());
+
+	}
+
+	@Test
+	public void testCheckpointWithNotReleasedThread() throws Exception {
+		var saver = buildPostgresSaver().dropTablesFirst(true).build();
+
+		NodeAction agent_1 = state -> {
+			log.info("agent_1");
+			return Map.of("agent_1:prop1", "agent_1:test");
+		};
+
+		var graph = new StateGraph(keyStrategyFactory).addNode("agent_1", node_async(agent_1))
+			.addEdge(START, "agent_1")
+			.addEdge("agent_1", END);
+
+		var compileConfig = CompileConfig.builder()
+			.saverConfig(SaverConfig.builder().register(saver).build())
+			.releaseThread(false)
+			.build();
+
+		var runnableConfig = RunnableConfig.builder().build();
+		var workflow = graph.compile(compileConfig);
+
+		Map<String, Object> inputs = Map.of("input", "test1");
+
+		var result = workflow.invoke(inputs, runnableConfig);
+
+		assertTrue(result.isPresent());
+
+		var history = workflow.getStateHistory(runnableConfig);
+
+		assertFalse(history.isEmpty());
+		assertEquals(2, history.size());
+
+		var lastSnapshot = workflow.lastStateOf(runnableConfig);
+
+		assertTrue(lastSnapshot.isPresent());
+		assertEquals("agent_1", lastSnapshot.get().node());
+		assertEquals(END, lastSnapshot.get().next());
+
+		// UPDATE STATE
+		final var updatedConfig = workflow.updateState(lastSnapshot.get().config(), Map.of("update", "update test"));
+
+		var updatedSnapshot = workflow.stateOf(updatedConfig);
+		assertTrue(updatedSnapshot.isPresent());
+		assertEquals("agent_1", updatedSnapshot.get().node());
+		assertTrue(updatedSnapshot.get().state().value("update").isPresent());
+		assertEquals("update test", updatedSnapshot.get().state().value("update").get());
+		assertEquals(END, lastSnapshot.get().next());
+
+		// test checkpoints reloading from database
+		saver = buildPostgresSaver().build(); // create a new saver (reset cache)
+
+		compileConfig = CompileConfig.builder()
+			.saverConfig(SaverConfig.builder().register(saver).build())
+			.releaseThread(false)
+			.build();
+
+		runnableConfig = RunnableConfig.builder().build();
+		workflow = graph.compile(compileConfig);
+
+		history = workflow.getStateHistory(runnableConfig);
+
+		assertFalse(history.isEmpty());
+		assertEquals(2, history.size());
+
+		lastSnapshot = workflow.stateOf(updatedConfig);
+		// lastSnapshot = workflow.lastStateOf( runnableConfig );
+
+		assertTrue(lastSnapshot.isPresent());
+		assertEquals("agent_1", lastSnapshot.get().node());
+		assertEquals(END, lastSnapshot.get().next());
+		assertTrue(lastSnapshot.get().state().value("update").isPresent());
+		assertEquals("update test", lastSnapshot.get().state().value("update").get());
+		assertEquals(END, lastSnapshot.get().next());
+
+		saver.release(runnableConfig);
+
+	}
+
+	@Test
+	public void testLatestCheckpointCacheIsBoundedByThreadCount() throws Exception {
+		var countingDataSource = new CountingDataSource(dataSource());
+		var saver = enableLatestCheckpointCache(PostgresSaver.builder()
+			.datasource(countingDataSource)
+			.stateSerializer(serializer)
+			.createOption(CreateOption.CREATE_OR_REPLACE)
+			.maxCachedThreads(2)
+			.build());
+
+		var firstCheckpoint = checkpoint("first");
+		var firstConfig = config("postgres-cache-thread-1");
+		saver.put(firstConfig, firstCheckpoint);
+		saver.put(config("postgres-cache-thread-2"), checkpoint("second"));
+		saver.put(config("postgres-cache-thread-3"), checkpoint("third"));
+
+		countingDataSource.reset();
+		var reloaded = saver.get(firstConfig);
+		assertTrue(reloaded.isPresent());
+		assertEquals(firstCheckpoint.getId(), reloaded.get().getId());
+		assertEquals(1, countingDataSource.latestCheckpointSelects());
+	}
+
+	@Test
+	public void testPostgresSaverKeepsOnlyLatestCheckpointInMemory() throws Exception {
+		var countingDataSource = new CountingDataSource(dataSource());
+		var saver = enableLatestCheckpointCache(PostgresSaver.builder()
+			.datasource(countingDataSource)
+			.stateSerializer(serializer)
+			.createOption(CreateOption.CREATE_OR_REPLACE)
+			.maxCachedThreads(16)
+			.build());
+
+		String threadId = "postgres-cache-single-thread";
+		var firstCheckpoint = checkpoint("first");
+		var secondCheckpoint = checkpoint("second");
+		var thirdCheckpoint = checkpoint("third");
+
+		saver.put(config(threadId), firstCheckpoint);
+		saver.put(config(threadId), secondCheckpoint);
+		saver.put(config(threadId), thirdCheckpoint);
+
+		countingDataSource.reset();
+		var latest = saver.get(config(threadId));
+		assertTrue(latest.isPresent());
+		assertEquals(thirdCheckpoint.getId(), latest.get().getId());
+		assertEquals(0, countingDataSource.latestCheckpointSelects());
+
+		Collection<Checkpoint> history = saver.list(config(threadId));
+		assertEquals(3, history.size());
+
+		countingDataSource.reset();
+		var firstFromDatabase = saver.get(config(threadId, firstCheckpoint.getId()));
+		assertTrue(firstFromDatabase.isPresent());
+		assertEquals(firstCheckpoint.getId(), firstFromDatabase.get().getId());
+		assertEquals(1, countingDataSource.checkpointByIdSelects());
+	}
+
+	@Test
+	public void testPostgresSaverRefreshesLatestCacheWhenLatestCheckpointIsUpdated() throws Exception {
+		var countingDataSource = new CountingDataSource(dataSource());
+		var saver = enableLatestCheckpointCache(PostgresSaver.builder()
+			.datasource(countingDataSource)
+			.stateSerializer(serializer)
+			.createOption(CreateOption.CREATE_OR_REPLACE)
+			.maxCachedThreads(16)
+			.build());
+
+		String threadId = "postgres-cache-update-latest-thread";
+		var originalCheckpoint = checkpoint("original");
+		var updatedCheckpoint = checkpoint("updated");
+		var checkpointConfig = saver.put(config(threadId), originalCheckpoint);
+
+		saver.put(checkpointConfig, updatedCheckpoint);
+
+		countingDataSource.reset();
+		var latest = saver.get(config(threadId));
+		assertTrue(latest.isPresent());
+		assertEquals(updatedCheckpoint.getId(), latest.get().getId());
+		assertEquals(0, countingDataSource.latestCheckpointSelects());
+	}
+
+	@Test
+	public void testPostgresSaverClearsLatestCacheWhenThreadIsReleased() throws Exception {
+		var countingDataSource = new CountingDataSource(dataSource());
+		var saver = enableLatestCheckpointCache(PostgresSaver.builder()
+			.datasource(countingDataSource)
+			.stateSerializer(serializer)
+			.createOption(CreateOption.CREATE_OR_REPLACE)
+			.maxCachedThreads(16)
+			.build());
+
+		String threadId = "postgres-cache-release-thread";
+		saver.put(config(threadId), checkpoint("released"));
+
+		countingDataSource.reset();
+		saver.release(config(threadId));
+		var latest = saver.get(config(threadId));
+		assertTrue(latest.isEmpty());
+		assertEquals(1, countingDataSource.latestCheckpointSelects());
+	}
+
+	@Test
+	public void testPostgresSaverCanDisableLatestCheckpointCache() throws Exception {
+		var countingDataSource = new CountingDataSource(dataSource());
+		var saver = PostgresSaver.builder()
+			.datasource(countingDataSource)
+			.stateSerializer(serializer)
+			.createOption(CreateOption.CREATE_OR_REPLACE)
+			.maxCachedThreads(0)
+			.build();
+
+		String threadId = "postgres-cache-disabled-thread";
+		var latestCheckpoint = checkpoint("latest");
+		saver.put(config(threadId), latestCheckpoint);
+
+		countingDataSource.reset();
+		var firstRead = saver.get(config(threadId));
+		assertTrue(firstRead.isPresent());
+		assertEquals(latestCheckpoint.getId(), firstRead.get().getId());
+		assertEquals(1, countingDataSource.latestCheckpointSelects());
+
+		countingDataSource.reset();
+		var secondRead = saver.get(config(threadId));
+		assertTrue(secondRead.isPresent());
+		assertEquals(latestCheckpoint.getId(), secondRead.get().getId());
+		assertEquals(1, countingDataSource.latestCheckpointSelects());
+	}
+
+	@Test
+	public void testPostgresSaverRetainsOnlyLatestCheckpoints() throws Exception {
+		var countingDataSource = new CountingDataSource(dataSource());
+		var saver = PostgresSaver.builder()
+			.datasource(countingDataSource)
+			.stateSerializer(serializer)
+			.createOption(CreateOption.CREATE_OR_REPLACE)
+			.maxCachedThreads(16)
+			.build();
+
+		String threadId = "postgres-retention-thread";
+		var config = RunnableConfig.builder().threadId(threadId).checkpointsNumRetained(2).build();
+		var firstCheckpoint = checkpoint("first");
+		var secondCheckpoint = checkpoint("second");
+		var thirdCheckpoint = checkpoint("third");
+
+		saver.put(config, firstCheckpoint);
+		saver.put(config, secondCheckpoint);
+		countingDataSource.reset();
+		saver.put(config, thirdCheckpoint);
+
+		assertEquals(1, countingDataSource.deleteCheckpointStatements());
+		Collection<Checkpoint> history = saver.list(config);
+		assertEquals(2, history.size());
+		assertEquals(thirdCheckpoint.getId(), history.iterator().next().getId());
+		assertTrue(saver.get(config(threadId, firstCheckpoint.getId())).isEmpty());
+	}
 
 	@Test
 	public void testPostgresSaverMultipleRoundTrips() throws Exception {
 
-		var saver = buildPostgresSaver()
-			.dropTablesFirst(true)
-			.build();
+		var saver = buildPostgresSaver().dropTablesFirst(true).build();
 
 		KeyStrategyFactory keyStrategyFactory = () -> {
 			Map<String, KeyStrategy> keyStrategyMap = new HashMap<>();
@@ -450,31 +425,21 @@ public class PostgresSaverTest {
 			return keyStrategyMap;
 		};
 
-		StateGraph workflow = new StateGraph(keyStrategyFactory)
-			.addEdge(START, "node1")
+		StateGraph workflow = new StateGraph(keyStrategyFactory).addEdge(START, "node1")
 			.addNode("node1", node_async(state -> {
 				int counter = (int) state.value("counter").orElse(0);
 				counter++;
 
-				Map<String, Object> metadata = Map.of(
-					"iteration", counter,
-					"nodeId", "node1",
-					"timestamp", System.currentTimeMillis()
-				);
-				GraphResponse<?> response =
-					GraphResponse.of("Result " + counter, metadata);
+				Map<String, Object> metadata = Map.of("iteration", counter, "nodeId", "node1", "timestamp",
+						System.currentTimeMillis());
+				GraphResponse<?> response = GraphResponse.of("Result " + counter, metadata);
 
-				return Map.of(
-					"counter", counter,
-					"graphResponse", response
-				);
+				return Map.of("counter", counter, "graphResponse", response);
 			}))
 			.addEdge("node1", END);
 
 		CompileConfig compileConfig = CompileConfig.builder()
-			.saverConfig(SaverConfig.builder()
-				.register(saver)
-				.build())
+			.saverConfig(SaverConfig.builder().register(saver).build())
 			.build();
 
 		CompiledGraph app = workflow.compile(compileConfig);
@@ -487,51 +452,43 @@ public class PostgresSaverTest {
 
 				var stateOpt = app.invoke(Map.of(), config);
 
-
 				assertTrue(stateOpt.isPresent(), "State should be present");
 				var result = stateOpt.get();
 				assertEquals(i + 1, result.data().get("counter"), "Counter should be " + (i + 1));
 
 				Object graphResponseObj = result.data().get("graphResponse");
 				assertNotNull(graphResponseObj, "GraphResponse should not be null");
-				assertTrue(graphResponseObj instanceof GraphResponse,
-					"Should be GraphResponse instance");
+				assertTrue(graphResponseObj instanceof GraphResponse, "Should be GraphResponse instance");
 
 				@SuppressWarnings("unchecked")
-				GraphResponse<Object> graphResponse =
-					(GraphResponse<Object>) graphResponseObj;
+				GraphResponse<Object> graphResponse = (GraphResponse<Object>) graphResponseObj;
 
 				Map<String, Object> metadata = graphResponse.getAllMetadata();
 				assertFalse(metadata.containsKey("@class"),
-					"Iteration " + (i + 1) + ": metadata should NOT contain @class field (Bug #3895)");
+						"Iteration " + (i + 1) + ": metadata should NOT contain @class field (Bug #3895)");
 				assertFalse(metadata.containsKey("@type"),
-					"Iteration " + (i + 1) + ": metadata should NOT contain @type field");
+						"Iteration " + (i + 1) + ": metadata should NOT contain @type field");
 				assertFalse(metadata.containsKey("@typeHint"),
-					"Iteration " + (i + 1) + ": metadata should NOT contain @typeHint field");
+						"Iteration " + (i + 1) + ": metadata should NOT contain @typeHint field");
 
-				assertEquals(3, metadata.size(),
-					"Iteration " + (i + 1) + ": metadata should have exactly 3 fields (no accumulated type markers)");
+				assertEquals(3, metadata.size(), "Iteration " + (i + 1)
+						+ ": metadata should have exactly 3 fields (no accumulated type markers)");
 
-				assertEquals(i + 1, metadata.get("iteration"),
-					"Iteration metadata should match");
-				assertEquals("node1", metadata.get("nodeId"),
-					"NodeId should be preserved");
-				assertNotNull(metadata.get("timestamp"),
-					"Timestamp should be preserved");
-
+				assertEquals(i + 1, metadata.get("iteration"), "Iteration metadata should match");
+				assertEquals("node1", metadata.get("nodeId"), "NodeId should be preserved");
+				assertNotNull(metadata.get("timestamp"), "Timestamp should be preserved");
 
 				var snapshot = app.getState(config);
 				assertNotNull(snapshot, "Snapshot should not be null");
 
 				var snapshotState = snapshot.state();
 				assertNotNull(snapshotState, "Snapshot state should not be null");
-				assertEquals(i + 1, snapshotState.data().get("counter"),
-					"Snapshot counter should match");
+				assertEquals(i + 1, snapshotState.data().get("counter"), "Snapshot counter should match");
 
 			}
 
-
-		} finally {
+		}
+		finally {
 			saver.release(config);
 		}
 	}
@@ -539,9 +496,7 @@ public class PostgresSaverTest {
 	@Test
 	public void testUserScenarioWithoutExplicitMetadata() throws Exception {
 
-		var saver = buildPostgresSaver()
-			.dropTablesFirst(true)
-			.build();
+		var saver = buildPostgresSaver().dropTablesFirst(true).build();
 
 		KeyStrategyFactory keyStrategyFactory = () -> {
 			Map<String, KeyStrategy> keyStrategyMap = new HashMap<>();
@@ -550,31 +505,22 @@ public class PostgresSaverTest {
 			return keyStrategyMap;
 		};
 
-		StateGraph workflow = new StateGraph(keyStrategyFactory)
-			.addEdge(START, "processNode")
+		StateGraph workflow = new StateGraph(keyStrategyFactory).addEdge(START, "processNode")
 			.addNode("processNode", node_async(state -> {
 				@SuppressWarnings("unchecked")
-				var messages = (java.util.List<String>) state.value("messages").orElse(new java.util.ArrayList<String>());
+				var messages = (java.util.List<String>) state.value("messages")
+					.orElse(new java.util.ArrayList<String>());
 				var newMessages = new java.util.ArrayList<>(messages);
 				newMessages.add("Message " + (messages.size() + 1));
 
-				GraphResponse<?> response =
-					GraphResponse.of(
-						"Processed message " + newMessages.size()
-					);
+				GraphResponse<?> response = GraphResponse.of("Processed message " + newMessages.size());
 
-
-				return Map.of(
-					"messages", newMessages,
-					"lastResponse", response
-				);
+				return Map.of("messages", newMessages, "lastResponse", response);
 			}))
 			.addEdge("processNode", END);
 
 		CompileConfig compileConfig = CompileConfig.builder()
-			.saverConfig(SaverConfig.builder()
-				.register(saver)
-				.build())
+			.saverConfig(SaverConfig.builder().register(saver).build())
 			.build();
 
 		CompiledGraph app = workflow.compile(compileConfig);
@@ -591,26 +537,23 @@ public class PostgresSaverTest {
 				var messages = (java.util.List<?>) result.data().get("messages");
 				assertNotNull(messages, "Messages should not be null");
 				assertEquals(round + 1, messages.size(),
-					"Round " + (round + 1) + ": Should have " + (round + 1) + " messages");
+						"Round " + (round + 1) + ": Should have " + (round + 1) + " messages");
 
 				Object lastResponseObj = result.data().get("lastResponse");
 				assertNotNull(lastResponseObj, "LastResponse should not be null");
-				assertTrue(lastResponseObj instanceof GraphResponse,
-					"LastResponse should be GraphResponse instance");
+				assertTrue(lastResponseObj instanceof GraphResponse, "LastResponse should be GraphResponse instance");
 
 				@SuppressWarnings("unchecked")
-				GraphResponse<Object> lastResponse =
-					(GraphResponse<Object>) lastResponseObj;
+				GraphResponse<Object> lastResponse = (GraphResponse<Object>) lastResponseObj;
 
 				Map<String, Object> metadata = lastResponse.getAllMetadata();
 
 				assertFalse(metadata.containsKey("@class"),
-					"Round " + (round + 1) + ": metadata should NOT contain @class field");
+						"Round " + (round + 1) + ": metadata should NOT contain @class field");
 				assertFalse(metadata.containsKey("@type"),
-					"Round " + (round + 1) + ": metadata should NOT contain @type field");
+						"Round " + (round + 1) + ": metadata should NOT contain @type field");
 				assertFalse(metadata.containsKey("@typeHint"),
-					"Round " + (round + 1) + ": metadata should NOT contain @typeHint field");
-
+						"Round " + (round + 1) + ": metadata should NOT contain @typeHint field");
 
 				var snapshot = app.getState(config);
 				assertNotNull(snapshot, "Snapshot should not be null");
@@ -621,127 +564,127 @@ public class PostgresSaverTest {
 				Object restoredResponseObj = snapshotState.data().get("lastResponse");
 				if (restoredResponseObj instanceof GraphResponse) {
 					@SuppressWarnings("unchecked")
-					GraphResponse<Object> restoredResponse =
-						(GraphResponse<Object>) restoredResponseObj;
+					GraphResponse<Object> restoredResponse = (GraphResponse<Object>) restoredResponseObj;
 					Map<String, Object> restoredMetadata = restoredResponse.getAllMetadata();
 
 					assertFalse(restoredMetadata.containsKey("@class"),
-						"Round " + (round + 1) + ": Restored metadata should NOT contain @class");
+							"Round " + (round + 1) + ": Restored metadata should NOT contain @class");
 
 				}
 			}
 
-
-		} finally {
+		}
+		finally {
 			saver.release(config);
 		}
 	}
 
-    private static final class CountingDataSource implements DataSource {
+	private static final class CountingDataSource implements DataSource {
 
-        private final DataSource delegate;
+		private final DataSource delegate;
 
-        private final AtomicInteger latestCheckpointSelects = new AtomicInteger();
+		private final AtomicInteger latestCheckpointSelects = new AtomicInteger();
 
-        private final AtomicInteger checkpointByIdSelects = new AtomicInteger();
+		private final AtomicInteger checkpointByIdSelects = new AtomicInteger();
 
-        private final AtomicInteger deleteCheckpointStatements = new AtomicInteger();
+		private final AtomicInteger deleteCheckpointStatements = new AtomicInteger();
 
-        private CountingDataSource(DataSource delegate) {
-            this.delegate = delegate;
-        }
+		private CountingDataSource(DataSource delegate) {
+			this.delegate = delegate;
+		}
 
-        void reset() {
-            latestCheckpointSelects.set(0);
-            checkpointByIdSelects.set(0);
-            deleteCheckpointStatements.set(0);
-        }
+		void reset() {
+			latestCheckpointSelects.set(0);
+			checkpointByIdSelects.set(0);
+			deleteCheckpointStatements.set(0);
+		}
 
-        int latestCheckpointSelects() {
-            return latestCheckpointSelects.get();
-        }
+		int latestCheckpointSelects() {
+			return latestCheckpointSelects.get();
+		}
 
-        int checkpointByIdSelects() {
-            return checkpointByIdSelects.get();
-        }
+		int checkpointByIdSelects() {
+			return checkpointByIdSelects.get();
+		}
 
-        int deleteCheckpointStatements() {
-            return deleteCheckpointStatements.get();
-        }
+		int deleteCheckpointStatements() {
+			return deleteCheckpointStatements.get();
+		}
 
-        @Override
-        public Connection getConnection() throws SQLException {
-            return countPreparedStatements(delegate.getConnection());
-        }
+		@Override
+		public Connection getConnection() throws SQLException {
+			return countPreparedStatements(delegate.getConnection());
+		}
 
-        @Override
-        public Connection getConnection(String username, String password) throws SQLException {
-            return countPreparedStatements(delegate.getConnection(username, password));
-        }
+		@Override
+		public Connection getConnection(String username, String password) throws SQLException {
+			return countPreparedStatements(delegate.getConnection(username, password));
+		}
 
-        private Connection countPreparedStatements(Connection connection) {
-            return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class<?>[] { Connection.class },
-                    (proxy, method, args) -> {
-                        countQuery(method, args);
-                        try {
-                            return method.invoke(connection, args);
-                        }
-                        catch (InvocationTargetException ex) {
-                            throw ex.getCause();
-                        }
-                    });
-        }
+		private Connection countPreparedStatements(Connection connection) {
+			return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
+					new Class<?>[] { Connection.class }, (proxy, method, args) -> {
+						countQuery(method, args);
+						try {
+							return method.invoke(connection, args);
+						}
+						catch (InvocationTargetException ex) {
+							throw ex.getCause();
+						}
+					});
+		}
 
-        private void countQuery(java.lang.reflect.Method method, Object[] args) {
-            if (!"prepareStatement".equals(method.getName()) || args == null || args.length == 0
-                    || !(args[0] instanceof String sql)) {
-                return;
-            }
-            if (sql.contains("ORDER BY c.saved_at DESC") && sql.contains("LIMIT 1")) {
-                latestCheckpointSelects.incrementAndGet();
-            }
-            if (sql.contains("AND c.checkpoint_id = ?")) {
-                checkpointByIdSelects.incrementAndGet();
-            }
-            if (sql.contains("DELETE FROM GraphCheckpoint")) {
-                deleteCheckpointStatements.incrementAndGet();
-            }
-        }
+		private void countQuery(java.lang.reflect.Method method, Object[] args) {
+			if (!"prepareStatement".equals(method.getName()) || args == null || args.length == 0
+					|| !(args[0] instanceof String sql)) {
+				return;
+			}
+			if (sql.contains("ORDER BY c.saved_at DESC") && sql.contains("LIMIT 1")) {
+				latestCheckpointSelects.incrementAndGet();
+			}
+			if (sql.contains("AND c.checkpoint_id = ?")) {
+				checkpointByIdSelects.incrementAndGet();
+			}
+			if (sql.contains("DELETE FROM GraphCheckpoint")) {
+				deleteCheckpointStatements.incrementAndGet();
+			}
+		}
 
-        @Override
-        public <T> T unwrap(Class<T> iface) throws SQLException {
-            return delegate.unwrap(iface);
-        }
+		@Override
+		public <T> T unwrap(Class<T> iface) throws SQLException {
+			return delegate.unwrap(iface);
+		}
 
-        @Override
-        public boolean isWrapperFor(Class<?> iface) throws SQLException {
-            return delegate.isWrapperFor(iface);
-        }
+		@Override
+		public boolean isWrapperFor(Class<?> iface) throws SQLException {
+			return delegate.isWrapperFor(iface);
+		}
 
-        @Override
-        public PrintWriter getLogWriter() throws SQLException {
-            return delegate.getLogWriter();
-        }
+		@Override
+		public PrintWriter getLogWriter() throws SQLException {
+			return delegate.getLogWriter();
+		}
 
-        @Override
-        public void setLogWriter(PrintWriter out) throws SQLException {
-            delegate.setLogWriter(out);
-        }
+		@Override
+		public void setLogWriter(PrintWriter out) throws SQLException {
+			delegate.setLogWriter(out);
+		}
 
-        @Override
-        public void setLoginTimeout(int seconds) throws SQLException {
-            delegate.setLoginTimeout(seconds);
-        }
+		@Override
+		public void setLoginTimeout(int seconds) throws SQLException {
+			delegate.setLoginTimeout(seconds);
+		}
 
-        @Override
-        public int getLoginTimeout() throws SQLException {
-            return delegate.getLoginTimeout();
-        }
+		@Override
+		public int getLoginTimeout() throws SQLException {
+			return delegate.getLoginTimeout();
+		}
 
-        @Override
-        public Logger getParentLogger() throws SQLFeatureNotSupportedException {
-            return delegate.getParentLogger();
-        }
-    }
+		@Override
+		public Logger getParentLogger() throws SQLFeatureNotSupportedException {
+			return delegate.getParentLogger();
+		}
+
+	}
 
 }

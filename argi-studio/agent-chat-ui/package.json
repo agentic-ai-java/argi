@@ -17,7 +17,7 @@
     "start": "next start",
     "lint": "next lint",
     "lint:fix": "next lint --fix",
-    "test": "node --test src/lib/spring-ai-api.test.mjs",
+    "test": "node --test src/lib/argi-api.test.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

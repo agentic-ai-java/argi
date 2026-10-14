@@ -16,6 +16,7 @@
 package io.github.agentic.ai.graph.serializer.std;
 
 import io.github.agentic.ai.graph.serializer.Serializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.LegacyChatRecordSupport;
 
 import java.io.IOException;
 import java.io.ObjectInput;
@@ -37,10 +38,21 @@ public class ObjectInputWithMapper implements ObjectInput {
 
 	@Override
 	public Object readObject() throws ClassNotFoundException, IOException {
-		Object object = in.readObject();
+		Object object;
+		try {
+			object = in.readObject();
+		}
+		catch (ClassNotFoundException ex) {
+			throw new IOException("Checkpoint class is unavailable. Legacy binary chat checkpoints require export "
+					+ "to JSON using the previous runtime before upgrading.", ex);
+		}
 
 		if (object instanceof Class) {
 			Class<?> type = (Class<?>) object;
+			if (LegacyChatRecordSupport.isLegacyType(type.getName())) {
+				throw new IOException("Legacy binary chat checkpoints are not supported. Export to JSON using "
+						+ "the previous runtime before upgrading: " + type.getName());
+			}
 
 			Optional<Serializer<Object>> optSerializer = mapper.getSerializer(type);
 

@@ -17,9 +17,9 @@ package io.github.agentic.ai.graph.agent.tools;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -45,14 +45,16 @@ import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
 /**
- * Grep search tool for fast content search.
- * Searches file contents using regular expressions.
- * Supports full regex syntax and filters files by pattern with the include parameter.
+ * Grep search tool for fast content search. Searches file contents using regular
+ * expressions. Supports full regex syntax and filters files by pattern with the include
+ * parameter.
  */
 public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolContext, String> {
 
 	private final Path rootPath;
+
 	private final boolean useRipgrep;
+
 	private final long maxFileSizeBytes;
 
 	public GrepSearchTool(String rootPath) {
@@ -65,23 +67,16 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 		this.maxFileSizeBytes = maxFileSizeMb * 1024L * 1024L;
 	}
 
-	public record Request(
-			@JsonProperty(required = true)
-			@JsonPropertyDescription("The regular expression pattern to search for in file contents")
-			String pattern,
+	public record Request(@JsonProperty(
+			required = true) @JsonPropertyDescription("The regular expression pattern to search for in file contents") String pattern,
 
-			@JsonProperty(defaultValue = "/")
-			@JsonPropertyDescription("The directory to search in. If not specified, searches from root.")
-			String path,
+			@JsonProperty(
+					defaultValue = "/") @JsonPropertyDescription("The directory to search in. If not specified, searches from root.") String path,
 
-			@JsonProperty
-			@JsonPropertyDescription("File pattern to filter (e.g., \"*.js\", \"*.{ts,tsx}\")")
-			String include,
+			@JsonProperty @JsonPropertyDescription("File pattern to filter (e.g., \"*.js\", \"*.{ts,tsx}\")") String include,
 
-			@JsonProperty(defaultValue = "files_with_matches")
-			@JsonPropertyDescription("Output format: files_with_matches (default), content, or count")
-			String outputMode
-	) {
+			@JsonProperty(
+					defaultValue = "files_with_matches") @JsonPropertyDescription("Output format: files_with_matches (default), content, or count") String outputMode) {
 		public Request {
 			if (path == null || path.isEmpty()) {
 				path = "/";
@@ -97,7 +92,8 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 		// Validate regex pattern
 		try {
 			Pattern.compile(request.pattern());
-		} catch (PatternSyntaxException e) {
+		}
+		catch (PatternSyntaxException e) {
 			return "Invalid regex pattern: " + e.getMessage();
 		}
 
@@ -111,7 +107,8 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 		if (useRipgrep) {
 			try {
 				results = ripgrepSearch(request.pattern(), request.path(), request.include());
-			} catch (Exception e) {
+			}
+			catch (Exception e) {
 				// Fall back to Java search
 			}
 		}
@@ -163,10 +160,12 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 					try {
 						// Parse ripgrep JSON output (simplified parsing)
 						if (line.contains("\"type\":\"match\"")) {
-							// This is a simplified approach; for production use a proper JSON parser
+							// This is a simplified approach; for production use a proper
+							// JSON parser
 							results.putIfAbsent("ripgrep_result", new ArrayList<>());
 						}
-					} catch (Exception e) {
+					}
+					catch (Exception e) {
 						// Skip malformed lines
 					}
 				}
@@ -187,7 +186,8 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 			// In production, implement proper JSON parsing for ripgrep output
 			return null;
 
-		} catch (Exception e) {
+		}
+		catch (Exception e) {
 			return null; // Trigger fallback to Java search
 		}
 	}
@@ -225,10 +225,11 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 							if (matcher.find()) {
 								String virtualPath = "/" + rootPath.relativize(file).toString().replace("\\", "/");
 								results.computeIfAbsent(virtualPath, k -> new ArrayList<>())
-										.add(new MatchInfo(i + 1, lines[i]));
+									.add(new MatchInfo(i + 1, lines[i]));
 							}
 						}
-					} catch (IOException e) {
+					}
+					catch (IOException e) {
 						// Skip files that can't be read or are binary
 					}
 
@@ -244,7 +245,8 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 
 			return results;
 
-		} catch (Exception e) {
+		}
+		catch (Exception e) {
 			return Collections.emptyMap();
 		}
 	}
@@ -284,10 +286,7 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 	private boolean matchIncludePattern(String filename, String pattern) {
 		// Simple glob matching - convert glob to regex
 		// This is a simplified version; for production use a proper glob library
-		String regex = pattern
-				.replace(".", "\\.")
-				.replace("*", ".*")
-				.replace("?", ".");
+		String regex = pattern.replace(".", "\\.").replace("*", ".*").replace("?", ".");
 
 		// Handle brace expansion like *.{js,ts}
 		if (pattern.contains("{") && pattern.contains("}")) {
@@ -296,35 +295,36 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 
 		try {
 			return filename.matches(regex);
-		} catch (PatternSyntaxException e) {
+		}
+		catch (PatternSyntaxException e) {
 			return false;
 		}
 	}
 
 	private String formatResults(Map<String, List<MatchInfo>> results, String outputMode) {
 		return switch (outputMode) {
-			case "files_with_matches" -> results.keySet().stream()
-					.sorted()
-					.collect(Collectors.joining("\n"));
+			case "files_with_matches" -> results.keySet().stream().sorted().collect(Collectors.joining("\n"));
 
-			case "content" -> results.entrySet().stream()
-					.sorted(Map.Entry.comparingByKey())
-					.flatMap(entry -> entry.getValue().stream()
-							.map(info -> String.format("%s:%d:%s", entry.getKey(), info.lineNumber(), info.lineText())))
-					.collect(Collectors.joining("\n"));
+			case "content" -> results.entrySet()
+				.stream()
+				.sorted(Map.Entry.comparingByKey())
+				.flatMap(entry -> entry.getValue()
+					.stream()
+					.map(info -> String.format("%s:%d:%s", entry.getKey(), info.lineNumber(), info.lineText())))
+				.collect(Collectors.joining("\n"));
 
-			case "count" -> results.entrySet().stream()
-					.sorted(Map.Entry.comparingByKey())
-					.map(entry -> String.format("%s:%d", entry.getKey(), entry.getValue().size()))
-					.collect(Collectors.joining("\n"));
+			case "count" -> results.entrySet()
+				.stream()
+				.sorted(Map.Entry.comparingByKey())
+				.map(entry -> String.format("%s:%d", entry.getKey(), entry.getValue().size()))
+				.collect(Collectors.joining("\n"));
 
-			default -> results.keySet().stream()
-					.sorted()
-					.collect(Collectors.joining("\n"));
+			default -> results.keySet().stream().sorted().collect(Collectors.joining("\n"));
 		};
 	}
 
-	private record MatchInfo(int lineNumber, String lineText) {}
+	private record MatchInfo(int lineNumber, String lineText) {
+	}
 
 	public static Builder builder(String rootPath) {
 		return new Builder(rootPath);
@@ -369,9 +369,8 @@ public class GrepSearchTool implements BiFunction<GrepSearchTool.Request, ToolCo
 			return this;
 		}
 
-		public ToolCallback build() {
-			return FunctionToolCallback
-				.builder(name, new GrepSearchTool(rootPath, useRipgrep, maxFileSizeMb))
+		public Tool build() {
+			return TypedTool.builder(name, new GrepSearchTool(rootPath, useRipgrep, maxFileSizeMb))
 				.description(description)
 				.inputType(Request.class)
 				.build();

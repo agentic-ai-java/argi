@@ -26,9 +26,9 @@ import io.github.agentic.ai.graph.checkpoint.Checkpoint;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -48,11 +48,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Reproduction for <a href="https://github.com/agentic-ai-java/argi/issues/25">issue #25</a>:
- * when a streaming run is cancelled mid-flight (client timeout, SSE disconnect), the persisted
- * checkpoint may contain a {@link ToolResponseMessage} whose preceding assistant tool_call never
- * made it into the checkpoint. The next turn then loads an invalid message sequence and the LLM
- * rejects the request with 400.
+ * Reproduction for <a href="https://github.com/agentic-ai-java/argi/issues/25">issue
+ * #25</a>: when a streaming run is cancelled mid-flight (client timeout, SSE disconnect),
+ * the persisted checkpoint may contain a {@link ToolResponseMessage} whose preceding
+ * assistant tool_call never made it into the checkpoint. The next turn then loads an
+ * invalid message sequence and the LLM rejects the request with 400.
  */
 class Issue25StreamCancelCheckpointTest {
 
@@ -72,10 +72,10 @@ class Issue25StreamCancelCheckpointTest {
 		@Override
 		public ChatResponse call(Prompt prompt) {
 			if (callCount.incrementAndGet() == 1) {
-				AssistantMessage.ToolCall toolCall = new AssistantMessage.ToolCall("call-1", "function",
-						"lookup", "{\"query\": \"x\"}");
-				return new ChatResponse(List.of(new Generation(
-						AssistantMessage.builder().content("").toolCalls(List.of(toolCall)).build())));
+				AssistantMessage.ToolCall toolCall = new AssistantMessage.ToolCall("call-1", "function", "lookup",
+						"{\"query\": \"x\"}");
+				return new ChatResponse(List
+					.of(new Generation(AssistantMessage.builder().content("").toolCalls(List.of(toolCall)).build())));
 			}
 			return new ChatResponse(List.of(new Generation(new AssistantMessage("final answer"))));
 		}
@@ -90,11 +90,12 @@ class Issue25StreamCancelCheckpointTest {
 	private ReactAgent agentWith(MemorySaver saver, String name) {
 		ToolCallback lookup = ToolCallbacks.from(new LookupTools())[0];
 		return ReactAgent.builder()
-				.name(name)
-				.model(new ToolCallThenFinalChatModel())
-				.tools(lookup)
-				.saver(saver)
-				.build();
+			.name(name)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(
+					new ToolCallThenFinalChatModel()))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(lookup))
+			.saver(saver)
+			.build();
 	}
 
 	private Checkpoint checkpointOf(MemorySaver saver, RunnableConfig config) {
@@ -102,37 +103,37 @@ class Issue25StreamCancelCheckpointTest {
 	}
 
 	@SuppressWarnings("unchecked")
-	private List<Message> messagesOf(Checkpoint checkpoint) {
+	private List<ChatMessage> messagesOf(Checkpoint checkpoint) {
 		Object messages = checkpoint.getState().get("messages");
-		return messages instanceof List<?> list ? (List<Message>) list : List.of();
+		return messages instanceof List<?> list ? (List<ChatMessage>) list : List.of();
 	}
 
-	private void assertToolCallPairsValid(List<Message> messages) {
-		Message previous = null;
+	private void assertToolCallPairsValid(List<ChatMessage> messages) {
+		ChatMessage previous = null;
 		int toolCalls = 0;
 		int toolResponses = 0;
 		StringBuilder description = new StringBuilder();
-		for (Message message : messages) {
+		for (ChatMessage message : messages) {
 			if (description.length() > 0) {
 				description.append(" -> ");
 			}
-			description.append(message.getMessageType());
-			if (message instanceof AssistantMessage assistant && !assistant.getToolCalls().isEmpty()) {
+			description.append(message.role());
+			if (message.role() == ChatRole.ASSISTANT && message.hasToolCalls()) {
 				description.append("(tool_call)");
 			}
-			if (message instanceof ToolResponseMessage) {
+			if (message.role() == ChatRole.TOOL) {
 				toolResponses++;
 				description.append("(tool)");
-				assertTrue(previous instanceof AssistantMessage && !((AssistantMessage) previous).getToolCalls().isEmpty(),
+				assertTrue(previous != null && previous.role() == ChatRole.ASSISTANT && previous.hasToolCalls(),
 						"persisted sequence invalid: tool response preceded by " + previous + " in " + description);
 			}
-			if (message instanceof AssistantMessage assistant && !assistant.getToolCalls().isEmpty()) {
+			if (message.role() == ChatRole.ASSISTANT && message.hasToolCalls()) {
 				toolCalls++;
 			}
 			previous = message;
 		}
 		if (toolCalls != toolResponses) {
-			throw new AssertionError("assistant tool_call and tool response must be paired — expected " + toolCalls
+			throw new AssertionError("assistant tool_call and tool response must be paired; expected " + toolCalls
 					+ " responses but was " + toolResponses + " in " + description);
 		}
 	}
@@ -147,9 +148,10 @@ class Issue25StreamCancelCheckpointTest {
 		ReactAgent agent = agentWith(saver, "issue25_full_agent");
 		RunnableConfig config = RunnableConfig.builder().threadId("issue25-full").build();
 
-		List<Message> seen = agent.streamMessages(new UserMessage("please look up x"), config)
-				.collectList()
-				.block(Duration.ofSeconds(10));
+		List<io.github.agentic.ai.api.chat.ChatMessage> seen = agent
+			.streamMessages(io.github.agentic.ai.api.chat.ChatMessage.user("please look up x"), config)
+			.collectList()
+			.block(Duration.ofSeconds(10));
 
 		assertNotNull(seen);
 		Checkpoint checkpoint = checkpointOf(saver, config);
@@ -164,12 +166,14 @@ class Issue25StreamCancelCheckpointTest {
 		RunnableConfig config = RunnableConfig.builder().threadId("issue25-cancel").build();
 
 		CountDownLatch firstEvent = new CountDownLatch(1);
-		Disposable disposable = agent.streamMessages(new UserMessage("please look up x"), config)
-				.doOnNext(message -> firstEvent.countDown())
-				.subscribe();
+		Disposable disposable = agent
+			.streamMessages(io.github.agentic.ai.api.chat.ChatMessage.user("please look up x"), config)
+			.doOnNext(message -> firstEvent.countDown())
+			.subscribe();
 		assertTrue(firstEvent.await(5, TimeUnit.SECONDS), "the stream should emit at least one event");
 		disposable.dispose();
-		// Give any background persistence (the buggy path) time to land before inspecting.
+		// Give any background persistence (the buggy path) time to land before
+		// inspecting.
 		Thread.sleep(2000);
 
 		Checkpoint checkpoint = checkpointOf(saver, config);
@@ -186,9 +190,10 @@ class Issue25StreamCancelCheckpointTest {
 		RunnableConfig config = RunnableConfig.builder().threadId("issue25-completed").build();
 
 		CountDownLatch terminated = new CountDownLatch(1);
-		Disposable disposable = agent.streamMessages(new UserMessage("please look up x"), config)
-				.doFinally(signal -> terminated.countDown())
-				.subscribe();
+		Disposable disposable = agent
+			.streamMessages(io.github.agentic.ai.api.chat.ChatMessage.user("please look up x"), config)
+			.doFinally(signal -> terminated.countDown())
+			.subscribe();
 		assertTrue(terminated.await(10, TimeUnit.SECONDS), "the run should terminate");
 		disposable.dispose(); // no-op on a completed stream: no cancel signal, no rewind
 
@@ -199,17 +204,17 @@ class Issue25StreamCancelCheckpointTest {
 		assertEquals(4, messagesOf(checkpoint).size(), "the completed turn must be fully recorded");
 	}
 
-	private static String describe(List<Message> messages) {
+	private static String describe(List<ChatMessage> messages) {
 		StringBuilder sb = new StringBuilder();
-		for (Message m : messages) {
+		for (ChatMessage m : messages) {
 			if (sb.length() > 0) {
 				sb.append(" -> ");
 			}
-			sb.append(m.getMessageType());
-			if (m instanceof AssistantMessage a && !a.getToolCalls().isEmpty()) {
+			sb.append(m.role());
+			if (m.role() == ChatRole.ASSISTANT && m.hasToolCalls()) {
 				sb.append("(tool_call)");
 			}
-			if (m instanceof ToolResponseMessage) {
+			if (m.role() == ChatRole.TOOL) {
 				sb.append("(tool)");
 			}
 		}

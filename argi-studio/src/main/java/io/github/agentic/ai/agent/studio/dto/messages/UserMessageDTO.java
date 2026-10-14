@@ -15,7 +15,10 @@
  */
 package io.github.agentic.ai.agent.studio.dto.messages;
 
-import org.springframework.ai.chat.messages.UserMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
+import io.github.agentic.ai.api.chat.ContentPart;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,8 +28,8 @@ import java.util.Map;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * Data Transfer Object for UserMessage.
- * Provides serialization-friendly representation with default constructor and getters/setters.
+ * Data Transfer Object for ChatMessage. Provides serialization-friendly representation
+ * with default constructor and getters/setters.
  */
 public class UserMessageDTO implements MessageDTO {
 
@@ -59,23 +62,57 @@ public class UserMessageDTO implements MessageDTO {
 	}
 
 	/**
-	 * Constructor from Spring AI UserMessage.
+	 * Constructor from provider-neutral ChatMessage.
 	 */
-	public UserMessageDTO(UserMessage message) {
+	public UserMessageDTO(ChatMessage message) {
 		this();
-		this.content = message.getText();
-		this.metadata = new HashMap<>(message.getMetadata());
+		this.content = message.text();
+		this.metadata = new HashMap<>(message.metadata());
 
-		// Note: Media extraction is not currently supported
-		// Spring AI's Media API is not directly accessible in this version
+		for (ContentPart part : message.content()) {
+			if (part.type() != ContentPart.Type.TEXT && part.type() != ContentPart.Type.JSON) {
+				MediaDTO item = new MediaDTO();
+				item.setMimeType(part.mimeType());
+				item.setData(part.data());
+				this.media.add(item);
+			}
+		}
 	}
 
 	/**
-	 * Convert to Spring AI UserMessage.
+	 * Convert to provider-neutral ChatMessage.
 	 */
-	public UserMessage toUserMessage() {
-		// UserMessage constructor just takes content as String
-		return new UserMessage(this.content);
+	public ChatMessage toUserMessage() {
+		return toChatMessage();
+	}
+
+	/** Converts Studio input into a neutral message; media data is bytes or base64. */
+	public ChatMessage toChatMessage() {
+		List<ContentPart> parts = new ArrayList<>();
+		if (content != null) {
+			parts.add(ContentPart.text(content));
+		}
+		if (media != null) {
+			for (MediaDTO item : media) {
+				if (item == null || item.mimeType == null || item.mimeType.isBlank()) {
+					throw new IllegalArgumentException("Media requires a MIME type");
+				}
+				byte[] bytes;
+				if (item.data instanceof byte[] binary) {
+					bytes = binary;
+				}
+				else if (item.data instanceof String encoded) {
+					bytes = java.util.Base64.getDecoder().decode(encoded);
+				}
+				else {
+					throw new IllegalArgumentException("Media data must be bytes or base64");
+				}
+				ContentPart.Type type = item.mimeType.startsWith("image/") ? ContentPart.Type.IMAGE
+						: item.mimeType.startsWith("audio/") ? ContentPart.Type.AUDIO : ContentPart.Type.OTHER;
+				parts.add(ContentPart.binary(type, item.mimeType, bytes));
+			}
+		}
+		return new ChatMessage(ChatRole.USER, parts, metadata);
 	}
 
 	// Getters and Setters
@@ -113,10 +150,10 @@ public class UserMessageDTO implements MessageDTO {
 	}
 
 	/**
-	 * DTO for Media within UserMessage.
-	 * Placeholder for future media support.
+	 * DTO for Media within ChatMessage. Binary media encoded as bytes or a base64 string.
 	 */
 	public static class MediaDTO {
+
 		@JsonProperty("mimeType")
 		private String mimeType;
 
@@ -143,5 +180,7 @@ public class UserMessageDTO implements MessageDTO {
 		public void setData(Object data) {
 			this.data = data;
 		}
+
 	}
+
 }

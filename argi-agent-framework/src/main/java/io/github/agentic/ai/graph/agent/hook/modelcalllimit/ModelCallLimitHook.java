@@ -15,6 +15,8 @@
  */
 package io.github.agentic.ai.graph.agent.hook.modelcalllimit;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.graph.KeyStrategy;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
@@ -22,8 +24,6 @@ import io.github.agentic.ai.graph.agent.hook.HookPosition;
 import io.github.agentic.ai.graph.agent.hook.HookPositions;
 import io.github.agentic.ai.graph.agent.hook.JumpTo;
 import io.github.agentic.ai.graph.agent.hook.ModelHook;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -34,18 +34,21 @@ import java.util.concurrent.CompletableFuture;
 /**
  * Hook that tracks and limits model call counts.
  *
- * This hook monitors the number of model calls made during agent execution
- * and can terminate the agent when specified limits are reached. It supports
- * both thread-level and run-level call counting with configurable exit behaviors.
+ * This hook monitors the number of model calls made during agent execution and can
+ * terminate the agent when specified limits are reached. It supports both thread-level
+ * and run-level call counting with configurable exit behaviors.
  */
-@HookPositions({HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL})
+@HookPositions({ HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL })
 public class ModelCallLimitHook extends ModelHook {
 
 	private static final String THREAD_COUNT_KEY = "__model_call_limit_thread_count__";
+
 	private static final String RUN_COUNT_KEY = "__model_call_limit_run_count__";
 
 	private final Integer threadLimit;
+
 	private final Integer runLimit;
+
 	private final ExitBehavior exitBehavior;
 
 	private ModelCallLimitHook(Builder builder) {
@@ -69,24 +72,16 @@ public class ModelCallLimitHook extends ModelHook {
 
 		if (threadLimitExceeded || runLimitExceeded) {
 			if (exitBehavior == ExitBehavior.ERROR) {
-				throw new ModelCallLimitExceededException(
-						threadModelCallCount,
-						runModelCallCount,
-						threadLimit,
-						runLimit
-				);
+				throw new ModelCallLimitExceededException(threadModelCallCount, runModelCallCount, threadLimit,
+						runLimit);
 			}
 			else if (exitBehavior == ExitBehavior.END) {
 				// Add message indicating limit was exceeded and jump to end
-				String message = buildLimitExceededMessage(
-						threadModelCallCount,
-						runModelCallCount,
-						threadLimit,
-						runLimit
-				);
+				String message = buildLimitExceededMessage(threadModelCallCount, runModelCallCount, threadLimit,
+						runLimit);
 
-				List<Message> messages = new ArrayList<>();
-				messages.add(new AssistantMessage(message));
+				List<ChatMessage> messages = new ArrayList<>();
+				messages.add(ChatMessage.assistant(message));
 
 				Map<String, Object> updates = new HashMap<>();
 				updates.put("messages", messages);
@@ -175,13 +170,17 @@ public class ModelCallLimitHook extends ModelHook {
 	}
 
 	public enum ExitBehavior {
-		END,
-		ERROR
+
+		END, ERROR
+
 	}
 
 	public static class Builder {
+
 		private Integer threadLimit;
+
 		private Integer runLimit;
+
 		private ExitBehavior exitBehavior = ExitBehavior.END;
 
 		public Builder threadLimit(Integer threadLimit) {
@@ -205,5 +204,7 @@ public class ModelCallLimitHook extends ModelHook {
 			}
 			return new ModelCallLimitHook(this);
 		}
+
 	}
+
 }

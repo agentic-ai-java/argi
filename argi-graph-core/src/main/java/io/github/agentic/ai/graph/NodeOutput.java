@@ -15,8 +15,7 @@
  */
 package io.github.agentic.ai.graph;
 
-import org.springframework.ai.chat.metadata.EmptyUsage;
-import org.springframework.ai.chat.metadata.Usage;
+import io.github.agentic.ai.api.chat.Usage;
 
 import java.util.Objects;
 
@@ -29,6 +28,11 @@ import static java.lang.String.format;
  *
  */
 public class NodeOutput {
+
+	/**
+	 * Reserved node-delta key; consumed by the runtime, never persisted in user state.
+	 */
+	public static final String TOKEN_USAGE_KEY = "_TOKEN_USAGE_";
 
 	/**
 	 * Build NodeOutput with chat response for after node processing
@@ -45,6 +49,7 @@ public class NodeOutput {
 	protected String agent;
 
 	protected Usage tokenUsage;
+
 	/**
 	 * The state associated with the node.
 	 */
@@ -92,7 +97,7 @@ public class NodeOutput {
 	}
 
 	public Usage tokenUsage() {
-		return tokenUsage != null ? tokenUsage : new EmptyUsage();
+		return tokenUsage != null ? tokenUsage : Usage.unknown();
 	}
 
 	public OverAllState state() {
@@ -119,8 +124,8 @@ public class NodeOutput {
 
 	@Override
 	public String toString() {
-		return format("NodeOutput{node=%s, agent=%s, tokenUsage=%s, state=%s, subGraph=%s}",
-				node(), agent(), tokenUsage(), state(), isSubGraph());
+		return format("NodeOutput{node=%s, agent=%s, tokenUsage=%s, state=%s, subGraph=%s}", node(), agent(),
+				tokenUsage(), state(), isSubGraph());
 	}
 
 }

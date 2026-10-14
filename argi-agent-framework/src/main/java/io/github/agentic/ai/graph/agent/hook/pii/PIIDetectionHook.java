@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.graph.agent.hook.pii;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.agent.hook.HookPosition;
 import io.github.agentic.ai.graph.agent.hook.HookPositions;
@@ -23,11 +26,6 @@ import io.github.agentic.ai.graph.agent.hook.messages.AgentCommand;
 import io.github.agentic.ai.graph.agent.hook.messages.MessagesModelHook;
 import io.github.agentic.ai.graph.agent.hook.messages.UpdatePolicy;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -35,25 +33,26 @@ import java.util.List;
 /**
  * Detect and handle Personally Identifiable Information (PII) in agent conversations.
  *
- * This hook detects common PII types and applies configurable strategies
- * to handle them. It can detect emails, credit cards, IP addresses,
- * MAC addresses, and URLs in both user input and agent output.
+ * This hook detects common PII types and applies configurable strategies to handle them.
+ * It can detect emails, credit cards, IP addresses, MAC addresses, and URLs in both user
+ * input and agent output.
  *
- * Example:
- * PIIDetectionHook pii = PIIDetectionHook.builder()
- *     .piiType(PIIType.EMAIL)
- *     .strategy(RedactionStrategy.REDACT)
- *     .applyToInput(true)
- *     .build();
+ * Example: PIIDetectionHook pii = PIIDetectionHook.builder() .piiType(PIIType.EMAIL)
+ * .strategy(RedactionStrategy.REDACT) .applyToInput(true) .build();
  */
-@HookPositions({HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL})
+@HookPositions({ HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL })
 public class PIIDetectionHook extends MessagesModelHook {
 
 	private final PIIType piiType;
+
 	private final RedactionStrategy strategy;
+
 	private final PIIDetector detector;
+
 	private final boolean applyToInput;
+
 	private final boolean applyToOutput;
+
 	private final boolean applyToToolResults;
 
 	private PIIDetectionHook(Builder builder) {
@@ -70,12 +69,12 @@ public class PIIDetectionHook extends MessagesModelHook {
 	}
 
 	@Override
-	public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
-		List<Message> processedMessages = new ArrayList<>();
+	public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
+		List<ChatMessage> processedMessages = new ArrayList<>();
 		boolean hasChanges = false;
 
-		for (Message message : previousMessages) {
-			Message processed = processMessage(message);
+		for (ChatMessage message : previousMessages) {
+			ChatMessage processed = processMessage(message);
 			processedMessages.add(processed);
 			if (processed != message) {
 				hasChanges = true;
@@ -90,7 +89,7 @@ public class PIIDetectionHook extends MessagesModelHook {
 	}
 
 	@Override
-	public AgentCommand afterModel(List<Message> previousMessages, RunnableConfig config) {
+	public AgentCommand afterModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 		// Only process if applyToOutput is enabled
 		if (!applyToOutput) {
 			return new AgentCommand(previousMessages);
@@ -101,11 +100,11 @@ public class PIIDetectionHook extends MessagesModelHook {
 		}
 
 		// Find the last AI message
-		AssistantMessage aiMessage = null;
+		ChatMessage aiMessage = null;
 		int lastIndex = -1;
 		for (int i = previousMessages.size() - 1; i >= 0; i--) {
-			if (previousMessages.get(i) instanceof AssistantMessage am) {
-				aiMessage = am;
+			if (previousMessages.get(i).role() == ChatRole.ASSISTANT) {
+				aiMessage = previousMessages.get(i);
 				lastIndex = i;
 				break;
 			}
@@ -115,7 +114,7 @@ public class PIIDetectionHook extends MessagesModelHook {
 			return new AgentCommand(previousMessages);
 		}
 
-		String content = aiMessage.getText();
+		String content = aiMessage.text();
 
 		if (content == null || content.isEmpty()) {
 			return new AgentCommand(previousMessages);
@@ -138,96 +137,29 @@ public class PIIDetectionHook extends MessagesModelHook {
 		}
 
 		// Create updated message
-		AssistantMessage updatedMessage = AssistantMessage.builder()
-			.content(result.redactedText)
-			.properties(aiMessage.getMetadata())
-			.toolCalls(aiMessage.getToolCalls())
-			.media(aiMessage.getMedia())
-			.build();
+		ChatMessage updatedMessage = aiMessage.withText(result.redactedText);
 
-		List<Message> updatedMessages = new ArrayList<>(previousMessages);
+		List<ChatMessage> updatedMessages = new ArrayList<>(previousMessages);
 		updatedMessages.set(lastIndex, updatedMessage);
 
 		return new AgentCommand(updatedMessages, UpdatePolicy.REPLACE);
 	}
 
-	private Message processMessage(Message message) {
-		if (applyToInput && message instanceof UserMessage) {
-			return processContent((UserMessage) message);
+	private ChatMessage processMessage(ChatMessage message) {
+		boolean process = switch (message.role()) {
+			case USER -> applyToInput;
+			case ASSISTANT -> applyToOutput;
+			case TOOL -> applyToToolResults;
+			default -> false;
+		};
+		if (!process || message.text().isEmpty()) {
+			return message;
 		}
-		else if (applyToOutput && message instanceof AssistantMessage) {
-			return processContent((AssistantMessage) message);
-		}
-		else if (applyToToolResults && message instanceof ToolResponseMessage) {
-			return processToolResponse((ToolResponseMessage) message);
-		}
-		return message;
-	}
-
-	private UserMessage processContent(UserMessage message) {
-		String content = message.getText();
-		ProcessResult result = processText(content);
-
+		ProcessResult result = processText(message.text());
 		if (result.hasMatches && strategy == RedactionStrategy.BLOCK) {
 			throw new PIIDetectionException(piiType.name(), result.matches);
 		}
-
-		if (result.redactedText.equals(content)) {
-			return message;
-		}
-
-		return UserMessage.builder().text(result.redactedText).metadata(message.getMetadata()).build();
-	}
-
-	private AssistantMessage processContent(AssistantMessage message) {
-		String content = message.getText();
-		ProcessResult result = processText(content);
-
-		if (result.hasMatches && strategy == RedactionStrategy.BLOCK) {
-			throw new PIIDetectionException(piiType.name(), result.matches);
-		}
-
-		if (result.redactedText.equals(content)) {
-			return message;
-		}
-
-		return AssistantMessage.builder()
-			.content(result.redactedText)
-			.properties(message.getMetadata())
-			.toolCalls(message.getToolCalls())
-			.media(message.getMedia())
-			.build();
-	}
-
-	private ToolResponseMessage processToolResponse(ToolResponseMessage message) {
-		// Process each tool response
-		List<ToolResponseMessage.ToolResponse> responses = new ArrayList<>();
-		boolean hasChanges = false;
-
-		for (ToolResponseMessage.ToolResponse response : message.getResponses()) {
-			String content = response.responseData();
-			ProcessResult result = processText(content);
-
-			if (result.hasMatches && strategy == RedactionStrategy.BLOCK) {
-				throw new PIIDetectionException(piiType.name(), result.matches);
-			}
-
-			if (!result.redactedText.equals(content)) {
-				responses.add(new ToolResponseMessage.ToolResponse(
-						response.id(), response.name(), result.redactedText));
-				hasChanges = true;
-			}
-			else {
-				responses.add(response);
-			}
-		}
-
-		return hasChanges
-			? ToolResponseMessage.builder()
-				.responses(responses)
-				.metadata(message.getMetadata())
-				.build()
-			: message;
+		return result.redactedText.equals(message.text()) ? message : message.withText(result.redactedText);
 	}
 
 	private ProcessResult processText(String text) {
@@ -256,18 +188,18 @@ public class PIIDetectionHook extends MessagesModelHook {
 			result.append(text, lastEnd, match.start);
 
 			switch (strategy) {
-			case REDACT:
-				result.append("[REDACTED_").append(piiType.name()).append("]");
-				break;
-			case MASK:
-				result.append(maskValue(match.value));
-				break;
-			case HASH:
-				result.append(hashValue(match.value));
-				break;
-			case BLOCK:
-				// Already handled in processText
-				break;
+				case REDACT:
+					result.append("[REDACTED_").append(piiType.name()).append("]");
+					break;
+				case MASK:
+					result.append(maskValue(match.value));
+					break;
+				case HASH:
+					result.append(hashValue(match.value));
+					break;
+				case BLOCK:
+					// Already handled in processText
+					break;
 			}
 
 			lastEnd = match.end;
@@ -293,18 +225,18 @@ public class PIIDetectionHook extends MessagesModelHook {
 
 	private PIIDetector getDefaultDetector(PIIType type) {
 		switch (type) {
-		case EMAIL:
-			return PIIDetectors.emailDetector();
-		case CREDIT_CARD:
-			return PIIDetectors.creditCardDetector();
-		case IP:
-			return PIIDetectors.ipDetector();
-		case MAC_ADDRESS:
-			return PIIDetectors.macAddressDetector();
-		case URL:
-			return PIIDetectors.urlDetector();
-		default:
-			throw new IllegalArgumentException("No default detector for PII type: " + type);
+			case EMAIL:
+				return PIIDetectors.emailDetector();
+			case CREDIT_CARD:
+				return PIIDetectors.creditCardDetector();
+			case IP:
+				return PIIDetectors.ipDetector();
+			case MAC_ADDRESS:
+				return PIIDetectors.macAddressDetector();
+			case URL:
+				return PIIDetectors.urlDetector();
+			default:
+				throw new IllegalArgumentException("No default detector for PII type: " + type);
 		}
 	}
 
@@ -319,8 +251,11 @@ public class PIIDetectionHook extends MessagesModelHook {
 	}
 
 	private static class ProcessResult {
+
 		final String redactedText;
+
 		final boolean hasMatches;
+
 		final List<PIIMatch> matches;
 
 		ProcessResult(String redactedText, boolean hasMatches, List<PIIMatch> matches) {
@@ -328,14 +263,21 @@ public class PIIDetectionHook extends MessagesModelHook {
 			this.hasMatches = hasMatches;
 			this.matches = matches;
 		}
+
 	}
 
 	public static class Builder {
+
 		private PIIType piiType;
+
 		private RedactionStrategy strategy = RedactionStrategy.REDACT;
+
 		private PIIDetector detector;
+
 		private boolean applyToInput = true;
+
 		private boolean applyToOutput = false;
+
 		private boolean applyToToolResults = false;
 
 		public Builder piiType(PIIType piiType) {
@@ -374,6 +316,7 @@ public class PIIDetectionHook extends MessagesModelHook {
 			}
 			return new PIIDetectionHook(this);
 		}
-	}
-}
 
+	}
+
+}

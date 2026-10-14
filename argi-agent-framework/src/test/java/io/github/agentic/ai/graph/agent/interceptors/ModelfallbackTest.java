@@ -24,63 +24,53 @@ import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.openai.OpenAiChatModel;
-import org.springframework.ai.openai.OpenAiChatOptions;
 
 import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
-@EnabledIfEnvironmentVariable(named = "OPENAI_API_KEY", matches = ".+")
+@EnabledForRealModel
 class ModelfallbackTest {
 
 	private ChatModelCallCounter chatModel;
+
 	private ChatModelCallCounter fallbackModel;
 
 	private static CompileConfig getCompileConfig() {
-		SaverConfig saverConfig = SaverConfig.builder()
-				.register(new MemorySaver())
-				.build();
+		SaverConfig saverConfig = SaverConfig.builder().register(new MemorySaver()).build();
 		CompileConfig compileConfig = CompileConfig.builder().saverConfig(saverConfig).build();
 		return compileConfig;
 	}
 
 	@BeforeEach
 	void setUp() {
-		ChatModel openAiChatModel = OpenAiChatModel.builder()
-				.options(OpenAiChatOptions.builder()
-						.apiKey(System.getenv("OPENAI_API_KEY"))
-						.build())
-				.build();
-		this.chatModel = new ChatModelCallCounter(openAiChatModel, "OpenAI");
+		ChatModel primaryChatModel = OpenAiCompatibleTestModels.chatModel();
+		this.chatModel = new ChatModelCallCounter(primaryChatModel, "Primary");
 
 		ChatModel fallbackChatModel = OpenAiCompatibleTestModels.chatModel();
-		this.fallbackModel = new ChatModelCallCounter(fallbackChatModel, "OpenAI Compatible");
+		this.fallbackModel = new ChatModelCallCounter(fallbackChatModel, "Fallback");
 
 	}
 
 	@Test
 	public void testReactAgent() throws Exception {
-		
-		ModelFallbackInterceptor modelFallbackInterceptor = ModelFallbackInterceptor
-				.builder()
-				.addFallbackModel(fallbackModel)
-				.build();
 
-		ReactAgent agent =
-				ReactAgent.builder()
-						.name("single_agent")
-						.model(chatModel)
-						.interceptors(modelFallbackInterceptor)
-						.saver(new MemorySaver())
-						.build();
+		ModelFallbackInterceptor modelFallbackInterceptor = ModelFallbackInterceptor.builder()
+			.addFallbackClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(fallbackModel))
+			.build();
+
+		ReactAgent agent = ReactAgent.builder()
+			.name("single_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.interceptors(modelFallbackInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("帮我写一篇100字左右散文。");
@@ -92,14 +82,10 @@ class ModelfallbackTest {
 			int primaryModelCalls = chatModel.getCallCount();
 			int fallbackModelCalls = fallbackModel.getCallCount();
 
-			// Log the call counts
-			System.out.println("Primary model (OpenAI) call count: " + primaryModelCalls);
-			System.out.println("Fallback model (DashScope) call count: " + fallbackModelCalls);
-
 			// Verify the models were called as expected
 			// Bug fix: Primary model succeeded, so fallback should NOT be called
-			assertEquals(1, chatModel.getCallCount(), "Primary model should be called once");
-			assertEquals(0, fallbackModel.getCallCount(), "Fallback should not be called when primary succeeds");
+			assertEquals(1, primaryModelCalls, "Primary model should be called once");
+			assertEquals(0, fallbackModelCalls, "Fallback should not be called when primary succeeds");
 
 		}
 		catch (java.util.concurrent.CompletionException e) {

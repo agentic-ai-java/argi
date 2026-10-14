@@ -23,7 +23,7 @@ import io.github.agentic.ai.graph.checkpoint.CheckpointSnapshot;
 import io.github.agentic.ai.graph.checkpoint.VersionedCheckpointSaver;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
 import io.github.agentic.ai.graph.serializer.check_point.CheckPointSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -59,7 +59,7 @@ public class VersionedMemoryCheckpointSaver implements VersionedCheckpointSaver 
 	private final Map<String, Long> revisionsByNamespace = new HashMap<>();
 
 	public VersionedMemoryCheckpointSaver() {
-		this(new SpringAIJacksonStateSerializer(OverAllState::new, new ObjectMapper()));
+		this(new ArgiJacksonStateSerializer(OverAllState::new, new ObjectMapper()));
 	}
 
 	public VersionedMemoryCheckpointSaver(StateSerializer serializer) {
@@ -168,7 +168,8 @@ public class VersionedMemoryCheckpointSaver implements VersionedCheckpointSaver 
 		return new Tag(namespace, cloneCheckpoints(delegate.list(config)));
 	}
 
-	private List<Checkpoint> cloneCheckpoints(Collection<Checkpoint> checkpoints) throws IOException, ClassNotFoundException {
+	private List<Checkpoint> cloneCheckpoints(Collection<Checkpoint> checkpoints)
+			throws IOException, ClassNotFoundException {
 		List<Checkpoint> copies = new ArrayList<>(checkpoints.size());
 		for (Checkpoint checkpoint : checkpoints) {
 			copies.add(cloneCheckpoint(checkpoint));

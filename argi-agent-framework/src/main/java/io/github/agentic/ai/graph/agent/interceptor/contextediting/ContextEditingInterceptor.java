@@ -21,9 +21,10 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.chat.ToolCall;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -35,30 +36,33 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Context editing interceptor that clears older tool results once the conversation
- * grows beyond a configurable token threshold.
+ * Context editing interceptor that clears older tool results once the conversation grows
+ * beyond a configurable token threshold.
  *
- * This mirrors Anthropic's context editing capabilities by managing tool result
- * history to stay within token limits.
+ * This mirrors Anthropic's context editing capabilities by managing tool result history
+ * to stay within token limits.
  *
- * Example:
- * ContextEditingInterceptor interceptor = ContextEditingInterceptor.builder()
- *     .trigger(100000)
- *     .keep(3)
- *     .clearAtLeast(1000)
- *     .build();
+ * Example: ContextEditingInterceptor interceptor = ContextEditingInterceptor.builder()
+ * .trigger(100000) .keep(3) .clearAtLeast(1000) .build();
  */
 public class ContextEditingInterceptor extends ModelInterceptor {
 
 	private static final Logger log = LoggerFactory.getLogger(ContextEditingInterceptor.class);
+
 	private static final String DEFAULT_PLACEHOLDER = "[cleared]";
 
 	private final int trigger;
+
 	private final int clearAtLeast;
+
 	private final int keep;
+
 	private final boolean clearToolInputs;
+
 	private final Set<String> excludeTools;
+
 	private final String placeholder;
+
 	private final TokenCounter tokenCounter;
 
 	private ContextEditingInterceptor(Builder builder) {
@@ -66,9 +70,7 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 		this.clearAtLeast = builder.clearAtLeast;
 		this.keep = builder.keep;
 		this.clearToolInputs = builder.clearToolInputs;
-		this.excludeTools = builder.excludeTools != null
-				? new HashSet<>(builder.excludeTools)
-				: new HashSet<>();
+		this.excludeTools = builder.excludeTools != null ? new HashSet<>(builder.excludeTools) : new HashSet<>();
 		this.placeholder = builder.placeholder;
 		this.tokenCounter = builder.tokenCounter;
 	}
@@ -79,7 +81,7 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 
 	@Override
 	public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
-		List<Message> messages = new ArrayList<>(request.getMessages());
+		List<ChatMessage> messages = new ArrayList<>(request.getMessages());
 
 		int tokens = tokenCounter.countTokens(messages);
 
@@ -112,41 +114,22 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 		}
 
 		// Build updated message list
-		List<Message> updatedMessages = new ArrayList<>();
+		List<ChatMessage> updatedMessages = new ArrayList<>();
 		for (int i = 0; i < messages.size(); i++) {
-			Message msg = messages.get(i);
+			ChatMessage msg = messages.get(i);
 
 			if (indicesToClear.contains(i)) {
-				if (msg instanceof ToolResponseMessage) {
-					ToolResponseMessage toolMsg = (ToolResponseMessage) msg;
-					List<ToolResponseMessage.ToolResponse> clearedResponses = new ArrayList<>();
-
-					for (ToolResponseMessage.ToolResponse resp : toolMsg.getResponses()) {
-						clearedResponses.add(new ToolResponseMessage.ToolResponse(
-								resp.id(), resp.name(), placeholder));
-					}
-
-					updatedMessages.add(ToolResponseMessage.builder()
-						.responses(clearedResponses)
-						.metadata(toolMsg.getMetadata())
-						.build());
+				if (msg.role() == ChatRole.TOOL) {
+					updatedMessages.add(new ChatMessage(ChatRole.TOOL, List.of(ContentPart.text(placeholder)),
+							List.of(), msg.toolCallId(), msg.toolName(), msg.metadata()));
 				}
-				else if (msg instanceof AssistantMessage assistantMsg) {
-					List<AssistantMessage.ToolCall> clearedToolCalls = new ArrayList<>();
-
-					// Clear tool call arguments by replacing with placeholder
-					for (AssistantMessage.ToolCall toolCall : assistantMsg.getToolCalls()) {
-						clearedToolCalls.add(new AssistantMessage.ToolCall(
-								toolCall.id(), toolCall.type(), toolCall.name(), placeholder));
-					}
-
-					// Create new AssistantMessage with cleared tool calls
-					AssistantMessage clearedAssistantMsg = AssistantMessage.builder()
-						.content(assistantMsg.getText())
-						.properties(assistantMsg.getMetadata())
-						.toolCalls(clearedToolCalls)
-						.build();
-					updatedMessages.add(clearedAssistantMsg);
+				else {
+					List<ToolCall> clearedToolCalls = msg.toolCalls()
+						.stream()
+						.map(call -> new ToolCall(call.id(), call.name(), placeholder))
+						.toList();
+					updatedMessages
+						.add(new ChatMessage(msg.role(), msg.content(), clearedToolCalls, null, null, msg.metadata()));
 				}
 			}
 			else {
@@ -155,13 +138,10 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 		}
 
 		if (clearedTokens > 0) {
-			log.info("Cleared approximately {} tokens from {} tool messages",
-					clearedTokens, indicesToClear.size());
+			log.info("Cleared approximately {} tokens from {} tool messages", clearedTokens, indicesToClear.size());
 
 			// Create a new request with updated messages
-			ModelRequest updatedRequest = ModelRequest.builder(request)
-					.messages(updatedMessages)
-					.build();
+			ModelRequest updatedRequest = ModelRequest.builder(request).messages(updatedMessages).build();
 
 			return handler.call(updatedRequest);
 		}
@@ -169,54 +149,29 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 		return handler.call(request);
 	}
 
-	private List<ClearableToolMessage> findClearableCandidates(List<Message> messages) {
+	private List<ClearableToolMessage> findClearableCandidates(List<ChatMessage> messages) {
 		List<ClearableToolMessage> candidates = new ArrayList<>();
 
 		// Find all tool messages
 		for (int i = 0; i < messages.size(); i++) {
-			Message msg = messages.get(i);
-
-			if (msg instanceof ToolResponseMessage toolMsg) {
-
-				// Check if already cleared
-				boolean alreadyCleared = false;
-				for (ToolResponseMessage.ToolResponse resp : toolMsg.getResponses()) {
-					if (placeholder.equals(resp.responseData())) {
-						alreadyCleared = true;
-						break;
-					}
-				}
-
-				if (alreadyCleared) {
+			ChatMessage msg = messages.get(i);
+			if (msg.role() == ChatRole.TOOL) {
+				if (placeholder.equals(msg.text()) || excludeTools.contains(msg.toolName())) {
 					continue;
 				}
-
-				// Check if tool is excluded
-				boolean excluded = false;
-				for (ToolResponseMessage.ToolResponse resp : toolMsg.getResponses()) {
-					if (excludeTools.contains(resp.name())) {
-						excluded = true;
-						break;
-					}
-				}
-
-				if (excluded) {
-					continue;
-				}
-
-				int tokens = tokenCounter.countTokens(List.of(toolMsg));
+				int tokens = tokenCounter.countTokens(List.of(msg));
 				candidates.add(new ClearableToolMessage(i, tokens));
 			}
-			else if (clearToolInputs && msg instanceof AssistantMessage assistantMsg) {
+			else if (clearToolInputs && msg.role() == ChatRole.ASSISTANT) {
 
 				// Check if message has tool calls
-				if (assistantMsg.getToolCalls().isEmpty()) {
+				if (msg.toolCalls().isEmpty()) {
 					continue;
 				}
 
 				// Check if already cleared (tool calls have placeholder as arguments)
 				boolean alreadyCleared = false;
-				for (AssistantMessage.ToolCall toolCall : assistantMsg.getToolCalls()) {
+				for (ToolCall toolCall : msg.toolCalls()) {
 					if (placeholder.equals(toolCall.arguments())) {
 						alreadyCleared = true;
 						break;
@@ -229,7 +184,7 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 
 				// Check if tool is excluded
 				boolean excluded = false;
-				for (AssistantMessage.ToolCall toolCall : assistantMsg.getToolCalls()) {
+				for (ToolCall toolCall : msg.toolCalls()) {
 					if (excludeTools.contains(toolCall.name())) {
 						excluded = true;
 						break;
@@ -240,7 +195,7 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 					continue;
 				}
 
-				int tokens = tokenCounter.countTokens(List.of(assistantMsg));
+				int tokens = tokenCounter.countTokens(List.of(msg));
 				candidates.add(new ClearableToolMessage(i, tokens));
 			}
 		}
@@ -256,29 +211,38 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 		return candidates;
 	}
 
-
 	@Override
 	public String getName() {
 		return "ContextEditing";
 	}
 
 	private static class ClearableToolMessage {
+
 		final int index;
+
 		final int estimatedTokens;
 
 		ClearableToolMessage(int index, int estimatedTokens) {
 			this.index = index;
 			this.estimatedTokens = estimatedTokens;
 		}
+
 	}
 
 	public static class Builder {
+
 		private int trigger = 100000;
+
 		private int clearAtLeast = 0;
+
 		private int keep = 3;
+
 		private boolean clearToolInputs = false;
+
 		private Set<String> excludeTools;
+
 		private String placeholder = DEFAULT_PLACEHOLDER;
+
 		private TokenCounter tokenCounter = TokenCounter.approximateMsgCounter();
 
 		public Builder trigger(int trigger) {
@@ -324,5 +288,7 @@ public class ContextEditingInterceptor extends ModelInterceptor {
 		public ContextEditingInterceptor build() {
 			return new ContextEditingInterceptor(this);
 		}
+
 	}
+
 }

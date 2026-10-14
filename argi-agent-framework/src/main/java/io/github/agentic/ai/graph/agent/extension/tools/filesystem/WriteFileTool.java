@@ -18,9 +18,9 @@ package io.github.agentic.ai.graph.agent.extension.tools.filesystem;
 import io.github.agentic.ai.graph.agent.extension.file.FilesystemBackend;
 import io.github.agentic.ai.graph.agent.extension.file.WriteResult;
 
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -42,7 +42,7 @@ public class WriteFileTool implements BiFunction<WriteFileTool.WriteFileRequest,
 
 	public static final String DESCRIPTION = """
 			Writes to a new file in the filesystem.
-			
+
 			Usage:
 			- The file_path parameter must be an absolute path, not a relative path
 			- The content parameter must be a string
@@ -77,9 +77,8 @@ public class WriteFileTool implements BiFunction<WriteFileTool.WriteFileRequest,
 	}
 
 	/**
-	 * Core logic for writing content to a new file.
-	 * This method can be reused by other classes like FileSystemTools.
-	 *
+	 * Core logic for writing content to a new file. This method can be reused by other
+	 * classes like FileSystemTools.
 	 * @param filePath The path to the file to write
 	 * @param content The content to write to the file (null will write empty content)
 	 * @return Success message or error message
@@ -88,7 +87,8 @@ public class WriteFileTool implements BiFunction<WriteFileTool.WriteFileRequest,
 		try {
 			// Check if file already exists
 			if (Files.exists(filePath)) {
-				return "Error: Cannot write to " + filePath + " because it already exists. Read and then make an edit, or write to a new path.";
+				return "Error: Cannot write to " + filePath
+						+ " because it already exists. Read and then make an edit, or write to a new path.";
 			}
 
 			// Create parent directories if needed
@@ -99,8 +99,7 @@ public class WriteFileTool implements BiFunction<WriteFileTool.WriteFileRequest,
 
 			// Write content to file
 			Files.write(filePath, content != null ? content.getBytes(StandardCharsets.UTF_8) : new byte[0],
-				StandardOpenOption.CREATE_NEW,
-				StandardOpenOption.WRITE);
+					StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
 
 			return "Successfully created file: " + filePath;
 		}
@@ -109,15 +108,15 @@ public class WriteFileTool implements BiFunction<WriteFileTool.WriteFileRequest,
 		}
 	}
 
-	public static ToolCallback createWriteFileToolCallback(String description) {
-		return createWriteFileToolCallback(description, null);
+	public static Tool createWriteFileTool(String description) {
+		return createWriteFileTool(description, null);
 	}
 
-	public static ToolCallback createWriteFileToolCallback(String description, FilesystemBackend backend) {
-		return FunctionToolCallback.builder("write_file", new WriteFileTool(backend))
-				.description(description)
-				.inputType(WriteFileRequest.class)
-				.build();
+	public static Tool createWriteFileTool(String description, FilesystemBackend backend) {
+		return TypedTool.builder("write_file", new WriteFileTool(backend))
+			.description(description)
+			.inputType(WriteFileRequest.class)
+			.build();
 	}
 
 	/**
@@ -140,5 +139,7 @@ public class WriteFileTool implements BiFunction<WriteFileTool.WriteFileRequest,
 			this.filePath = filePath;
 			this.content = content;
 		}
+
 	}
+
 }

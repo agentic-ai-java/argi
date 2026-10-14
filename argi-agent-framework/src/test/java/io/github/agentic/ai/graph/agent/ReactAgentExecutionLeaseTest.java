@@ -26,7 +26,7 @@ import io.github.agentic.ai.graph.checkpoint.lease.ExecutionLease;
 import io.github.agentic.ai.graph.checkpoint.lease.LeaseOptions;
 import io.github.agentic.ai.graph.checkpoint.savers.MemoryLeasedCheckpointSaver;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -71,7 +71,7 @@ class ReactAgentExecutionLeaseTest {
 		RecordingLeasedSaver saver = new RecordingLeasedSaver();
 		ReactAgent agent = ReactAgent.builder()
 			.name("leased-simple-agent")
-			.model(new SingleAnswerModel())
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(new SingleAnswerModel()))
 			.saver(saver)
 			.build();
 		RunnableConfig config = RunnableConfig.builder().threadId("leased-simple").build();
@@ -93,8 +93,8 @@ class ReactAgentExecutionLeaseTest {
 		ToolCallback count = ToolCallbacks.from(tools)[0];
 		ReactAgent agent = ReactAgent.builder()
 			.name("leased-cancel-agent")
-			.model(model)
-			.tools(count)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(count))
 			.saver(saver)
 			.build();
 		RunnableConfig config = RunnableConfig.builder().threadId("leased-cancel").build();
@@ -123,7 +123,7 @@ class ReactAgentExecutionLeaseTest {
 		RecordingLeasedSaver saver = new RecordingLeasedSaver();
 		ReactAgent agent = ReactAgent.builder()
 			.name("leased-cold-agent")
-			.model(new SingleAnswerModel())
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(new SingleAnswerModel()))
 			.saver(saver)
 			.build();
 		RunnableConfig config = RunnableConfig.builder().threadId("leased-cold").build();
@@ -147,7 +147,7 @@ class ReactAgentExecutionLeaseTest {
 		BlockingFirstModel model = new BlockingFirstModel();
 		ReactAgent agent = ReactAgent.builder()
 			.name("leased-queue-agent")
-			.model(model)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
 			.saver(saver)
 			.build();
 		RunnableConfig config = RunnableConfig.builder().threadId("leased-queue").build();
@@ -178,8 +178,8 @@ class ReactAgentExecutionLeaseTest {
 		ToolCallback count = ToolCallbacks.from(tools)[0];
 		ReactAgent agent = ReactAgent.builder()
 			.name("leased-lost-owner-agent")
-			.model(model)
-			.tools(count)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(count))
 			.saver(saver)
 			.build();
 		RunnableConfig config = RunnableConfig.builder().threadId("leased-lost-owner").build();
@@ -206,8 +206,8 @@ class ReactAgentExecutionLeaseTest {
 
 	private static ChatResponse toolCallResponse() {
 		AssistantMessage.ToolCall toolCall = new AssistantMessage.ToolCall("call-1", "function", "count", "{}");
-		return new ChatResponse(List.of(new Generation(
-				AssistantMessage.builder().content("").toolCalls(List.of(toolCall)).build())));
+		return new ChatResponse(
+				List.of(new Generation(AssistantMessage.builder().content("").toolCalls(List.of(toolCall)).build())));
 	}
 
 	private static String lastUserText(Prompt prompt) {
@@ -412,8 +412,7 @@ class ReactAgentExecutionLeaseTest {
 		}
 
 		private static StateSerializer serializer() {
-			return new SpringAIJacksonStateSerializer(io.github.agentic.ai.graph.OverAllState::new,
-					new ObjectMapper());
+			return new ArgiJacksonStateSerializer(io.github.agentic.ai.graph.OverAllState::new, new ObjectMapper());
 		}
 
 	}

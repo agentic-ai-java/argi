@@ -23,8 +23,10 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Registers default loaders when none are defined by the application.
  * <ul>
- * <li>{@link AgentLoader}: discovers all {@link io.github.agentic.ai.graph.agent.Agent} beans.</li>
- * <li>{@link GraphLoader}: discovers all {@link CompiledGraph} beans (when graph-core is on classpath).</li>
+ * <li>{@link AgentLoader}: discovers all {@link io.github.agentic.ai.graph.agent.Agent}
+ * beans.</li>
+ * <li>{@link GraphLoader}: discovers all {@link io.github.agentic.ai.graph.CompiledGraph}
+ * beans (when graph-core is on classpath).</li>
  * </ul>
  */
 @Configuration
@@ -41,4 +43,5 @@ public class StudioLoaderAutoConfiguration {
 	public GraphLoader contextScanningGraphLoader(ApplicationContext applicationContext) {
 		return new ContextScanningGraphLoader(applicationContext);
 	}
+
 }

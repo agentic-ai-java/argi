@@ -16,7 +16,7 @@
 package io.github.agentic.ai.graph.agent.renderer;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.template.ValidationMode;
+import io.github.agentic.ai.graph.agent.renderer.ArgiStTemplateRenderer.ValidationMode;
 
 import java.util.Map;
 
@@ -33,10 +33,10 @@ class ArgiStTemplateRendererTest {
 	@Test
 	void testBasicCharDelimiter() {
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiterToken('{')
-				.endDelimiterToken('}')
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiterToken('{')
+			.endDelimiterToken('}')
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "Hello {name}!";
 		Map<String, Object> variables = Map.of("name", "World");
@@ -48,10 +48,10 @@ class ArgiStTemplateRendererTest {
 	@Test
 	void testStringDelimiter() {
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "Hello {{name}}!";
 		Map<String, Object> variables = Map.of("name", "World");
@@ -64,10 +64,10 @@ class ArgiStTemplateRendererTest {
 	void testJsonContentWithStringDelimiter() {
 		// 测试使用多字符 delimiter 来避免与 JSON 内容冲突
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = """
 				请处理以下 JSON 数据：{"name": "test", "value": 123}
@@ -75,10 +75,7 @@ class ArgiStTemplateRendererTest {
 				数据内容：{{jsonData}}
 				""";
 
-		Map<String, Object> variables = Map.of(
-				"userName", "张三",
-				"jsonData", "{\"key\": \"value\"}"
-		);
+		Map<String, Object> variables = Map.of("userName", "张三", "jsonData", "{\"key\": \"value\"}");
 
 		String result = renderer.apply(template, variables);
 
@@ -94,10 +91,10 @@ class ArgiStTemplateRendererTest {
 		// 测试单字符 delimiter 与 JSON 内容冲突的情况
 		// 实现应该能够自动识别并保护 JSON 内容，避免与模板变量冲突
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiterToken('{')
-				.endDelimiterToken('}')
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiterToken('{')
+			.endDelimiterToken('}')
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = """
 				请处理以下 JSON 数据：{"name": "test", "value": 123}
@@ -119,10 +116,10 @@ class ArgiStTemplateRendererTest {
 	void testComplexJsonWithStringDelimiter() {
 		// 测试复杂的 JSON 内容与模板变量混合
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = """
 				{
@@ -135,11 +132,7 @@ class ArgiStTemplateRendererTest {
 				}
 				""";
 
-		Map<String, Object> variables = Map.of(
-				"userName", "Alice",
-				"count", "42",
-				"responseText", "Success"
-		);
+		Map<String, Object> variables = Map.of("userName", "Alice", "count", "42", "responseText", "Success");
 
 		String result = renderer.apply(template, variables);
 
@@ -155,16 +148,13 @@ class ArgiStTemplateRendererTest {
 	void testNestedDelimiters() {
 		// 测试嵌套的 delimiter
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "Outer: {{outer}}, Inner JSON: {\"key\": \"{{value}}\"}";
-		Map<String, Object> variables = Map.of(
-				"outer", "OUTER_VALUE",
-				"value", "VALUE"
-		);
+		Map<String, Object> variables = Map.of("outer", "OUTER_VALUE", "value", "VALUE");
 
 		String result = renderer.apply(template, variables);
 		assertTrue(result.contains("Outer: OUTER_VALUE"));
@@ -175,10 +165,10 @@ class ArgiStTemplateRendererTest {
 	void testPropertyAccess() {
 		// 测试属性访问
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		Map<String, Object> user = Map.of("name", "John", "age", 30);
 		String template = "User: {{user.name}}, Age: {{user.age}}";
@@ -192,17 +182,13 @@ class ArgiStTemplateRendererTest {
 	@Test
 	void testMultipleVariables() {
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "{{greeting}} {{name}}, today is {{day}}";
-		Map<String, Object> variables = Map.of(
-				"greeting", "Hello",
-				"name", "Alice",
-				"day", "Monday"
-		);
+		Map<String, Object> variables = Map.of("greeting", "Hello", "name", "Alice", "day", "Monday");
 
 		String result = renderer.apply(template, variables);
 		assertEquals("Hello Alice, today is Monday", result);
@@ -211,10 +197,10 @@ class ArgiStTemplateRendererTest {
 	@Test
 	void testValidationModeThrow() {
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.THROW)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.THROW)
+			.build();
 
 		String template = "Hello {{name}}, missing: {{missing}}";
 		Map<String, Object> variables = Map.of("name", "World");
@@ -227,10 +213,10 @@ class ArgiStTemplateRendererTest {
 	@Test
 	void testValidationModeWarn() {
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.WARN)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.WARN)
+			.build();
 
 		String template = "Hello {{name}}, missing: {{missing}}";
 		Map<String, Object> variables = Map.of("name", "World");
@@ -243,10 +229,10 @@ class ArgiStTemplateRendererTest {
 	@Test
 	void testValidationModeNone() {
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "Hello {{name}}, missing: {{missing}}";
 		Map<String, Object> variables = Map.of("name", "World");
@@ -260,10 +246,10 @@ class ArgiStTemplateRendererTest {
 	void testJsonArrayWithStringDelimiter() {
 		// 测试包含 JSON 数组的情况
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = """
 				{
@@ -273,10 +259,7 @@ class ArgiStTemplateRendererTest {
 				}
 				""";
 
-		Map<String, Object> variables = Map.of(
-				"userName", "Bob",
-				"count", "10"
-		);
+		Map<String, Object> variables = Map.of("userName", "Bob", "count", "10");
 
 		String result = renderer.apply(template, variables);
 
@@ -291,10 +274,10 @@ class ArgiStTemplateRendererTest {
 	void testMixedContent() {
 		// 测试混合内容：既有 JSON，又有普通文本和模板变量
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = """
 				用户 {{userName}} 提交了以下数据：
@@ -303,11 +286,7 @@ class ArgiStTemplateRendererTest {
 				时间：{{timestamp}}
 				""";
 
-		Map<String, Object> variables = Map.of(
-				"userName", "Charlie",
-				"result", "Success",
-				"timestamp", "2024-01-01"
-		);
+		Map<String, Object> variables = Map.of("userName", "Charlie", "result", "Success", "timestamp", "2024-01-01");
 
 		String result = renderer.apply(template, variables);
 
@@ -323,10 +302,10 @@ class ArgiStTemplateRendererTest {
 	void testBuilderWithCharDelimiters() {
 		// 测试 Builder 使用 char delimiter
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiterToken('<')
-				.endDelimiterToken('>')
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiterToken('<')
+			.endDelimiterToken('>')
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "Hello <name>!";
 		Map<String, Object> variables = Map.of("name", "World");
@@ -339,10 +318,10 @@ class ArgiStTemplateRendererTest {
 	void testBuilderWithStringDelimiters() {
 		// 测试 Builder 使用 String delimiter
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("<<")
-				.endDelimiter(">>")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("<<")
+			.endDelimiter(">>")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "Hello <<name>>!";
 		Map<String, Object> variables = Map.of("name", "World");
@@ -354,10 +333,10 @@ class ArgiStTemplateRendererTest {
 	@Test
 	void testEmptyTemplate() {
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "";
 		Map<String, Object> variables = Map.of();
@@ -370,10 +349,10 @@ class ArgiStTemplateRendererTest {
 	@Test
 	void testNullVariables() {
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = "Hello {{name}}!";
 
@@ -386,10 +365,10 @@ class ArgiStTemplateRendererTest {
 	void testComplexNestedJson() {
 		// 测试复杂的嵌套 JSON 结构
 		ArgiStTemplateRenderer renderer = ArgiStTemplateRenderer.builder()
-				.startDelimiter("{{")
-				.endDelimiter("}}")
-				.validationMode(ValidationMode.NONE)
-				.build();
+			.startDelimiter("{{")
+			.endDelimiter("}}")
+			.validationMode(ValidationMode.NONE)
+			.build();
 
 		String template = """
 				{
@@ -405,10 +384,7 @@ class ArgiStTemplateRendererTest {
 				}
 				""";
 
-		Map<String, Object> variables = Map.of(
-				"value", "test",
-				"userName", "User"
-		);
+		Map<String, Object> variables = Map.of("value", "test", "userName", "User");
 
 		String result = renderer.apply(template, variables);
 

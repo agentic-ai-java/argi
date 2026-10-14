@@ -28,8 +28,8 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.tool.Tool;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -43,32 +43,27 @@ import java.util.regex.Pattern;
  * Filesystem interceptor that provides file system management capabilities to agents.
  *
  * This interceptor adds filesystem tools to the agent: ls, read_file, write_file,
- * edit_file, glob, and grep. It enhances the system prompt to guide agents on using
- * these filesystem operations effectively.
+ * edit_file, glob, and grep. It enhances the system prompt to guide agents on using these
+ * filesystem operations effectively.
  *
- * Key Features:
- * - Pluggable backend system for file storage (local, state-based, composite)
- * - Path validation and security (prevents directory traversal)
- * - Custom tool descriptions support
- * - File metadata tracking (creation/modification timestamps)
+ * Key Features: - Pluggable backend system for file storage (local, state-based,
+ * composite) - Path validation and security (prevents directory traversal) - Custom tool
+ * descriptions support - File metadata tracking (creation/modification timestamps)
  *
  * Note: Large result eviction has been moved to {@link LargeResultEvictionInterceptor}.
  * To enable automatic eviction of large tool results, use both interceptors together.
  *
- * The interceptor automatically:
- * - Injects filesystem tools (ls, read_file, write_file, edit_file, glob, grep)
- * - Provides guidance on proper file path usage (absolute paths required)
- * - Helps agents explore and modify file systems systematically
+ * The interceptor automatically: - Injects filesystem tools (ls, read_file, write_file,
+ * edit_file, glob, grep) - Provides guidance on proper file path usage (absolute paths
+ * required) - Helps agents explore and modify file systems systematically
  *
- * Example:
- * <pre>
+ * Example: <pre>
  * FilesystemInterceptor interceptor = FilesystemInterceptor.builder()
  *     .readOnly(false)
  *     .build();
  * </pre>
  *
- * For automatic large result eviction:
- * <pre>
+ * For automatic large result eviction: <pre>
  * FilesystemInterceptor fsInterceptor = FilesystemInterceptor.builder()
  *     .build();
  *
@@ -85,16 +80,18 @@ public class FilesystemInterceptor extends ModelInterceptor {
 
 	// Constants
 	private static final String EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents";
+
 	private static final int DEFAULT_READ_OFFSET = 0;
+
 	private static final int DEFAULT_READ_LIMIT = 500;
 
 	private static final String DEFAULT_SYSTEM_PROMPT = """
 			## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
-			
+
 			You have access to a filesystem which you can interact with using these tools.
 			All file paths must start with a /.
 			Avoid using the root path because you might not have permission to read/write there.
-			
+
 			- ls: list files in a directory (requires absolute path)
 			- read_file: read a file from the filesystem
 			- write_file: write to a file in the filesystem
@@ -103,10 +100,14 @@ public class FilesystemInterceptor extends ModelInterceptor {
 			- grep: search for text within files
 			""";
 
-	private final List<ToolCallback> tools;
+	private final List<Tool> tools;
+
 	private final String systemPrompt;
+
 	private final boolean readOnly;
+
 	private final Map<String, String> customToolDescriptions;
+
 	// Pattern for directory traversal detection
 	private static final Pattern TRAVERSAL_PATTERN = Pattern.compile("\\.\\.|~");
 
@@ -114,39 +115,27 @@ public class FilesystemInterceptor extends ModelInterceptor {
 		this.readOnly = builder.readOnly;
 		this.systemPrompt = builder.systemPrompt != null ? builder.systemPrompt : DEFAULT_SYSTEM_PROMPT;
 		this.customToolDescriptions = builder.customToolDescriptions != null
-			? new HashMap<>(builder.customToolDescriptions)
-			: new HashMap<>();
+				? new HashMap<>(builder.customToolDescriptions) : new HashMap<>();
 
-		// Create filesystem tools using factory methods with custom or default descriptions
-		List<ToolCallback> toolList = new ArrayList<>();
-		toolList.add(ListFilesTool.createListFilesToolCallback(
-			customToolDescriptions.getOrDefault("ls", ListFilesTool.DESCRIPTION),
-			builder.backend
-		));
-		toolList.add(ReadFileTool.createReadFileToolCallback(
-			customToolDescriptions.getOrDefault("read_file", ReadFileTool.DESCRIPTION),
-			builder.backend
-		));
+		// Create filesystem tools using factory methods with custom or default
+		// descriptions
+		List<Tool> toolList = new ArrayList<>();
+		toolList.add(ListFilesTool.createListFilesTool(
+				customToolDescriptions.getOrDefault("ls", ListFilesTool.DESCRIPTION), builder.backend));
+		toolList.add(ReadFileTool.createReadFileTool(
+				customToolDescriptions.getOrDefault("read_file", ReadFileTool.DESCRIPTION), builder.backend));
 
 		if (!readOnly) {
-			toolList.add(WriteFileTool.createWriteFileToolCallback(
-				customToolDescriptions.getOrDefault("write_file", WriteFileTool.DESCRIPTION),
-				builder.backend
-			));
-			toolList.add(EditFileTool.createEditFileToolCallback(
-				customToolDescriptions.getOrDefault("edit_file", EditFileTool.DESCRIPTION),
-				builder.backend
-			));
+			toolList.add(WriteFileTool.createWriteFileTool(
+					customToolDescriptions.getOrDefault("write_file", WriteFileTool.DESCRIPTION), builder.backend));
+			toolList.add(EditFileTool.createEditFileTool(
+					customToolDescriptions.getOrDefault("edit_file", EditFileTool.DESCRIPTION), builder.backend));
 		}
 
-		toolList.add(GlobTool.createGlobToolCallback(
-			customToolDescriptions.getOrDefault("glob", GlobTool.DESCRIPTION),
-			builder.backend
-		));
-		toolList.add(GrepTool.createGrepToolCallback(
-			customToolDescriptions.getOrDefault("grep", GrepTool.DESCRIPTION),
-			builder.backend
-		));
+		toolList.add(GlobTool.createGlobTool(customToolDescriptions.getOrDefault("glob", GlobTool.DESCRIPTION),
+				builder.backend));
+		toolList.add(GrepTool.createGrepTool(customToolDescriptions.getOrDefault("grep", GrepTool.DESCRIPTION),
+				builder.backend));
 
 		this.tools = Collections.unmodifiableList(toolList);
 	}
@@ -156,9 +145,8 @@ public class FilesystemInterceptor extends ModelInterceptor {
 	}
 
 	/**
-	 * Validate and normalize file path for security.
-	 * Prevents directory traversal attacks by checking for ".." and "~".
-	 *
+	 * Validate and normalize file path for security. Prevents directory traversal attacks
+	 * by checking for ".." and "~".
 	 * @param path The path to validate
 	 * @param allowedPrefixes Optional list of allowed path prefixes
 	 * @return Normalized canonical path
@@ -187,9 +175,7 @@ public class FilesystemInterceptor extends ModelInterceptor {
 				}
 			}
 			if (!hasValidPrefix) {
-				throw new IllegalArgumentException(
-					"Path must start with one of " + allowedPrefixes + ": " + path
-				);
+				throw new IllegalArgumentException("Path must start with one of " + allowedPrefixes + ": " + path);
 			}
 		}
 
@@ -197,8 +183,8 @@ public class FilesystemInterceptor extends ModelInterceptor {
 	}
 
 	@Override
-	public List<ToolCallback> getTools() {
-		return tools;
+	public List<io.github.agentic.ai.api.tool.Tool> getTools() {
+		return List.copyOf(tools);
 	}
 
 	@Override
@@ -208,18 +194,17 @@ public class FilesystemInterceptor extends ModelInterceptor {
 
 	@Override
 	public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
-		SystemMessage enhancedSystemMessage;
+		ChatMessage enhancedSystemMessage;
 
 		if (request.getSystemMessage() == null) {
-			enhancedSystemMessage = new SystemMessage(this.systemPrompt);
-		} else {
-			enhancedSystemMessage = new SystemMessage(request.getSystemMessage().getText() + "\n\n" + systemPrompt);
+			enhancedSystemMessage = ChatMessage.system(this.systemPrompt);
+		}
+		else {
+			enhancedSystemMessage = request.getSystemMessage().appendText("\n\n" + systemPrompt);
 		}
 
 		// Create enhanced request
-		ModelRequest enhancedRequest = ModelRequest.builder(request)
-				.systemMessage(enhancedSystemMessage)
-				.build();
+		ModelRequest enhancedRequest = ModelRequest.builder(request).systemMessage(enhancedSystemMessage).build();
 
 		// Call the handler with enhanced request
 		return handler.call(enhancedRequest);
@@ -232,14 +217,18 @@ public class FilesystemInterceptor extends ModelInterceptor {
 	 * {@link LargeResultEvictionInterceptor}. Use both interceptors together if needed.
 	 */
 	public static class Builder {
+
 		private String systemPrompt;
+
 		private boolean readOnly = false;
+
 		private Map<String, String> customToolDescriptions;
+
 		private FilesystemBackend backend = new LocalFilesystemBackend(null, true, 10);
 
 		/**
-		 * Set custom system prompt to guide filesystem usage.
-		 * Set to null to disable system prompt injection.
+		 * Set custom system prompt to guide filesystem usage. Set to null to disable
+		 * system prompt injection.
 		 */
 		public Builder systemPrompt(String systemPrompt) {
 			this.systemPrompt = systemPrompt;
@@ -247,9 +236,8 @@ public class FilesystemInterceptor extends ModelInterceptor {
 		}
 
 		/**
-		 * Set whether the filesystem should be read-only.
-		 * When true, write_file and edit_file tools are not provided.
-		 * Default: false
+		 * Set whether the filesystem should be read-only. When true, write_file and
+		 * edit_file tools are not provided. Default: false
 		 */
 		public Builder readOnly(boolean readOnly) {
 			this.readOnly = readOnly;
@@ -257,12 +245,10 @@ public class FilesystemInterceptor extends ModelInterceptor {
 		}
 
 		/**
-		 * Set custom tool descriptions to override defaults.
-		 * Map keys should be tool names: "ls", "read_file", "write_file",
-		 * "edit_file", "glob", "grep".
+		 * Set custom tool descriptions to override defaults. Map keys should be tool
+		 * names: "ls", "read_file", "write_file", "edit_file", "glob", "grep".
 		 *
-		 * Example:
-		 * <pre>
+		 * Example: <pre>
 		 * Map&lt;String, String&gt; customDescs = Map.of(
 		 *     "read_file", "Custom read file description",
 		 *     "write_file", "Custom write file description"
@@ -277,9 +263,8 @@ public class FilesystemInterceptor extends ModelInterceptor {
 		}
 
 		/**
-		 * Add a single custom tool description.
-		 * Convenience method for adding one description at a time.
-		 *
+		 * Add a single custom tool description. Convenience method for adding one
+		 * description at a time.
 		 * @param toolName Name of the tool ("ls", "read_file", etc.)
 		 * @param description Custom description for the tool
 		 */
@@ -299,6 +284,7 @@ public class FilesystemInterceptor extends ModelInterceptor {
 		public FilesystemInterceptor build() {
 			return new FilesystemInterceptor(this);
 		}
+
 	}
 
 }

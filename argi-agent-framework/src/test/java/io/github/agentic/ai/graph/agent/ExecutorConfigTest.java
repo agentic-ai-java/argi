@@ -45,9 +45,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Unit tests for executor configuration in agents.
- * Verifies that executor can be configured through builders and is properly
- * passed to RunnableConfig.
+ * Unit tests for executor configuration in agents. Verifies that executor can be
+ * configured through builders and is properly passed to RunnableConfig.
  */
 class ExecutorConfigTest {
 
@@ -68,7 +67,7 @@ class ExecutorConfigTest {
 		ChatClientTestUtils.stubChatClientMutateChain(chatClient);
 		customExecutor = Executors.newFixedThreadPool(4);
 	}
-	
+
 	@AfterEach
 	void tearDown() {
 		if (customExecutor instanceof ExecutorService) {
@@ -82,23 +81,21 @@ class ExecutorConfigTest {
 		ReactAgent agent = ReactAgent.builder()
 			.name("testAgent")
 			.description("Test agent")
-			.chatClient(chatClient)
-			.resolver(toolCallbackResolver)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatClient))
 			.executor(customExecutor)
 			.build();
 
 		assertNotNull(agent);
-		
+
 		// Verify executor is set in agent using reflection
 		RunnableConfig config = buildNonStreamConfig(agent, null);
 		assertNotNull(config);
-		
+
 		// Verify executor is in metadata
 		assertTrue(config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should be present in metadata");
-		assertEquals(customExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor in metadata should match configured executor");
+				"Default parallel executor should be present in metadata");
+		assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor in metadata should match configured executor");
 	}
 
 	@Test
@@ -107,19 +104,18 @@ class ExecutorConfigTest {
 		ReactAgent agent = ReactAgent.builder()
 			.name("testAgent")
 			.description("Test agent")
-			.chatClient(chatClient)
-			.resolver(toolCallbackResolver)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatClient))
 			.build();
 
 		assertNotNull(agent);
-		
+
 		// Verify no executor in metadata when not configured
 		RunnableConfig config = buildNonStreamConfig(agent, null);
 		assertNotNull(config);
-		
+
 		// When executor is not set, metadata should not contain it
 		assertFalse(config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should not be present when not configured");
+				"Default parallel executor should not be present when not configured");
 	}
 
 	@Test
@@ -138,16 +134,15 @@ class ExecutorConfigTest {
 			.build();
 
 		assertNotNull(parallelAgent);
-		
+
 		// Verify executor is set and passed to RunnableConfig
 		RunnableConfig config = buildNonStreamConfig(parallelAgent, null);
 		assertNotNull(config);
-		
+
 		assertTrue(config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should be present in metadata");
-		assertEquals(customExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor in metadata should match configured executor");
+				"Default parallel executor should be present in metadata");
+		assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor in metadata should match configured executor");
 	}
 
 	@Test
@@ -166,12 +161,11 @@ class ExecutorConfigTest {
 		// Test with stream config
 		RunnableConfig streamConfig = buildStreamConfig(parallelAgent, null);
 		assertNotNull(streamConfig);
-		
+
 		assertTrue(streamConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should be present in stream config metadata");
-		assertEquals(customExecutor, 
-			streamConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor in stream config metadata should match configured executor");
+				"Default parallel executor should be present in stream config metadata");
+		assertEquals(customExecutor, streamConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor in stream config metadata should match configured executor");
 	}
 
 	@Test
@@ -187,15 +181,14 @@ class ExecutorConfigTest {
 			.build();
 
 		assertNotNull(sequentialAgent);
-		
+
 		RunnableConfig config = buildNonStreamConfig(sequentialAgent, null);
 		assertNotNull(config);
-		
+
 		assertTrue(config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should be present in metadata");
-		assertEquals(customExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor in metadata should match configured executor");
+				"Default parallel executor should be present in metadata");
+		assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor in metadata should match configured executor");
 	}
 
 	@Test
@@ -211,15 +204,14 @@ class ExecutorConfigTest {
 			.build();
 
 		assertNotNull(loopAgent);
-		
+
 		RunnableConfig config = buildNonStreamConfig(loopAgent, null);
 		assertNotNull(config);
-		
+
 		assertTrue(config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should be present in metadata");
-		assertEquals(customExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor in metadata should match configured executor");
+				"Default parallel executor should be present in metadata");
+		assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor in metadata should match configured executor");
 	}
 
 	@Test
@@ -231,27 +223,26 @@ class ExecutorConfigTest {
 			.name("routingAgent")
 			.description("Routing agent with executor")
 			.subAgents(List.of(agent1, agent2))
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.executor(customExecutor)
 			.build();
 
 		assertNotNull(routingAgent);
-		
+
 		RunnableConfig config = buildNonStreamConfig(routingAgent, null);
 		assertNotNull(config);
-		
+
 		assertTrue(config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should be present in metadata");
-		assertEquals(customExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor in metadata should match configured executor");
+				"Default parallel executor should be present in metadata");
+		assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor in metadata should match configured executor");
 	}
 
 	@Test
 	void testExecutorWithDifferentExecutorTypes() throws Exception {
 		// Test with ForkJoinPool
 		Executor forkJoinExecutor = ForkJoinPool.commonPool();
-		
+
 		ReactAgent agent1 = createMockAgent("agent1", "output1");
 		ReactAgent agent2 = createMockAgent("agent2", "output2");
 
@@ -264,13 +255,12 @@ class ExecutorConfigTest {
 			.build();
 
 		RunnableConfig config = buildNonStreamConfig(parallelAgent, null);
-		assertEquals(forkJoinExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"ForkJoinPool executor should be correctly stored");
+		assertEquals(forkJoinExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"ForkJoinPool executor should be correctly stored");
 
 		// Test with ThreadPoolExecutor
 		ThreadPoolExecutor threadPoolExecutor = (ThreadPoolExecutor) Executors.newFixedThreadPool(2);
-		
+
 		ParallelAgent parallelAgent2 = ParallelAgent.builder()
 			.name("parallelAgent2")
 			.description("Parallel agent with ThreadPoolExecutor")
@@ -280,10 +270,9 @@ class ExecutorConfigTest {
 			.build();
 
 		RunnableConfig config2 = buildNonStreamConfig(parallelAgent2, null);
-		assertEquals(threadPoolExecutor, 
-			config2.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"ThreadPoolExecutor should be correctly stored");
-		
+		assertEquals(threadPoolExecutor, config2.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"ThreadPoolExecutor should be correctly stored");
+
 		// Cleanup
 		threadPoolExecutor.shutdown();
 	}
@@ -306,11 +295,10 @@ class ExecutorConfigTest {
 		assertNotNull(parallelAgent);
 		assertEquals("parallelAgent", parallelAgent.name());
 		assertEquals(3, parallelAgent.maxConcurrency());
-		
+
 		RunnableConfig config = buildNonStreamConfig(parallelAgent, null);
-		assertEquals(customExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor should be correctly configured through chaining");
+		assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor should be correctly configured through chaining");
 	}
 
 	@Test
@@ -318,41 +306,34 @@ class ExecutorConfigTest {
 		ReactAgent agent = ReactAgent.builder()
 			.name("testAgent")
 			.description("Test agent")
-			.chatClient(chatClient)
-			.resolver(toolCallbackResolver)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatClient))
 			.executor(customExecutor)
 			.build();
 
 		// Create an existing RunnableConfig
-		RunnableConfig existingConfig = RunnableConfig.builder()
-			.threadId("test-thread")
-			.build();
+		RunnableConfig existingConfig = RunnableConfig.builder().threadId("test-thread").build();
 
 		// Build config with existing config
 		RunnableConfig newConfig = buildNonStreamConfig(agent, existingConfig);
-		
+
 		// Verify existing config properties are preserved
 		assertTrue(newConfig.threadId().isPresent());
 		assertEquals("test-thread", newConfig.threadId().get());
-		
+
 		// Verify executor is added
 		assertTrue(newConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent());
-		assertEquals(customExecutor, 
-			newConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get());
+		assertEquals(customExecutor, newConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get());
 	}
 
 	@Test
 	void testRunnableConfigDefaultParallelExecutorMethod() {
 		// Test RunnableConfig.Builder.defaultParallelExecutor method directly
-		RunnableConfig config = RunnableConfig.builder()
-			.defaultParallelExecutor(customExecutor)
-			.build();
+		RunnableConfig config = RunnableConfig.builder().defaultParallelExecutor(customExecutor).build();
 
 		assertTrue(config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should be present");
-		assertEquals(customExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor should match");
+				"Default parallel executor should be present");
+		assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor should match");
 	}
 
 	@Test
@@ -385,10 +366,8 @@ class ExecutorConfigTest {
 			.name(name)
 			.description("Mock agent")
 			.outputKey(outputKey)
-			.chatClient(chatClient)
-			.resolver(toolCallbackResolver)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatClient))
 			.build();
 	}
 
 }
-

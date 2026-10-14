@@ -22,36 +22,36 @@ import java.util.List;
 import java.util.Map;
 
 import io.github.agentic.ai.graph.agent.ReactAgent;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.tool.Tool;
 import org.springframework.core.io.Resource;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 /**
- * Convenience builder for configuring both TaskTool and TaskOutputTool with a shared TaskRepository.
+ * Convenience builder for configuring both TaskTool and TaskOutputTool with a shared
+ * TaskRepository.
  * <p>
  * Supports two modes:
  * <ol>
- * <li><strong>Programmatic</strong>: Pass {@link ReactAgent} instances via {@link #subAgents(Map)}
- * or {@link #subAgent(String, ReactAgent)}.</li>
- * <li><strong>File-based</strong>: Load agent specs from Markdown files via {@link #addAgentDirectory(String)}
- * or {@link #addAgentResource(Resource)}. Specs are converted to ReactAgents using
- * {@link AgentSpecReactAgentFactory}.</li>
+ * <li><strong>Programmatic</strong>: Pass {@link ReactAgent} instances via
+ * {@link #subAgents(Map)} or {@link #subAgent(String, ReactAgent)}.</li>
+ * <li><strong>File-based</strong>: Load agent specs from Markdown files via
+ * {@link #addAgentDirectory(String)} or {@link #addAgentResource(Resource)}. Specs are
+ * converted to ReactAgents using {@link AgentSpecReactAgentFactory}.</li>
  * </ol>
  *
  * <pre>{@code
  * // Programmatic mode
- * List<ToolCallback> taskTools = TaskToolsBuilder.builder()
+ * List<Tool> taskTools = TaskToolsBuilder.builder()
  *     .taskRepository(repo)
  *     .subAgents(Map.of("Explore", exploreAgent))
  *     .build();
  *
  * // File-based mode
- * List<ToolCallback> taskTools = TaskToolsBuilder.builder()
+ * List<Tool> taskTools = TaskToolsBuilder.builder()
  *     .taskRepository(repo)
- *     .chatModel(chatModel)
+ *     .chatClient(chatClient)
  *     .defaultTools(grepTool, globTool, readTool)
  *     .addAgentDirectory(".claude/agents")
  *     .build();
@@ -70,11 +70,9 @@ public final class TaskToolsBuilder {
 
 	private AgentSpecReactAgentFactory agentSpecFactory;
 
-	private ChatModel chatModel;
-
 	private ChatClient chatClient;
 
-	private final List<ToolCallback> defaultTools = new ArrayList<>();
+	private final List<Tool> defaultTools = new ArrayList<>();
 
 	private TaskToolsBuilder() {
 	}
@@ -118,9 +116,9 @@ public final class TaskToolsBuilder {
 	}
 
 	/**
-	 * Add a directory to load agent specs from (file-based mode).
-	 * Scans for .md files recursively. Requires {@link #chatModel(ChatModel)} or
-	 * {@link #chatClient(ChatClient)} and {@link #defaultTools(ToolCallback...)}.
+	 * Add a directory to load agent specs from (file-based mode). Scans for .md files
+	 * recursively. Requires {@link #chatClient(ChatClient)} and
+	 * {@link #defaultTools(Tool...)}.
 	 */
 	public TaskToolsBuilder addAgentDirectory(String directoryPath) {
 		if (StringUtils.hasText(directoryPath)) {
@@ -130,8 +128,8 @@ public final class TaskToolsBuilder {
 	}
 
 	/**
-	 * Add a Spring Resource to load agent specs from (file-based mode).
-	 * For classpath resources, use {@code resourceLoader.getResource("classpath:.claude/agents")}.
+	 * Add a Spring Resource to load agent specs from (file-based mode). For classpath
+	 * resources, use {@code resourceLoader.getResource("classpath:.claude/agents")}.
 	 */
 	public TaskToolsBuilder addAgentResource(Resource resource) {
 		if (resource != null) {
@@ -141,19 +139,11 @@ public final class TaskToolsBuilder {
 	}
 
 	/**
-	 * Set the factory for converting specs to ReactAgents (file-based mode).
-	 * If not set, one is built from chatModel/chatClient and defaultTools in build().
+	 * Set the factory for converting specs to ReactAgents (file-based mode). If not set,
+	 * one is built from chatClient and defaultTools in build().
 	 */
 	public TaskToolsBuilder agentSpecFactory(AgentSpecReactAgentFactory factory) {
 		this.agentSpecFactory = factory;
-		return this;
-	}
-
-	/**
-	 * Set ChatModel for file-based mode (used to build ReactAgents from specs).
-	 */
-	public TaskToolsBuilder chatModel(ChatModel chatModel) {
-		this.chatModel = chatModel;
 		return this;
 	}
 
@@ -168,7 +158,7 @@ public final class TaskToolsBuilder {
 	/**
 	 * Set default tools for sub-agents (file-based mode).
 	 */
-	public TaskToolsBuilder defaultTools(ToolCallback... tools) {
+	public TaskToolsBuilder defaultTools(Tool... tools) {
 		if (tools != null) {
 			this.defaultTools.addAll(List.of(tools));
 		}
@@ -176,23 +166,18 @@ public final class TaskToolsBuilder {
 	}
 
 	/**
-	 * Build both TaskTool and TaskOutputTool as a list of ToolCallbacks.
+	 * Build both TaskTool and TaskOutputTool as neutral tools.
 	 */
-	public List<ToolCallback> build() {
+	public List<Tool> build() {
 		Assert.notNull(this.taskRepository, "taskRepository must be provided");
 
 		Map<String, ReactAgent> resolved = resolveSubAgents();
 		Assert.notEmpty(resolved, "At least one sub-agent must be configured (via subAgents or addAgentDirectory)");
 
-		List<ToolCallback> tools = new ArrayList<>();
-		tools.add(TaskTool.builder()
-				.subAgents(resolved)
-				.taskRepository(this.taskRepository)
-				.build());
-		tools.add(TaskOutputTool.builder()
-				.taskRepository(this.taskRepository)
-				.build());
-		return tools;
+		List<Tool> tools = new ArrayList<>();
+		tools.add(TaskTool.builder().subAgents(resolved).taskRepository(this.taskRepository).build());
+		tools.add(TaskOutputTool.builder().taskRepository(this.taskRepository).build());
+		return List.copyOf(tools);
 	}
 
 	private Map<String, ReactAgent> resolveSubAgents() {
@@ -220,15 +205,11 @@ public final class TaskToolsBuilder {
 		AgentSpecReactAgentFactory factory = this.agentSpecFactory;
 		if (factory == null) {
 			AgentSpecReactAgentFactory.Builder fb = AgentSpecReactAgentFactory.builder();
-			if (this.chatModel != null) {
-				fb.chatModel(this.chatModel);
-			}
-			else if (this.chatClient != null) {
+			if (this.chatClient != null) {
 				fb.chatClient(this.chatClient);
 			}
 			else {
-				throw new IllegalStateException(
-						"chatModel or chatClient must be provided for file-based agent loading");
+				throw new IllegalStateException("chatClient must be provided for file-based agent loading");
 			}
 			if (!this.defaultTools.isEmpty()) {
 				fb.defaultTools(this.defaultTools);
@@ -261,4 +242,5 @@ public final class TaskToolsBuilder {
 		}
 		return result.isEmpty() ? null : result;
 	}
+
 }

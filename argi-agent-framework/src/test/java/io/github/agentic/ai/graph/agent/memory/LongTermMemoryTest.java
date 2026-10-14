@@ -44,7 +44,7 @@ import java.util.function.BiFunction;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -52,21 +52,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Test for ReactAgent long-term memory functionality using MemoryStore
  *
  * Long-term memory allows the agent to store and retrieve information across sessions.
- * This test demonstrates:
- * 1. Using MemoryStore with Interceptor to manage long-term memory
- * 2. Using MemoryStore with tools to save and retrieve user information
- * 3. Combining short-term and long-term memory
+ * This test demonstrates: 1. Using MemoryStore with Interceptor to manage long-term
+ * memory 2. Using MemoryStore with tools to save and retrieve user information 3.
+ * Combining short-term and long-term memory
  */
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class LongTermMemoryTest {
 
 	private ChatModel chatModel;
+
 	private MemoryStore memoryStore;
 
 	// Memory store request/response records
-	public record SaveMemoryRequest(List<String> namespace, String key, Map<String, Object> value) {}
-	public record GetMemoryRequest(List<String> namespace, String key) {}
-	public record MemoryResponse(String message, Map<String, Object> value) {}
+	public record SaveMemoryRequest(List<String> namespace, String key, Map<String, Object> value) {
+	}
+
+	public record GetMemoryRequest(List<String> namespace, String key) {
+	}
+
+	public record MemoryResponse(String message, Map<String, Object> value) {
+	}
 
 	@BeforeEach
 	void setUp() {
@@ -77,8 +82,8 @@ class LongTermMemoryTest {
 	}
 
 	/**
-	 * Test 1: Long-term memory using Interceptor
-	 * Interceptor automatically saves and retrieves user context
+	 * Test 1: Long-term memory using Interceptor Interceptor automatically saves and
+	 * retrieves user context
 	 */
 	@Test
 	void testLongTermMemoryWithInterceptor() throws Exception {
@@ -96,7 +101,7 @@ class LongTermMemoryTest {
 
 			@Override
 			public HookPosition[] getHookPositions() {
-				return new HookPosition[]{HookPosition.BEFORE_MODEL};
+				return new HookPosition[] { HookPosition.BEFORE_MODEL };
 			}
 
 			@Override
@@ -111,13 +116,8 @@ class LongTermMemoryTest {
 					System.out.println("Loaded user profile from long-term memory: " + profileData);
 
 					// Inject user context into system message
-					String userContext = String.format(
-							"用户信息：姓名=%s, 年龄=%s, 邮箱=%s, 偏好=%s",
-							profileData.get("name"),
-							profileData.get("age"),
-							profileData.get("email"),
-							profileData.get("preferences")
-					);
+					String userContext = String.format("用户信息：姓名=%s, 年龄=%s, 邮箱=%s, 偏好=%s", profileData.get("name"),
+							profileData.get("age"), profileData.get("email"), profileData.get("preferences"));
 
 					// Add system message with user context
 					List<Message> messages = (List<Message>) state.value("messages").orElse(List.of());
@@ -160,22 +160,23 @@ class LongTermMemoryTest {
 
 		// Create agent with memory interceptor
 		ReactAgent agent = ReactAgent.builder()
-				.name("memory_agent")
-				.model(chatModel)
-				.hooks(memoryInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("memory_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(memoryInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		RunnableConfig config = RunnableConfig.builder()
-				.threadId("session_001")
-				.addMetadata("user_id", "user_001")
-				.build();
+			.threadId("session_001")
+			.addMetadata("user_id", "user_001")
+			.build();
 
 		// Ask agent about user information
 		Optional<OverAllState> result = agent.invoke("请介绍一下我的信息。", config);
-		AssistantMessage response = (AssistantMessage) result.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
+		AssistantMessage response = (AssistantMessage) result.get()
+			.value("messages")
+			.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
+			.orElseThrow();
 
 		System.out.println("Response with long-term memory: " + response.getText());
 		assertTrue(response.getText().contains("王小明") || response.getText().contains("28"),
@@ -183,86 +184,81 @@ class LongTermMemoryTest {
 	}
 
 	/**
-	 * Test 2: Long-term memory using tools
-	 * Agent can save and retrieve information using memory tools
+	 * Test 2: Long-term memory using tools Agent can save and retrieve information using
+	 * memory tools
 	 */
 	@Test
 	void testLongTermMemoryWithTools() throws Exception {
 		// Create save memory tool
-		BiFunction<SaveMemoryRequest, ToolContext, MemoryResponse> saveMemoryFunction =
-				(request, context) -> {
-					StoreItem item = StoreItem.of(request.namespace(), request.key(), request.value());
-					memoryStore.putItem(item);
-					System.out.println("Saved to memory: namespace=" + request.namespace() +
-							", key=" + request.key() + ", value=" + request.value());
-					return new MemoryResponse("成功保存到记忆", request.value());
-				};
+		BiFunction<SaveMemoryRequest, ToolContext, MemoryResponse> saveMemoryFunction = (request, context) -> {
+			StoreItem item = StoreItem.of(request.namespace(), request.key(), request.value());
+			memoryStore.putItem(item);
+			System.out.println("Saved to memory: namespace=" + request.namespace() + ", key=" + request.key()
+					+ ", value=" + request.value());
+			return new MemoryResponse("成功保存到记忆", request.value());
+		};
 
 		ToolCallback saveMemoryTool = FunctionToolCallback.builder("saveMemory", saveMemoryFunction)
-				.description("保存信息到长期记忆。参数：namespace=命名空间列表, key=键, value=值的Map")
-				.inputType(SaveMemoryRequest.class)
-				.build();
+			.description("保存信息到长期记忆。参数：namespace=命名空间列表, key=键, value=值的Map")
+			.inputType(SaveMemoryRequest.class)
+			.build();
 
 		// Create get memory tool
-		BiFunction<GetMemoryRequest, ToolContext, MemoryResponse> getMemoryFunction =
-				(request, context) -> {
-					Optional<StoreItem> itemOpt = memoryStore.getItem(request.namespace(), request.key());
-					if (itemOpt.isPresent()) {
-						Map<String, Object> value = itemOpt.get().getValue();
-						System.out.println("Retrieved from memory: namespace=" + request.namespace() +
-								", key=" + request.key() + ", value=" + value);
-						return new MemoryResponse("找到记忆", value);
-					} else {
-						System.out.println("Not found in memory: namespace=" + request.namespace() +
-								", key=" + request.key());
-						return new MemoryResponse("未找到记忆", Map.of());
-					}
-				};
+		BiFunction<GetMemoryRequest, ToolContext, MemoryResponse> getMemoryFunction = (request, context) -> {
+			Optional<StoreItem> itemOpt = memoryStore.getItem(request.namespace(), request.key());
+			if (itemOpt.isPresent()) {
+				Map<String, Object> value = itemOpt.get().getValue();
+				System.out.println("Retrieved from memory: namespace=" + request.namespace() + ", key=" + request.key()
+						+ ", value=" + value);
+				return new MemoryResponse("找到记忆", value);
+			}
+			else {
+				System.out.println("Not found in memory: namespace=" + request.namespace() + ", key=" + request.key());
+				return new MemoryResponse("未找到记忆", Map.of());
+			}
+		};
 
 		ToolCallback getMemoryTool = FunctionToolCallback.builder("getMemory", getMemoryFunction)
-				.description("从长期记忆中获取信息。参数：namespace=命名空间列表, key=键")
-				.inputType(GetMemoryRequest.class)
-				.build();
+			.description("从长期记忆中获取信息。参数：namespace=命名空间列表, key=键")
+			.inputType(GetMemoryRequest.class)
+			.build();
 
 		// Create agent with memory tools
 		ReactAgent agent = ReactAgent.builder()
-				.name("memory_tool_agent")
-				.model(chatModel)
-				.tools(saveMemoryTool, getMemoryTool)
-				.saver(new MemorySaver())
-				.build();
+			.name("memory_tool_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(saveMemoryTool,
+					getMemoryTool))
+			.saver(new MemorySaver())
+			.build();
 
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId("memory_tool_thread")
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId("memory_tool_thread").build();
 
 		// First conversation: save user's favorite color
 		Optional<OverAllState> result1 = agent.invoke(
 				"请帮我记住：我最喜欢的颜色是蓝色。使用 saveMemory 工具保存，namespace 使用 [\"user_preferences\"]，key 使用 \"favorite_color\"，value 使用 {\"color\": \"蓝色\"}。",
-				config
-		);
+				config);
 		assertTrue(result1.isPresent());
-		System.out.println("Save response: " + result1.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow());
+		System.out.println("Save response: " + result1.get()
+			.value("messages")
+			.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
+			.orElseThrow());
 
 		// Second conversation: retrieve the saved information
-		Optional<OverAllState> result2 = agent.invoke(
-				"我最喜欢的颜色是什么？使用 getMemory 工具，namespace=[\"user_preferences\"], key=\"favorite_color\"。",
-				config
-		);
-		AssistantMessage response2 = (AssistantMessage) result2.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
+		Optional<OverAllState> result2 = agent
+			.invoke("我最喜欢的颜色是什么？使用 getMemory 工具，namespace=[\"user_preferences\"], key=\"favorite_color\"。", config);
+		AssistantMessage response2 = (AssistantMessage) result2.get()
+			.value("messages")
+			.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
+			.orElseThrow();
 
 		System.out.println("Retrieve response: " + response2.getText());
-		assertTrue(response2.getText().contains("蓝色"),
-				"Agent should retrieve the saved preference");
+		assertTrue(response2.getText().contains("蓝色"), "Agent should retrieve the saved preference");
 	}
 
 	/**
-	 * Test 3: Combining short-term and long-term memory
-	 * Short-term memory for conversation context, long-term for persistent data
+	 * Test 3: Combining short-term and long-term memory Short-term memory for
+	 * conversation context, long-term for persistent data
 	 */
 	@Test
 	void testCombinedMemory() throws Exception {
@@ -280,7 +276,7 @@ class LongTermMemoryTest {
 
 			@Override
 			public HookPosition[] getHookPositions() {
-				return new HookPosition[]{HookPosition.BEFORE_MODEL};
+				return new HookPosition[] { HookPosition.BEFORE_MODEL };
 			}
 
 			@Override
@@ -298,8 +294,8 @@ class LongTermMemoryTest {
 				}
 
 				Map<String, Object> profile = profileOpt.get().getValue();
-				String contextInfo = String.format("长期记忆：用户 %s, 职业: %s",
-						profile.get("name"), profile.get("occupation"));
+				String contextInfo = String.format("长期记忆：用户 %s, 职业: %s", profile.get("name"),
+						profile.get("occupation"));
 
 				// Inject into messages
 				List<Message> messages = (List<Message>) state.value("messages").orElse(List.of());
@@ -322,100 +318,94 @@ class LongTermMemoryTest {
 
 		// Create agent
 		ReactAgent agent = ReactAgent.builder()
-				.name("combined_memory_agent")
-				.model(chatModel)
-				.hooks(combinedMemoryHook)
-				.saver(new MemorySaver()) // Short-term memory
-				.build();
+			.name("combined_memory_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(combinedMemoryHook)
+			.saver(new MemorySaver()) // Short-term memory
+			.build();
 
 		RunnableConfig config = RunnableConfig.builder()
-				.threadId("combined_thread")
-				.addMetadata("user_id", "user_002")
-				.build();
+			.threadId("combined_thread")
+			.addMetadata("user_id", "user_002")
+			.build();
 
 		// Short-term: remember within conversation
 		agent.invoke("我今天在做一个 Spring 项目。", config);
 
 		// Ask question that requires both memories
-		Optional<OverAllState> result = agent.invoke(
-				"根据我的职业和今天的工作，给我一些建议。",
-				config
-		);
+		Optional<OverAllState> result = agent.invoke("根据我的职业和今天的工作，给我一些建议。", config);
 
-		AssistantMessage response = (AssistantMessage) result.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
+		AssistantMessage response = (AssistantMessage) result.get()
+			.value("messages")
+			.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
+			.orElseThrow();
 
 		System.out.println("Combined memory response: " + response.getText());
-		// Response should use both long-term (occupation) and short-term (Spring project) memory
+		// Response should use both long-term (occupation) and short-term (Spring project)
+		// memory
 	}
 
 	/**
-	 * Test 4: Memory across different sessions
-	 * Same user in different sessions should access same long-term memory
+	 * Test 4: Memory across different sessions Same user in different sessions should
+	 * access same long-term memory
 	 */
 	@Test
 	void testMemoryAcrossSessions() throws Exception {
 		// Create save memory tool
-		BiFunction<SaveMemoryRequest, ToolContext, MemoryResponse> saveMemoryFunction =
-				(request, context) -> {
-					StoreItem item = StoreItem.of(request.namespace(), request.key(), request.value());
-					memoryStore.putItem(item);
-					return new MemoryResponse("已保存", request.value());
-				};
+		BiFunction<SaveMemoryRequest, ToolContext, MemoryResponse> saveMemoryFunction = (request, context) -> {
+			StoreItem item = StoreItem.of(request.namespace(), request.key(), request.value());
+			memoryStore.putItem(item);
+			return new MemoryResponse("已保存", request.value());
+		};
 
 		ToolCallback saveMemoryTool = FunctionToolCallback.builder("saveMemory", saveMemoryFunction)
-				.description("保存到长期记忆")
-				.inputType(SaveMemoryRequest.class)
-				.build();
+			.description("保存到长期记忆")
+			.inputType(SaveMemoryRequest.class)
+			.build();
 
 		// Create get memory tool
-		BiFunction<GetMemoryRequest, ToolContext, MemoryResponse> getMemoryFunction =
-				(request, context) -> {
-					Optional<StoreItem> itemOpt = memoryStore.getItem(request.namespace(), request.key());
-					return new MemoryResponse(
-							itemOpt.isPresent() ? "找到" : "未找到",
-							itemOpt.map(StoreItem::getValue).orElse(Map.of())
-					);
-				};
+		BiFunction<GetMemoryRequest, ToolContext, MemoryResponse> getMemoryFunction = (request, context) -> {
+			Optional<StoreItem> itemOpt = memoryStore.getItem(request.namespace(), request.key());
+			return new MemoryResponse(itemOpt.isPresent() ? "找到" : "未找到",
+					itemOpt.map(StoreItem::getValue).orElse(Map.of()));
+		};
 
 		ToolCallback getMemoryTool = FunctionToolCallback.builder("getMemory", getMemoryFunction)
-				.description("从长期记忆获取")
-				.inputType(GetMemoryRequest.class)
-				.build();
+			.description("从长期记忆获取")
+			.inputType(GetMemoryRequest.class)
+			.build();
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("session_agent")
-				.model(chatModel)
-				.tools(saveMemoryTool, getMemoryTool)
-				.saver(new MemorySaver())
-				.build();
+			.name("session_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(saveMemoryTool,
+					getMemoryTool))
+			.saver(new MemorySaver())
+			.build();
 
 		// Session 1: Save information
 		RunnableConfig session1 = RunnableConfig.builder()
-				.threadId("session_morning")
-				.addMetadata("user_id", "user_003")
-				.build();
+			.threadId("session_morning")
+			.addMetadata("user_id", "user_003")
+			.build();
 
 		agent.invoke(
 				"记住我的密码是 secret123。用 saveMemory 保存，namespace=[\"credentials\"], key=\"user_003_password\", value={\"password\": \"secret123\"}。",
-				session1
-		);
+				session1);
 
 		// Session 2: Retrieve information (different thread, same user)
 		RunnableConfig session2 = RunnableConfig.builder()
-				.threadId("session_afternoon")
-				.addMetadata("user_id", "user_003")
-				.build();
+			.threadId("session_afternoon")
+			.addMetadata("user_id", "user_003")
+			.build();
 
-		Optional<OverAllState> result = agent.invoke(
-				"我的密码是什么？用 getMemory 获取，namespace=[\"credentials\"], key=\"user_003_password\"。",
-				session2
-		);
+		Optional<OverAllState> result = agent
+			.invoke("我的密码是什么？用 getMemory 获取，namespace=[\"credentials\"], key=\"user_003_password\"。", session2);
 
-		AssistantMessage response = (AssistantMessage) result.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
+		AssistantMessage response = (AssistantMessage) result.get()
+			.value("messages")
+			.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
+			.orElseThrow();
 
 		System.out.println("Cross-session response: " + response.getText());
 		assertTrue(response.getText().contains("secret123"),
@@ -423,8 +413,7 @@ class LongTermMemoryTest {
 	}
 
 	/**
-	 * Test 5: User preference learning
-	 * Agent learns and stores user preferences over time
+	 * Test 5: User preference learning Agent learns and stores user preferences over time
 	 */
 	@Test
 	void testUserPreferenceLearning() throws Exception {
@@ -441,7 +430,7 @@ class LongTermMemoryTest {
 
 			@Override
 			public HookPosition[] getHookPositions() {
-				return new HookPosition[]{HookPosition.AFTER_MODEL};
+				return new HookPosition[] { HookPosition.AFTER_MODEL };
 			}
 
 			@Override
@@ -485,16 +474,16 @@ class LongTermMemoryTest {
 		};
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("learning_agent")
-				.model(chatModel)
-				.hooks(preferenceLearningHook)
-				.saver(new MemorySaver())
-				.build();
+			.name("learning_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(preferenceLearningHook)
+			.saver(new MemorySaver())
+			.build();
 
 		RunnableConfig config = RunnableConfig.builder()
-				.threadId("learning_thread")
-				.addMetadata("user_id", "user_004")
-				.build();
+			.threadId("learning_thread")
+			.addMetadata("user_id", "user_004")
+			.build();
 
 		// User expresses preferences
 		agent.invoke("我喜欢喝绿茶。", config);
@@ -509,4 +498,5 @@ class LongTermMemoryTest {
 		System.out.println("Learned preferences: " + prefs);
 		assertTrue(prefs.size() >= 1, "Should have learned at least one preference");
 	}
+
 }

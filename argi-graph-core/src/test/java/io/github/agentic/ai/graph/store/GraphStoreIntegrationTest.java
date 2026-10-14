@@ -18,7 +18,7 @@ package io.github.agentic.ai.graph.store;
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.StateGraph;
-import io.github.agentic.ai.graph.serializer.std.SpringAIStateSerializer;
+import io.github.agentic.ai.graph.serializer.std.ObjectStreamStateSerializer;
 import io.github.agentic.ai.graph.state.strategy.ReplaceStrategy;
 import io.github.agentic.ai.graph.store.stores.DatabaseStore;
 import io.github.agentic.ai.graph.store.stores.FileSystemStore;
@@ -388,7 +388,8 @@ public class GraphStoreIntegrationTest {
 		CompileConfig config = CompileConfig.builder().store(store).build();
 
 		StateGraph workflow = new StateGraph(() -> Map.of("query", new ReplaceStrategy(), "operation",
-				new ReplaceStrategy(), "searchResults", new ReplaceStrategy()), new SpringAIStateSerializer())
+				new ReplaceStrategy(), "searchResults", new ReplaceStrategy()),
+				new ObjectStreamStateSerializer(OverAllState::new))
 			.addNode("searchData", node_async(state -> {
 				String query = state.value("query", "");
 				Store searchStore = state.getStore();

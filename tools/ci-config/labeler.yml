@@ -36,7 +36,8 @@
       - any-glob-to-any-file:
           - "argi-agent-framework/**/*"
           - "argi-bom/**/*"
-          - "spring-boot-starters/**/*"
+          - "argi-api/**/*"
+          - "argi-spring-boot-starter/**/*"
 "area/studio":
   - changed-files:
       - any-glob-to-any-file:

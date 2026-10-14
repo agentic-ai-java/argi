@@ -45,39 +45,31 @@ public interface JacksonDeserializer<T> {
 	Logger logger = LoggerFactory.getLogger(JacksonDeserializer.class);
 
 	/**
-	 * Cache for deserialization strategies to avoid repeated trial-and-error.
-	 * Key: target class, Value: the most efficient deserialization strategy for that class
-	 * 
-	 * Note: This cache is bounded to prevent unbounded memory growth.
-	 * In typical applications, the number of unique classes being deserialized is limited.
-	 * If the cache fills up, older entries will be evicted (not implemented yet, but recommended for production).
+	 * Cache for deserialization strategies to avoid repeated trial-and-error. Key: target
+	 * class, Value: the most efficient deserialization strategy for that class
+	 *
+	 * Note: This cache is bounded to prevent unbounded memory growth. In typical
+	 * applications, the number of unique classes being deserialized is limited. If the
+	 * cache fills up, older entries will be evicted (not implemented yet, but recommended
+	 * for production).
 	 */
 	Map<Class<?>, DeserializationStrategy> STRATEGY_CACHE = new ConcurrentHashMap<>();
-	
+
 	/**
-	 * Maximum cache size to prevent unbounded growth.
-	 * This limit is reasonable for most applications.
+	 * Maximum cache size to prevent unbounded growth. This limit is reasonable for most
+	 * applications.
 	 */
 	int MAX_CACHE_SIZE = 1000;
 
-	Set<String> PRIMITIVE_WRAPPER_TYPES = Set.of(
-			"java.lang.Long",
-			"java.lang.Integer",
-			"java.lang.Double",
-			"java.lang.Float",
-			"java.lang.Short",
-			"java.lang.Byte",
-			"java.lang.Boolean",
-			"java.lang.Character",
-			"java.lang.String",
-			"java.math.BigInteger",
-			"java.math.BigDecimal"
-	);
+	Set<String> PRIMITIVE_WRAPPER_TYPES = Set.of("java.lang.Long", "java.lang.Integer", "java.lang.Double",
+			"java.lang.Float", "java.lang.Short", "java.lang.Byte", "java.lang.Boolean", "java.lang.Character",
+			"java.lang.String", "java.math.BigInteger", "java.math.BigDecimal");
 
 	/**
 	 * Deserialization strategies in order of preference and capability
 	 */
 	enum DeserializationStrategy {
+
 		/**
 		 * Use readValue - full deserialization with custom deserializers support
 		 */
@@ -90,17 +82,17 @@ public interface JacksonDeserializer<T> {
 		 * Cannot instantiate, degrade to Map
 		 */
 		DEGRADE_TO_MAP
+
 	}
 
 	/**
-	 * Check if a class cannot be instantiated by Jackson.
-	 * Non-static inner classes, local classes, and anonymous classes require
-	 * an outer class instance and cannot be deserialized.
+	 * Check if a class cannot be instantiated by Jackson. Non-static inner classes, local
+	 * classes, and anonymous classes require an outer class instance and cannot be
+	 * deserialized.
 	 */
 	static boolean isNonInstantiableClass(Class<?> clazz) {
 		return (clazz.isMemberClass() && !java.lang.reflect.Modifier.isStatic(clazz.getModifiers()))
-				|| clazz.isLocalClass()
-				|| clazz.isAnonymousClass();
+				|| clazz.isLocalClass() || clazz.isAnonymousClass();
 	}
 
 	/**
@@ -122,14 +114,13 @@ public interface JacksonDeserializer<T> {
 	}
 
 	/**
-	 * Unified deserialization strategy with progressive fallback and caching.
-	 * This is the framework-level solution that handles all types automatically:
-	 * 
-	 * 1. Try readValue first (supports custom deserializers, @JsonCreator, etc.)
-	 * 2. Fall back to convertValue if readValue fails (faster for simple POJOs)
-	 * 3. Degrade to Map if both fail (for non-instantiable classes)
-	 * 4. Cache the successful strategy to avoid repeated trial-and-error
-	 * 
+	 * Unified deserialization strategy with progressive fallback and caching. This is the
+	 * framework-level solution that handles all types automatically:
+	 *
+	 * 1. Try readValue first (supports custom deserializers, @JsonCreator, etc.) 2. Fall
+	 * back to convertValue if readValue fails (faster for simple POJOs) 3. Degrade to Map
+	 * if both fail (for non-instantiable classes) 4. Cache the successful strategy to
+	 * avoid repeated trial-and-error
 	 * @param node the JSON node to deserialize
 	 * @param targetClass the target class to deserialize to
 	 * @param objectMapper the ObjectMapper instance
@@ -137,10 +128,7 @@ public interface JacksonDeserializer<T> {
 	 * @return the deserialized object
 	 * @throws IOException if deserialization fails completely
 	 */
-	static Object deserializeWithStrategy(
-			ObjectNode node,
-			Class<?> targetClass,
-			ObjectMapper objectMapper,
+	static Object deserializeWithStrategy(ObjectNode node, Class<?> targetClass, ObjectMapper objectMapper,
 			TypeMapper typeMapper) throws IOException {
 
 		// Quick check for known non-instantiable classes
@@ -198,8 +186,8 @@ public interface JacksonDeserializer<T> {
 			catch (RuntimeException convertEx) {
 				// Both methods failed, degrade to Map
 				if (logger.isDebugEnabled()) {
-					logger.debug("Both readValue and convertValue failed for {}, degrading to Map", 
-						targetClass.getName(), convertEx);
+					logger.debug("Both readValue and convertValue failed for {}, degrading to Map",
+							targetClass.getName(), convertEx);
 				}
 				cacheStrategy(targetClass, DeserializationStrategy.DEGRADE_TO_MAP);
 				logStrategyFallback(targetClass, "convertValue", "Map");
@@ -209,29 +197,26 @@ public interface JacksonDeserializer<T> {
 	}
 
 	/**
-	 * Cache a deserialization strategy with size limit protection.
-	 * If cache size exceeds MAX_CACHE_SIZE, clear 10% of entries to prevent unbounded growth.
+	 * Cache a deserialization strategy with size limit protection. If cache size exceeds
+	 * MAX_CACHE_SIZE, clear 10% of entries to prevent unbounded growth.
 	 */
 	static void cacheStrategy(Class<?> targetClass, DeserializationStrategy strategy) {
 		// Simple cache size management: if full, clear some space
 		if (STRATEGY_CACHE.size() >= MAX_CACHE_SIZE) {
 			// Clear approximately 10% of cache entries
 			int entriesToRemove = MAX_CACHE_SIZE / 10;
-			STRATEGY_CACHE.keySet().stream()
-				.limit(entriesToRemove)
-				.forEach(STRATEGY_CACHE::remove);
-			
+			STRATEGY_CACHE.keySet().stream().limit(entriesToRemove).forEach(STRATEGY_CACHE::remove);
+
 			if (logger.isDebugEnabled()) {
-				logger.debug("Strategy cache reached limit ({}), cleared {} entries", 
-					MAX_CACHE_SIZE, entriesToRemove);
+				logger.debug("Strategy cache reached limit ({}), cleared {} entries", MAX_CACHE_SIZE, entriesToRemove);
 			}
 		}
 		STRATEGY_CACHE.put(targetClass, strategy);
 	}
 
 	/**
-	 * Log deserialization strategy fallback for debugging and monitoring.
-	 * Uses DEBUG level to avoid excessive logging in production.
+	 * Log deserialization strategy fallback for debugging and monitoring. Uses DEBUG
+	 * level to avoid excessive logging in production.
 	 */
 	static void logStrategyFallback(Class<?> targetClass, String from, String to) {
 		if (logger.isDebugEnabled()) {
@@ -273,8 +258,9 @@ public interface JacksonDeserializer<T> {
 						&& !MapEnvelopeSupport.isMapEnvelope(valueNode);
 				if (valueNode.has(TYPE_PROPERTY)) {
 					var type = valueNode.get(TYPE_PROPERTY).asText();
-					
-					// Special handling for GraphResponse, ChatResponse and CompletableFuture
+
+					// Special handling for GraphResponse, ChatResponse and
+					// CompletableFuture
 					if (MapEnvelopeSupport.isMapEnvelope(valueNode)) {
 						yield MapEnvelopeSupport.mapFromEnvelope(valueNode, objectMapper, typeMapper);
 					}
@@ -282,14 +268,24 @@ public interface JacksonDeserializer<T> {
 						yield reconstructGraphResponse(valueNode, objectMapper, typeMapper);
 					}
 					if (!invalidMapEnvelopeMarker && "ChatResponse".equals(type)) {
-						// ChatResponse cannot be reconstructed (no default constructor),
-						// return null as it should not be persisted in state
-						yield null;
+						throw new IOException(
+								"Legacy ChatResponse checkpoints require export with the previous runtime");
 					}
 					if (!invalidMapEnvelopeMarker && "CompletableFuture".equals(type)) {
 						yield reconstructCompletableFuture(valueNode, objectMapper, typeMapper);
 					}
-					
+					if (!invalidMapEnvelopeMarker && ArgiChatRecordSupport.supports(type)) {
+						yield ArgiChatRecordSupport.read(type, valueNode, objectMapper, typeMapper);
+					}
+					if (!invalidMapEnvelopeMarker && LegacyChatRecordSupport.isLegacyType(type)) {
+						yield LegacyChatRecordSupport.read(type, valueNode, objectMapper, typeMapper);
+					}
+					if (!invalidMapEnvelopeMarker && "ARGI_STREAMING_OUTPUT".equals(type)) {
+						ObjectMapper mapper = typeMapper.mapperWithoutDefaultTyping(objectMapper);
+						yield mapper.readValue(mapper.treeAsTokens(valueNode),
+								io.github.agentic.ai.graph.streaming.StreamingOutput.class);
+					}
+
 					// Use unified deserialization strategy for all registered types
 					if (!invalidMapEnvelopeMarker) {
 						var ref = typeMapper.getReference(type);
@@ -298,7 +294,8 @@ public interface JacksonDeserializer<T> {
 							copy.remove(TYPE_PROPERTY);
 							copy.remove("@typeHint");
 
-							// Get Class from TypeReference using ObjectMapper's TypeFactory
+							// Get Class from TypeReference using ObjectMapper's
+							// TypeFactory
 							Class<?> targetClass = objectMapper.getTypeFactory().constructType(ref.get()).getRawClass();
 							yield deserializeWithStrategy(copy, targetClass, objectMapper, typeMapper);
 						}
@@ -306,6 +303,9 @@ public interface JacksonDeserializer<T> {
 				}
 				if (!invalidMapEnvelopeMarker && valueNode.has("@class")) {
 					String className = valueNode.get("@class").asText();
+					if (LegacyChatRecordSupport.isLegacyType(className)) {
+						yield LegacyChatRecordSupport.read(className, valueNode, objectMapper, typeMapper);
+					}
 					if (!(typeHint != null && className.startsWith("java.util."))) {
 						ObjectNode copy = valueNode.deepCopy();
 						copy.remove("@class");
@@ -316,11 +316,15 @@ public interface JacksonDeserializer<T> {
 							yield deserializeWithStrategy(copy, clazz, objectMapper, typeMapper);
 						}
 						catch (ClassNotFoundException ex) {
-							// Literal business payloads can use @class as an ordinary key.
+							// Literal business payloads can use @class as an ordinary
+							// key.
 						}
 					}
 				}
 				if (!invalidMapEnvelopeMarker && typeHint != null) {
+					if (LegacyChatRecordSupport.isLegacyType(typeHint)) {
+						yield LegacyChatRecordSupport.read(typeHint, valueNode, objectMapper, typeMapper);
+					}
 					ObjectNode copy = valueNode.deepCopy();
 					copy.remove("@typeHint");
 					copy.remove(TYPE_PROPERTY);
@@ -374,6 +378,7 @@ public interface JacksonDeserializer<T> {
 		};
 
 	}
+
 	private static Object deserializeArrayNode(JsonNode valueNode, ObjectMapper objectMapper, TypeMapper typeMapper)
 			throws IOException {
 		if (valueNode.size() == 2 && valueNode.get(0).isTextual()) {
@@ -393,7 +398,7 @@ public interface JacksonDeserializer<T> {
 				if (className.startsWith("java.")) {
 					List<Object> list = new java.util.ArrayList<>(payload.size());
 					for (JsonNode element : payload) {
-						list.add(valueFromNode(element, objectMapper, typeMapper));
+						addArrayElement(list, element, objectMapper, typeMapper);
 					}
 					return list;
 				}
@@ -401,9 +406,21 @@ public interface JacksonDeserializer<T> {
 		}
 		List<Object> list = new java.util.ArrayList<>(valueNode.size());
 		for (JsonNode element : valueNode) {
-			list.add(valueFromNode(element, objectMapper, typeMapper));
+			addArrayElement(list, element, objectMapper, typeMapper);
 		}
 		return list;
+	}
+
+	private static void addArrayElement(List<Object> list, JsonNode element, ObjectMapper mapper, TypeMapper types)
+			throws IOException {
+		Object value = valueFromNode(element, mapper, types);
+		// Only the old grouped tool envelope expands; business nested lists stay nested.
+		if (LegacyChatRecordSupport.isToolGroup(element) && value instanceof List<?> results) {
+			list.addAll(results);
+		}
+		else {
+			list.add(value);
+		}
 	}
 
 	/**
@@ -453,16 +470,17 @@ public interface JacksonDeserializer<T> {
 			for (int i = 0; i < length; i++) {
 				JsonNode elementNode = payload.get(i);
 				Object element;
-				
+
 				// For object nodes, use unified deserialization strategy
 				if (elementNode.isObject()) {
-					element = deserializeWithStrategy((ObjectNode) elementNode, componentType, objectMapper, typeMapper);
+					element = deserializeWithStrategy((ObjectNode) elementNode, componentType, objectMapper,
+							typeMapper);
 				}
 				else {
 					// For non-object nodes, use valueFromNode
 					element = valueFromNode(elementNode, objectMapper, typeMapper);
 				}
-				
+
 				if (element == null && !componentType.isPrimitive()) {
 					Array.set(typedArray, i, null);
 					continue;
@@ -509,12 +527,12 @@ public interface JacksonDeserializer<T> {
 			throws IOException {
 		String status = valueNode.has("status") ? valueNode.get("status").asText() : "pending";
 		boolean isError = valueNode.has("error") && valueNode.get("error").asBoolean();
-		
+
 		Object result = null;
 		if (valueNode.has("result")) {
 			result = valueFromNode(valueNode.get("result"), objectMapper, typeMapper);
 		}
-		
+
 		Map<String, Object> metadata = new java.util.LinkedHashMap<>();
 		if (valueNode.has("metadata")) {
 			JsonNode metadataNode = valueNode.get("metadata");
@@ -532,7 +550,7 @@ public interface JacksonDeserializer<T> {
 				}
 			}
 		}
-		
+
 		// Reconstruct GraphResponse based on status
 		if (isError) {
 			// Extract error details from errorDetails map
@@ -559,19 +577,21 @@ public interface JacksonDeserializer<T> {
 			return io.github.agentic.ai.graph.GraphResponse.done(result, metadata);
 		}
 		else {
-			// For pending status, create a pending GraphResponse with incomplete CompletableFuture
+			// For pending status, create a pending GraphResponse with incomplete
+			// CompletableFuture
 			java.util.concurrent.CompletableFuture<Object> pendingFuture = new java.util.concurrent.CompletableFuture<>();
 			return io.github.agentic.ai.graph.GraphResponse.of(pendingFuture, metadata);
 		}
 	}
-	
+
 	/**
 	 * Reconstruct CompletableFuture from snapshot map.
 	 */
 	private static Object reconstructCompletableFuture(JsonNode valueNode, ObjectMapper objectMapper,
 			TypeMapper typeMapper) throws IOException {
 		String status = valueNode.has("status") ? valueNode.get("status").asText() : "pending";
-		// Check if error field exists and is an object (error map) - this indicates a failed future
+		// Check if error field exists and is an object (error map) - this indicates a
+		// failed future
 		boolean hasErrorMap = valueNode.has("error") && valueNode.get("error").isObject();
 
 		java.util.concurrent.CompletableFuture<Object> future = new java.util.concurrent.CompletableFuture<>();
@@ -607,8 +627,8 @@ public interface JacksonDeserializer<T> {
 	}
 
 	/**
-	 * Create a Throwable instance from class name and message.
-	 * Falls back to RuntimeException if the class cannot be instantiated.
+	 * Create a Throwable instance from class name and message. Falls back to
+	 * RuntimeException if the class cannot be instantiated.
 	 */
 	private static Throwable createThrowable(String exceptionClass, String message) {
 		try {

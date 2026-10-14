@@ -33,10 +33,8 @@ import static org.mockito.Mockito.mock;
  * Tests for Builder async tool execution configuration methods.
  *
  * <p>
- * Covers the public API for configuring async tool execution in ReactAgent.Builder:
- * - parallelToolExecution(boolean)
- * - maxParallelTools(int)
- * - toolExecutionTimeout(Duration)
+ * Covers the public API for configuring async tool execution in ReactAgent.Builder: -
+ * parallelToolExecution(boolean) - maxParallelTools(int) - toolExecutionTimeout(Duration)
  * - wrapSyncToolsAsAsync(boolean)
  * </p>
  *
@@ -63,10 +61,6 @@ class BuilderAsyncConfigTest {
 
 		public Duration getToolExecutionTimeout() {
 			return this.toolExecutionTimeout;
-		}
-
-		public boolean getWrapSyncToolsAsAsync() {
-			return this.wrapSyncToolsAsAsync;
 		}
 
 	}
@@ -140,7 +134,8 @@ class BuilderAsyncConfigTest {
 		@DisplayName("should throw IllegalArgumentException for zero")
 		void shouldThrowForZero() {
 			TestableBuilder builder = new TestableBuilder();
-			IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> builder.maxParallelTools(0));
+			IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+					() -> builder.maxParallelTools(0));
 			assertEquals("maxParallelTools must be at least 1", ex.getMessage());
 		}
 
@@ -215,44 +210,6 @@ class BuilderAsyncConfigTest {
 	}
 
 	@Nested
-	@DisplayName("wrapSyncToolsAsAsync() tests")
-	class WrapSyncToolsAsAsyncTests {
-
-		@Test
-		@DisplayName("should default to false")
-		void shouldDefaultToFalse() {
-			TestableBuilder builder = new TestableBuilder();
-			assertFalse(builder.getWrapSyncToolsAsAsync());
-		}
-
-		@Test
-		@DisplayName("should enable wrapping when set to true")
-		void shouldEnableWrapping() {
-			TestableBuilder builder = new TestableBuilder();
-			builder.wrapSyncToolsAsAsync(true);
-			assertTrue(builder.getWrapSyncToolsAsAsync());
-		}
-
-		@Test
-		@DisplayName("should disable wrapping when set to false")
-		void shouldDisableWrapping() {
-			TestableBuilder builder = new TestableBuilder();
-			builder.wrapSyncToolsAsAsync(true);
-			builder.wrapSyncToolsAsAsync(false);
-			assertFalse(builder.getWrapSyncToolsAsAsync());
-		}
-
-		@Test
-		@DisplayName("should return builder for fluent chaining")
-		void shouldReturnBuilderForFluent() {
-			TestableBuilder builder = new TestableBuilder();
-			Builder result = builder.wrapSyncToolsAsAsync(true);
-			assertEquals(builder, result);
-		}
-
-	}
-
-	@Nested
 	@DisplayName("Fluent API chaining tests")
 	class FluentApiTests {
 
@@ -263,14 +220,12 @@ class BuilderAsyncConfigTest {
 
 			Builder result = builder.parallelToolExecution(true)
 				.maxParallelTools(10)
-				.toolExecutionTimeout(Duration.ofMinutes(10))
-				.wrapSyncToolsAsAsync(true);
+				.toolExecutionTimeout(Duration.ofMinutes(10));
 
 			assertEquals(builder, result);
 			assertTrue(builder.getParallelToolExecution());
 			assertEquals(10, builder.getMaxParallelTools());
 			assertEquals(Duration.ofMinutes(10), builder.getToolExecutionTimeout());
-			assertTrue(builder.getWrapSyncToolsAsAsync());
 		}
 
 		@Test
@@ -282,7 +237,6 @@ class BuilderAsyncConfigTest {
 				.parallelToolExecution(true)
 				.maxParallelTools(5)
 				.toolExecutionTimeout(Duration.ofMinutes(2))
-				.wrapSyncToolsAsAsync(true)
 				.enableLogging(true));
 		}
 

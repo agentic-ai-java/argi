@@ -26,7 +26,7 @@ import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.function.FunctionToolCallback;
@@ -42,8 +42,7 @@ import static io.github.agentic.ai.graph.agent.tools.ToolContextConstants.AGENT_
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class ParallelAgentToolContextLossTest extends AbstractDashscopeChatModelTest {
 
 	/** 用于在 afterHook 中记录检查结果 */
@@ -53,7 +52,6 @@ class ParallelAgentToolContextLossTest extends AbstractDashscopeChatModelTest {
 	void clearHookCapturedData() {
 		HOOK_CAPTURED_DATA.clear();
 	}
-
 
 	// ==================== 商品查询工具 ====================
 
@@ -67,31 +65,31 @@ class ParallelAgentToolContextLossTest extends AbstractDashscopeChatModelTest {
 		public String apply(Request request, ToolContext toolContext) {
 			// 通过 ToolContext 写入额外状态数据
 			Map<String, Object> updateMap = (Map<String, Object>) toolContext.getContext()
-					.get(AGENT_STATE_FOR_UPDATE_CONTEXT_KEY);
+				.get(AGENT_STATE_FOR_UPDATE_CONTEXT_KEY);
 			if (updateMap != null) {
 				updateMap.put("product_1_extra", "苹果手机");
 				System.out.println("[Tool query_product_1] 已写入 product_1_extra=苹果手机 到 ToolContext");
-			} else {
+			}
+			else {
 				System.out.println("[Tool query_product_1] ⚠️ updateMap 为 null，无法写入额外数据");
 			}
 			return "商品1: id=1, name=苹果";
 		}
 
 		public record Request(
-				@JsonProperty(required = true, value = "query")
-				@JsonPropertyDescription("查询关键词") String query,
+				@JsonProperty(required = true, value = "query") @JsonPropertyDescription("查询关键词") String query,
 
-				@JsonProperty(required = true, value = "thought")
-				@JsonPropertyDescription("思考为什么要调用这个工具") String thought
-				) {
+				@JsonProperty(required = true,
+						value = "thought") @JsonPropertyDescription("思考为什么要调用这个工具") String thought) {
 		}
 
 		static ToolCallback createCallback() {
 			return FunctionToolCallback.builder("query_product_1", new QueryProduct1Tool())
-					.description("查询商品1的信息，返回id=1的苹果商品")
-					.inputType(Request.class)
-					.build();
+				.description("查询商品1的信息，返回id=1的苹果商品")
+				.inputType(Request.class)
+				.build();
 		}
+
 	}
 
 	/**
@@ -103,27 +101,28 @@ class ParallelAgentToolContextLossTest extends AbstractDashscopeChatModelTest {
 		@SuppressWarnings("unchecked")
 		public String apply(Request request, ToolContext toolContext) {
 			Map<String, Object> updateMap = (Map<String, Object>) toolContext.getContext()
-					.get(AGENT_STATE_FOR_UPDATE_CONTEXT_KEY);
+				.get(AGENT_STATE_FOR_UPDATE_CONTEXT_KEY);
 			if (updateMap != null) {
 				updateMap.put("product_2_extra", "华为平板");
 				System.out.println("[Tool query_product_2] 已写入 product_2_extra=华为平板 到 ToolContext");
-			} else {
+			}
+			else {
 				System.out.println("[Tool query_product_2] ⚠️ updateMap 为 null，无法写入额外数据");
 			}
 			return "商品2: id=2, name=香蕉";
 		}
 
 		public record Request(
-				@JsonProperty(required = true, value = "query")
-				@JsonPropertyDescription("查询关键词") String query) {
+				@JsonProperty(required = true, value = "query") @JsonPropertyDescription("查询关键词") String query) {
 		}
 
 		static ToolCallback createCallback() {
 			return FunctionToolCallback.builder("query_product_2", new QueryProduct2Tool())
-					.description("查询商品2的信息，返回id=2的香蕉商品")
-					.inputType(Request.class)
-					.build();
+				.description("查询商品2的信息，返回id=2的香蕉商品")
+				.inputType(Request.class)
+				.build();
 		}
+
 	}
 
 	// ==================== AfterHook：验证数据可见性 ====================
@@ -162,18 +161,19 @@ class ParallelAgentToolContextLossTest extends AbstractDashscopeChatModelTest {
 
 			return CompletableFuture.completedFuture(Map.of());
 		}
+
 	}
 
 	// ==================== 测试用例 ====================
 
 	/**
-	 * 复现：SequentialAgent(afterHook) → ParallelAgent(2个子Agent并发查询商品)
-	 * 验证 afterHook 能否获取到子Agent通过 ToolContext 写入的额外数据。
+	 * 复现：SequentialAgent(afterHook) → ParallelAgent(2个子Agent并发查询商品) 验证 afterHook
+	 * 能否获取到子Agent通过 ToolContext 写入的额外数据。
 	 *
-	 * <p>这个测试是为了**复现一个已知 bug**：子 agent 通过 {@link ToolContext} 写入
+	 * <p>
+	 * 这个测试是为了**复现一个已知 bug**：子 agent 通过 {@link ToolContext} 写入
 	 * {@code AGENT_STATE_FOR_UPDATE_CONTEXT_KEY} 的数据在父层 afterHook 中不可见。
-	 * 在底层修复落地之前，断言会失败，所以暂时 {@link Disabled}，避免污染
-	 * integration test 套件。修复合入后请移除此注解。
+	 * 在底层修复落地之前，断言会失败，所以暂时 {@link Disabled}，避免污染 integration test 套件。修复合入后请移除此注解。
 	 */
 	@Disabled("Reproduction-style test for a known ToolContext propagation bug; "
 			+ "re-enable after the underlying fix is merged")
@@ -181,73 +181,72 @@ class ParallelAgentToolContextLossTest extends AbstractDashscopeChatModelTest {
 	void testToolContextDataLossInParallelSubAgents() throws Exception {
 		// 子Agent1：查询商品1
 		ReactAgent productAgent1 = ReactAgent.builder()
-				.name("product_agent_1")
-				.model(chatModel)
-				.description("查询商品1")
-				.instruction("请调用 query_product_1 工具查询商品信息,并输出500字的商品结构化解读")
-				.tools(List.of(QueryProduct1Tool.createCallback()))
-				.outputKey("product_1_result")
-				.build();
+			.name("product_agent_1")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("查询商品1")
+			.instruction("请调用 query_product_1 工具查询商品信息,并输出500字的商品结构化解读")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(List.of(QueryProduct1Tool.createCallback())))
+			.outputKey("product_1_result")
+			.build();
 
 		// 子Agent2：查询商品2
 		ReactAgent productAgent2 = ReactAgent.builder()
-				.name("product_agent_2")
-				.model(chatModel)
-				.description("查询商品2")
-				.instruction("请调用 query_product_2 工具查询商品信息,并输出500字的商品结构化解读")
-				.tools(List.of(QueryProduct2Tool.createCallback()))
-				.outputKey("product_2_result")
-				.build();
+			.name("product_agent_2")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("查询商品2")
+			.instruction("请调用 query_product_2 工具查询商品信息,并输出500字的商品结构化解读")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(List.of(QueryProduct2Tool.createCallback())))
+			.outputKey("product_2_result")
+			.build();
 
 		// ParallelAgent：并发执行两个商品查询
-//		ParallelAgent parallelAgent = ParallelAgent.builder()
-//				.name("parallel_product_query")
-//				.description("并发查询两个商品")
-//				.subAgents(List.of(productAgent1, productAgent2))
-//				.build();
+		// ParallelAgent parallelAgent = ParallelAgent.builder()
+		// .name("parallel_product_query")
+		// .description("并发查询两个商品")
+		// .subAgents(List.of(productAgent1, productAgent2))
+		// .build();
 
 		// SequentialAgent：包含 ParallelAgent + afterHook 验证数据
 		SequentialAgent sequentialAgent = SequentialAgent.builder()
-				.name("product_query_workflow")
-				.description("商品查询工作流")
-				.subAgents(List.of(productAgent1, productAgent2))
-				.hooks(List.of(new DataVerificationHook()))
-				.build();
+			.name("product_query_workflow")
+			.description("商品查询工作流")
+			.subAgents(List.of(productAgent1, productAgent2))
+			.hooks(List.of(new DataVerificationHook()))
+			.build();
 
 		try {
 			// 收集所有输出数据
 			StringBuffer allOutput = new StringBuffer();
 
-			sequentialAgent
-					.stream("查询所有商品")
-					.doOnNext(data -> {
-						try {
-							if (data instanceof StreamingOutput<?> streamingOutput) {
-								String chunk = streamingOutput.chunk();
-								if (chunk != null) {
-									System.out.println("sse: " + chunk);
-									allOutput.append(chunk);
-								}
-							}
-							Thread.sleep(200); // 停顿 200ms，方便观测输出
-						} catch (InterruptedException e) {
-							Thread.currentThread().interrupt();
+			sequentialAgent.stream("查询所有商品").doOnNext(data -> {
+				try {
+					if (data instanceof StreamingOutput<?> streamingOutput) {
+						String chunk = streamingOutput.text();
+						if (chunk != null) {
+							System.out.println("sse: " + chunk);
+							allOutput.append(chunk);
 						}
-					})
-					.doOnComplete(() -> {
-						System.out.println("\n\n===== 完整输出结果 =====");
-						System.out.println(allOutput);
-						System.out.println("========================");
-					})
-					.blockLast();
+					}
+					Thread.sleep(200); // 停顿 200ms，方便观测输出
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+			}).doOnComplete(() -> {
+				System.out.println("\n\n===== 完整输出结果 =====");
+				System.out.println(allOutput);
+				System.out.println("========================");
+			}).blockLast();
 
-//			assertTrue(result.isPresent(), "执行结果不应为空");
+			// assertTrue(result.isPresent(), "执行结果不应为空");
 
-//			OverAllState finalState = result.get();
+			// OverAllState finalState = result.get();
 			System.out.println("\n===== 最终 State =====");
-//			System.out.println("所有 keys: " + finalState.data().keySet());
-//			finalState.data().forEach((key, value) ->
-//					System.out.println("  " + key + " = " + value));
+			// System.out.println("所有 keys: " + finalState.data().keySet());
+			// finalState.data().forEach((key, value) ->
+			// System.out.println(" " + key + " = " + value));
 
 			// 验证 afterHook 是否捕获到了数据
 			Boolean extra1Present = (Boolean) HOOK_CAPTURED_DATA.get("product_1_extra_present");
@@ -263,9 +262,11 @@ class ParallelAgentToolContextLossTest extends AbstractDashscopeChatModelTest {
 			assertTrue(extra2Present != null && extra2Present,
 					"afterHook 应该能获取到 product_2_extra（通过 ToolContext 写入的数据），但实际获取不到");
 
-		} catch (java.util.concurrent.CompletionException completionException) {
+		}
+		catch (java.util.concurrent.CompletionException completionException) {
 			completionException.printStackTrace();
 			fail("执行失败: " + completionException.getMessage());
 		}
 	}
+
 }

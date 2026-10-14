@@ -15,12 +15,11 @@
  */
 package io.github.agentic.ai.graph.action;
 
+import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.graph.HasMetadata;
 import io.github.agentic.ai.graph.NodeOutput;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.utils.CollectionsUtils;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,19 +38,16 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 
 	private final Map<String, Object> metadata;
 
-	private List<AssistantMessage.ToolCall> toolsAutomaticallyApproved;
+	private final List<ToolCall> toolsAutomaticallyApproved;
 
-	private List<ToolFeedback> toolFeedbacks;
+	private final List<ToolFeedback> toolFeedbacks;
 
 	private InterruptionMetadata(Builder builder) {
 		super(builder.nodeId, builder.state);
 		this.metadata = builder.metadata();
-		this.toolFeedbacks = new ArrayList<>(builder.toolFeedbacks);
-		if (builder.toolsAutomaticallyApproved != null) {
-			this.toolsAutomaticallyApproved = builder.toolsAutomaticallyApproved;
-		} else {
-			this.toolsAutomaticallyApproved = new ArrayList<>();
-		}
+		this.toolFeedbacks = List.copyOf(builder.toolFeedbacks);
+		this.toolsAutomaticallyApproved = builder.toolsAutomaticallyApproved == null ? List.of()
+				: List.copyOf(builder.toolsAutomaticallyApproved);
 	}
 
 	/**
@@ -72,13 +68,10 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 	}
 
 	public List<ToolFeedback> toolFeedbacks() {
-		if (toolFeedbacks == null) {
-			return new ArrayList<>();
-		}
 		return toolFeedbacks;
 	}
 
-	public List<AssistantMessage.ToolCall> getToolsAutomaticallyApproved() {
+	public List<ToolCall> getToolsAutomaticallyApproved() {
 		return toolsAutomaticallyApproved;
 	}
 
@@ -108,12 +101,8 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 		Builder builder = new Builder(interruptionMetadata.metadata().orElse(Map.of()))
 			.nodeId(interruptionMetadata.node())
 			.state(interruptionMetadata.state());
-		if (interruptionMetadata.getToolsAutomaticallyApproved() != null) {
-			builder.toolsAutomaticallyApproved(interruptionMetadata.getToolsAutomaticallyApproved());
-		}
-		// if (interruptionMetadata.toolFeedbacks() != null && !interruptionMetadata.toolFeedbacks().isEmpty()) {
-		// 	builder.toolFeedbacks(interruptionMetadata.toolFeedbacks());
-		// }
+		builder.toolsAutomaticallyApproved(interruptionMetadata.getToolsAutomaticallyApproved());
+		builder.toolFeedbacks(interruptionMetadata.toolFeedbacks());
 		return builder;
 	}
 
@@ -122,9 +111,10 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 	 *
 	 */
 	public static class Builder extends HasMetadata.Builder<Builder> {
+
 		List<ToolFeedback> toolFeedbacks;
 
-		List<AssistantMessage.ToolCall> toolsAutomaticallyApproved;
+		List<ToolCall> toolsAutomaticallyApproved;
 
 		String nodeId;
 
@@ -169,7 +159,7 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 			return this;
 		}
 
-		public Builder addToolsAutomaticallyApproved(AssistantMessage.ToolCall toolCall) {
+		public Builder addToolsAutomaticallyApproved(ToolCall toolCall) {
 			if (this.toolsAutomaticallyApproved == null) {
 				this.toolsAutomaticallyApproved = new ArrayList<>();
 			}
@@ -177,7 +167,7 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 			return this;
 		}
 
-		public Builder toolsAutomaticallyApproved(List<AssistantMessage.ToolCall> toolsAutomaticallyApproved) {
+		public Builder toolsAutomaticallyApproved(List<ToolCall> toolsAutomaticallyApproved) {
 			this.toolsAutomaticallyApproved = new ArrayList<>(toolsAutomaticallyApproved);
 			return this;
 		}
@@ -193,11 +183,16 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 	}
 
 	public static class ToolFeedback {
-		String id;
-		String name;
-		String arguments;
-		FeedbackResult result;
-		String description;
+
+		private final String id;
+
+		private final String name;
+
+		private final String arguments;
+
+		private final FeedbackResult result;
+
+		private final String description;
 
 		public ToolFeedback(String id, String name, String arguments, FeedbackResult result, String description) {
 			this.id = id;
@@ -232,8 +227,7 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 		}
 
 		public static Builder builder(ToolFeedback toolFeedback) {
-			return new Builder()
-				.id(toolFeedback.getId())
+			return new Builder().id(toolFeedback.getId())
 				.name(toolFeedback.getName())
 				.arguments(toolFeedback.getArguments())
 				.result(toolFeedback.getResult())
@@ -241,10 +235,15 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 		}
 
 		public static class Builder {
+
 			String id;
+
 			String name;
+
 			String arguments;
+
 			FeedbackResult result;
+
 			String description;
 
 			public Builder id(String id) {
@@ -280,13 +279,15 @@ public final class InterruptionMetadata extends NodeOutput implements HasMetadat
 			public ToolFeedback build() {
 				return new ToolFeedback(id, name, arguments, result, description);
 			}
+
 		}
 
 		public enum FeedbackResult {
-			APPROVED,
-			REJECTED,
-			EDITED;
+
+			APPROVED, REJECTED, EDITED;
+
 		}
+
 	}
 
 }

@@ -15,26 +15,23 @@
  */
 package io.github.agentic.ai.graph.agent.interceptor;
 
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.tool.Tool;
 
 import java.util.Collections;
 import java.util.List;
 
 /**
- * Model interceptor that can wrap model calls.
- * Implementations can modify requests, responses, or add behavior like retry, fallback, etc.
+ * Model interceptor that can wrap model calls. Implementations can modify requests,
+ * responses, or add behavior like retry, fallback, etc.
  */
 public abstract class ModelInterceptor implements Interceptor {
 
 	/**
 	 * Wrap a model call with custom logic.
 	 *
-	 * Implementations can:
-	 * - Modify the request before calling the handler
-	 * - Call the handler multiple times (retry logic)
-	 * - Modify the response after handler returns
-	 * - Handle exceptions and provide fallbacks
-	 *
+	 * Implementations can: - Modify the request before calling the handler - Call the
+	 * handler multiple times (retry logic) - Modify the response after handler returns -
+	 * Handle exceptions and provide fallbacks
 	 * @param request The model request
 	 * @param handler The next handler in the chain (or base handler)
 	 * @return The model response
@@ -42,12 +39,12 @@ public abstract class ModelInterceptor implements Interceptor {
 	public abstract ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler);
 
 	/**
-	 * Get tools provided by this interceptor.
-	 * Interceptors can provide built-in tools that will be automatically added to the agent.
-	 *
+	 * Get tools provided by this interceptor. Interceptors can provide built-in tools
+	 * that will be automatically added to the agent.
 	 * @return List of tools provided by this interceptor, empty list by default
 	 */
-	public List<ToolCallback> getTools() {
+	public List<Tool> getTools() {
 		return Collections.emptyList();
 	}
+
 }

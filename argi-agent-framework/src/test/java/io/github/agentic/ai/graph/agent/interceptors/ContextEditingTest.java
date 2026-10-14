@@ -21,14 +21,15 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.graph.agent.interceptor.contextediting.ContextEditingInterceptor;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.ToolCall;
 
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -52,66 +53,72 @@ class ContextEditingTest {
 	private static final String PLACEHOLDER = "[cleared]";
 
 	/**
-	 * Mock ChatModel that returns a simple text response with no tool calls,
-	 * so the agent finishes after one call when given initial messages.
+	 * Mock ChatModel that returns a simple text response with no tool calls, so the agent
+	 * finishes after one call when given initial messages.
 	 */
 	private static class MockChatModel implements ChatModel {
+
+		private Prompt captured;
+
 		@Override
 		public ChatResponse call(Prompt prompt) {
-			return new ChatResponse(List.of(
-					new Generation(new AssistantMessage("Task completed."))));
+			captured = prompt;
+			return new ChatResponse(List.of(new Generation(new AssistantMessage("Task completed."))));
 		}
 
 		@Override
 		public Flux<ChatResponse> stream(Prompt prompt) {
-			return Flux.just(new ChatResponse(List.of(
-					new Generation(new AssistantMessage("Task completed.")))));
+			return Flux.just(new ChatResponse(List.of(new Generation(new AssistantMessage("Task completed.")))));
 		}
+
 	}
 
 	@Test
 	void testContextEditingCompaction() throws Exception {
 		ContextEditingInterceptor contextEditingInterceptor = ContextEditingInterceptor.builder()
-				.trigger(180)
-				.keep(1)
-				.clearAtLeast(100)
-				.build();
+			.trigger(180)
+			.keep(1)
+			.clearAtLeast(100)
+			.build();
 
+		MockChatModel model = new MockChatModel();
 		ReactAgent agent = ReactAgent.builder()
-				.name("single_agent")
-				.model(new MockChatModel())
-				.interceptors(contextEditingInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("single_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.interceptors(contextEditingInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
-		List<Message> messages = buildMessagesWithToolCallsAndResponses();
+		List<ChatMessage> messages = buildMessagesWithToolCallsAndResponses();
 
 		Optional<OverAllState> result = agent.invoke(messages);
 
 		assertTrue(result.isPresent(), "Agent result should be present");
-//		assertCompactionOccurred(result.get());
+		assertTrue(model.captured.getInstructions()
+			.stream()
+			.filter(ToolResponseMessage.class::isInstance)
+			.map(ToolResponseMessage.class::cast)
+			.flatMap(message -> message.getResponses().stream())
+			.anyMatch(response -> PLACEHOLDER.equals(response.responseData())));
 	}
 
 	@Test
 	void testContextEditingUsesConfiguredTokenCounterForCandidateBudget() {
 		ContextEditingInterceptor contextEditingInterceptor = ContextEditingInterceptor.builder()
-				.trigger(50)
-				.keep(0)
-				.clearAtLeast(100)
-				.tokenCounter(messages -> messages.stream()
-						.mapToInt(message -> message instanceof ToolResponseMessage ? 100 : 0)
-						.sum())
-				.build();
-		List<Message> messages = List.of(
-				new UserMessage("Use the tool responses."),
-				toolResponse("call-1", "search", "a"),
-				toolResponse("call-2", "search", "b"),
+			.trigger(50)
+			.keep(0)
+			.clearAtLeast(100)
+			.tokenCounter(
+					messages -> messages.stream().mapToInt(message -> message.role() == ChatRole.TOOL ? 100 : 0).sum())
+			.build();
+		List<ChatMessage> messages = List.of(ChatMessage.user("Use the tool responses."),
+				toolResponse("call-1", "search", "a"), toolResponse("call-2", "search", "b"),
 				toolResponse("call-3", "search", "c"));
 
 		AtomicReference<ModelRequest> capturedRequest = new AtomicReference<>();
 		contextEditingInterceptor.interceptModel(ModelRequest.builder().messages(messages).build(), request -> {
 			capturedRequest.set(request);
-			return ModelResponse.of(new AssistantMessage("Task completed."));
+			return ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Task completed."));
 		});
 
 		assertTrue(capturedRequest.get() != null, "Updated request should be passed to handler");
@@ -121,24 +128,22 @@ class ContextEditingTest {
 	@Test
 	void testContextEditingUsesConfiguredTokenCounterForToolCallBudget() {
 		ContextEditingInterceptor contextEditingInterceptor = ContextEditingInterceptor.builder()
-				.trigger(50)
-				.keep(0)
-				.clearAtLeast(100)
-				.clearToolInputs(true)
-				.tokenCounter(messages -> messages.stream()
-						.mapToInt(message -> message instanceof AssistantMessage ? 100 : 0)
-						.sum())
-				.build();
-		List<Message> messages = List.of(
-				new UserMessage("Use the tool calls."),
-				assistantToolCall("call-1", "search", "a"),
-				assistantToolCall("call-2", "search", "b"),
+			.trigger(50)
+			.keep(0)
+			.clearAtLeast(100)
+			.clearToolInputs(true)
+			.tokenCounter(messages -> messages.stream()
+				.mapToInt(message -> message.role() == ChatRole.ASSISTANT ? 100 : 0)
+				.sum())
+			.build();
+		List<ChatMessage> messages = List.of(ChatMessage.user("Use the tool calls."),
+				assistantToolCall("call-1", "search", "a"), assistantToolCall("call-2", "search", "b"),
 				assistantToolCall("call-3", "search", "c"));
 
 		AtomicReference<ModelRequest> capturedRequest = new AtomicReference<>();
 		contextEditingInterceptor.interceptModel(ModelRequest.builder().messages(messages).build(), request -> {
 			capturedRequest.set(request);
-			return ModelResponse.of(new AssistantMessage("Task completed."));
+			return ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Task completed."));
 		});
 
 		assertTrue(capturedRequest.get() != null, "Updated request should be passed to handler");
@@ -146,126 +151,43 @@ class ContextEditingTest {
 	}
 
 	/**
-	 * Build a message list that exceeds the token trigger (180): UserMessage plus
-	 * several AssistantMessage (with ToolCall) + ToolResponseMessage pairs.
-	 * TokenCounter uses ~4 chars per token, so we need enough content to exceed 720 chars.
+	 * Build a message list that exceeds the token trigger (180): UserMessage plus several
+	 * AssistantMessage (with ToolCall) + ToolResponseMessage pairs. TokenCounter uses ~4
+	 * chars per token, so we need enough content to exceed 720 chars.
 	 */
-	private List<Message> buildMessagesWithToolCallsAndResponses() {
-		List<Message> messages = new ArrayList<>();
-		messages.add(new UserMessage("请先调用 poem 写诗，再调用 reviewer 润色。"));
-
+	private List<ChatMessage> buildMessagesWithToolCallsAndResponses() {
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("Write and review a poem using tools."));
 		String longContent = "x".repeat(260);
-
-		// Pair 1: poem tool call + response
-		AssistantMessage.ToolCall toolCall1 = new AssistantMessage.ToolCall(
-				"call-poem-1", "function", "poem",
-				"{\"topic\":\"" + longContent + "\"}");
-		messages.add(AssistantMessage.builder()
-				.content("")
-				.toolCalls(List.of(toolCall1))
-				.build());
-		messages.add(ToolResponseMessage.builder()
-				.responses(List.of(new ToolResponseMessage.ToolResponse(
-						"call-poem-1", "poem", "Poem content: " + longContent)))
-				.build());
-
-		// Pair 2: reviewer tool call + response
-		AssistantMessage.ToolCall toolCall2 = new AssistantMessage.ToolCall(
-				"call-reviewer-1", "function", "reviewer",
-				"{\"text\":\"" + longContent + "\"}");
-		messages.add(AssistantMessage.builder()
-				.content("")
-				.toolCalls(List.of(toolCall2))
-				.build());
-		messages.add(ToolResponseMessage.builder()
-				.responses(List.of(new ToolResponseMessage.ToolResponse(
-						"call-reviewer-1", "reviewer", "Reviewed: " + longContent)))
-				.build());
-
-		// Pair 3: another poem tool call + response (ensures total > trigger)
-		AssistantMessage.ToolCall toolCall3 = new AssistantMessage.ToolCall(
-				"call-poem-2", "function", "poem",
-				"{\"topic\":\"second poem " + longContent + "\"}");
-		messages.add(AssistantMessage.builder()
-				.content("")
-				.toolCalls(List.of(toolCall3))
-				.build());
-		messages.add(ToolResponseMessage.builder()
-				.responses(List.of(new ToolResponseMessage.ToolResponse(
-						"call-poem-2", "poem", "Second poem: " + longContent)))
-				.build());
-
+		for (int index = 0; index < 3; index++) {
+			String id = "call-" + index;
+			String name = index == 1 ? "reviewer" : "poem";
+			messages.add(assistantToolCall(id, name, "{\"text\":\"" + longContent + "\"}"));
+			messages.add(toolResponse(id, name, "Tool output: " + longContent));
+		}
 		return messages;
 	}
 
-	private ToolResponseMessage toolResponse(String id, String name, String data) {
-		return ToolResponseMessage.builder()
-				.responses(List.of(new ToolResponseMessage.ToolResponse(id, name, data)))
-				.build();
+	private ChatMessage toolResponse(String id, String name, String data) {
+		return ChatMessage.tool(id, name, data);
 	}
 
-	private AssistantMessage assistantToolCall(String id, String name, String arguments) {
-		return AssistantMessage.builder()
-				.content("")
-				.toolCalls(List.of(new AssistantMessage.ToolCall(id, "function", name, arguments)))
-				.build();
+	private ChatMessage assistantToolCall(String id, String name, String arguments) {
+		return ChatMessage.assistant("", List.of(new ToolCall(id, name, arguments)));
 	}
 
-	private int countClearedToolResponses(List<Message> messages) {
-		int cleared = 0;
-		for (Message msg : messages) {
-			if (msg instanceof ToolResponseMessage trm) {
-				for (ToolResponseMessage.ToolResponse response : trm.getResponses()) {
-					if (PLACEHOLDER.equals(response.responseData())) {
-						cleared++;
-					}
-				}
-			}
-		}
-		return cleared;
+	private int countClearedToolResponses(List<ChatMessage> messages) {
+		return (int) messages.stream()
+			.filter(message -> message.role() == ChatRole.TOOL)
+			.filter(message -> PLACEHOLDER.equals(message.text()))
+			.count();
 	}
 
-	private int countClearedToolCalls(List<Message> messages) {
-		int cleared = 0;
-		for (Message msg : messages) {
-			if (msg instanceof AssistantMessage assistantMessage) {
-				for (AssistantMessage.ToolCall toolCall : assistantMessage.getToolCalls()) {
-					if (PLACEHOLDER.equals(toolCall.arguments())) {
-						cleared++;
-					}
-				}
-			}
-		}
-		return cleared;
+	private int countClearedToolCalls(List<ChatMessage> messages) {
+		return (int) messages.stream()
+			.flatMap(message -> message.toolCalls().stream())
+			.filter(call -> PLACEHOLDER.equals(call.arguments()))
+			.count();
 	}
 
-	private void assertCompactionOccurred(OverAllState state) {
-		Optional<Object> messagesOpt = state.value("messages");
-		assertTrue(messagesOpt.isPresent(), "State should contain messages");
-		@SuppressWarnings("unchecked")
-		List<Message> resultMessages = (List<Message>) messagesOpt.get();
-		boolean hasCleared = false;
-		for (Message msg : resultMessages) {
-			if (msg instanceof ToolResponseMessage trm) {
-				for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
-					if (PLACEHOLDER.equals(r.responseData())) {
-						hasCleared = true;
-						break;
-					}
-				}
-			}
-			else if (msg instanceof AssistantMessage am && !am.getToolCalls().isEmpty()) {
-				for (AssistantMessage.ToolCall tc : am.getToolCalls()) {
-					if (PLACEHOLDER.equals(tc.arguments())) {
-						hasCleared = true;
-						break;
-					}
-				}
-			}
-			if (hasCleared) {
-				break;
-			}
-		}
-		assertTrue(hasCleared, "Context compaction should have replaced some tool content with placeholder");
-	}
 }

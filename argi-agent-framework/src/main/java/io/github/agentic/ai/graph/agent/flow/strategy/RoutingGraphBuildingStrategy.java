@@ -39,12 +39,13 @@ import static io.github.agentic.ai.graph.action.AsyncNodeAction.node_async;
  * Strategy for building LLM-based routing graphs. In a routing graph, an LLM decides
  * which sub-agent should handle the task based on the input content and agent
  * capabilities.
- * 
- * <p>This strategy extends AbstractFlowGraphBuildingStrategy and customizes hook handling:
- * beforeModel/afterModel hooks wrap around the RoutingNode instead of the root agent.</p>
+ *
+ * <p>
+ * This strategy extends AbstractFlowGraphBuildingStrategy and customizes hook handling:
+ * beforeModel/afterModel hooks wrap around the RoutingNode instead of the root agent.
+ * </p>
  */
 public class RoutingGraphBuildingStrategy extends AbstractFlowGraphBuildingStrategy {
-
 
 	@Override
 	protected void buildCoreGraph(FlowGraphBuilder.FlowGraphConfig config) throws GraphStateException {
@@ -85,7 +86,7 @@ public class RoutingGraphBuildingStrategy extends AbstractFlowGraphBuildingStrat
 			}
 			baseAgentList.add((BaseAgent) subAgent);
 		}
-		graph.addNode(mergeNodeName, node_async(new RoutingMergeNode(config.getChatModel(), baseAgentList)));
+		graph.addNode(mergeNodeName, node_async(new RoutingMergeNode(config.getChatClient(), baseAgentList)));
 
 		// Step 5: Process sub-agents for routing
 		Map<String, String> edgeRoutingMap = new HashMap<>();
@@ -100,12 +101,9 @@ public class RoutingGraphBuildingStrategy extends AbstractFlowGraphBuildingStrat
 
 		// Step 6: Add parallel conditional edges for routing
 		// This allows routing to one or multiple sub-agents in parallel
-		RoutingNode routingNode = new RoutingNode(config.getChatModel(), rootAgent, config.getSubAgents());
-		graph.addParallelConditionalEdges(
-				routingExitNode,
-				AsyncMultiCommandAction.node_async(routingNode),
-				edgeRoutingMap
-		);
+		RoutingNode routingNode = new RoutingNode(config.getChatClient(), rootAgent, config.getSubAgents());
+		graph.addParallelConditionalEdges(routingExitNode, AsyncMultiCommandAction.node_async(routingNode),
+				edgeRoutingMap);
 	}
 
 	@Override
@@ -131,6 +129,8 @@ public class RoutingGraphBuildingStrategy extends AbstractFlowGraphBuildingStrat
 		return () -> {
 			Map<String, io.github.agentic.ai.graph.KeyStrategy> strategies = new HashMap<>(parent.apply());
 			strategies.put(RoutingMergeNode.DEFAULT_MERGED_OUTPUT_KEY, new ReplaceStrategy());
+			strategies.put(RoutingNode.SELECTED_AGENTS_KEY, new ReplaceStrategy());
+			strategies.put(RoutingNode.ORIGINAL_QUERY_KEY, new ReplaceStrategy());
 			return strategies;
 		};
 	}
@@ -151,8 +151,8 @@ public class RoutingGraphBuildingStrategy extends AbstractFlowGraphBuildingStrat
 			throw new IllegalArgumentException("Routing flow requires at least one sub-agent");
 		}
 
-		if (config.getChatModel() == null) {
-			throw new IllegalArgumentException("Routing flow requires a ChatModel for decision making");
+		if (config.getChatClient() == null) {
+			throw new IllegalArgumentException("Routing flow requires a ChatClient for decision making");
 		}
 
 		// Ensure root agent is a FlowAgent for input key access

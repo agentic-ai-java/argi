@@ -15,76 +15,61 @@
  */
 package io.github.agentic.ai.graph.agent;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
-import io.github.agentic.ai.graph.agent.tool.StateAwareToolCallback;
-import io.github.agentic.ai.graph.agent.tools.ToolContextHelper;
+import io.github.agentic.ai.graph.agent.tools.ToolContextConstants;
 import io.github.agentic.ai.graph.exception.GraphRunnerException;
+import io.github.agentic.ai.api.chat.ToolCall;
+import io.github.agentic.ai.api.chat.ToolDefinition;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.ToolResult;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.definition.DefaultToolDefinition;
-import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.ai.tool.execution.ToolCallResultConverter;
-import org.springframework.ai.tool.execution.ToolExecutionException;
-import org.springframework.ai.util.JsonHelper;
-import org.springframework.ai.util.json.schema.JsonSchemaGenerator;
+import io.github.agentic.ai.graph.agent.internal.JsonCodec;
+import io.github.agentic.ai.graph.agent.tool.ToolSchema;
 import org.springframework.util.StringUtils;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletionStage;
 
 /**
- * Factory class for creating ToolCallback instances for ReactAgent.
- * This class provides a programmatic way to expose a ReactAgent as a tool without requiring @Tool annotation.
+ * Exposes an ARGI ReactAgent as a framework-neutral tool. The parent runtime executes the
+ * tool; no native framework agent loop is installed.
  */
 public class AgentTool {
-	private static final ToolCallResultConverter CONVERTER = new MessageToolCallResultConverter();
-	private static final JsonHelper jsonHelper = new JsonHelper();
+
+	private static final JsonCodec jsonHelper = new JsonCodec();
 
 	/**
-	 * Create a ToolCallback for invoking a ReactAgent as a tool.
-	 *
+	 * Create a tool that forwards raw tool-call JSON to the agent executor.
 	 * @param agent the ReactAgent instance
-	 * @return ToolCallback for the ReactAgent
-	 * @see AgentTool#create(ReactAgent)
+	 * @return neutral tool for the ReactAgent
 	 */
-	public static ToolCallback getFunctionToolCallback(ReactAgent agent) {
-		return AgentTool.create(agent);
-	}
-
-	/**
-	 * Create a ToolCallback that forwards raw tool-call JSON to the agent executor.
-	 * 
-	 * @param agent the ReactAgent instance
-	 * @return ToolCallback for the ReactAgent
-	 */
-	public static ToolCallback create(ReactAgent agent) {
+	public static Tool create(ReactAgent agent) {
+		Objects.requireNonNull(agent, "agent must not be null");
 		// Get the original schema from inputSchema or inputType
-		String originalSchema = StringUtils.hasLength(agent.getInputSchema())
-				? agent.getInputSchema()
-				: (agent.getInputType() != null)
-				? JsonSchemaGenerator.generateForType(agent.getInputType())
-				: null;
+		String originalSchema = StringUtils.hasLength(agent.getInputSchema()) ? agent.getInputSchema()
+				: (agent.getInputType() != null) ? ToolSchema.forType(agent.getInputType()) : null;
 
-		DefaultToolDefinition.Builder builder = ToolDefinition.builder()
-				.name(agent.name())
-				.description(agent.description())
-				.inputSchema(wrapSchemaInInputParameter(originalSchema));
-
-		return new AgentToolCallback(builder.build(), new AgentToolExecutor(agent));
+		ToolDefinition definition = new ToolDefinition(agent.name(), agent.description(),
+				wrapSchemaInInputParameter(originalSchema));
+		return new AgentToolBinding(definition, new AgentToolExecutor(agent));
 	}
 
 	/**
-	 * Wrap the original schema in an "input" parameter.
-	 * This method handles both JSON Schema strings (including DRAFT_2020_12 format) and null cases.
-	 * 
-	 * @param originalSchema the original schema string (may be null, or DRAFT_2020_12 format)
+	 * Wrap the original schema in an "input" parameter. This method handles both JSON
+	 * Schema strings (including DRAFT_2020_12 format) and null cases.
+	 * @param originalSchema the original schema string (may be null, or DRAFT_2020_12
+	 * format)
 	 * @return a wrapped schema with "input" parameter containing the original schema
 	 */
 	private static String wrapSchemaInInputParameter(String originalSchema) {
@@ -108,11 +93,11 @@ public class AgentTool {
 			// Create the wrapped schema structure
 			Map<String, Object> wrappedSchema = new HashMap<>();
 			wrappedSchema.put("type", "object");
-			
+
 			Map<String, Object> properties = new HashMap<>();
 			properties.put("input", originalSchemaMap);
 			wrappedSchema.put("properties", properties);
-			
+
 			wrappedSchema.put("required", List.of("input"));
 
 			// Convert to JSON string
@@ -134,39 +119,32 @@ public class AgentTool {
 		}
 	}
 
-	private static class AgentToolCallback implements StateAwareToolCallback {
+	private static class AgentToolBinding implements Tool {
 
 		private final ToolDefinition toolDefinition;
 
 		private final AgentToolExecutor executor;
 
-		AgentToolCallback(ToolDefinition toolDefinition, AgentToolExecutor executor) {
+		AgentToolBinding(ToolDefinition toolDefinition, AgentToolExecutor executor) {
 			this.toolDefinition = toolDefinition;
 			this.executor = executor;
 		}
 
 		@Override
-		public ToolDefinition getToolDefinition() {
+		public ToolDefinition definition() {
 			return toolDefinition;
 		}
 
 		@Override
-		public String call(String toolInput) {
-			return call(toolInput, new ToolContext(Map.of()));
-		}
-
-		@Override
-		public String call(String toolInput, ToolContext toolContext) {
-			try {
-				AssistantMessage result = executor.executeAgent(toolInput, toolContext);
-				return CONVERTER.convert(result, AssistantMessage.class);
-			}
-			catch (ToolExecutionException e) {
-				throw e;
-			}
-			catch (RuntimeException e) {
-				throw new ToolExecutionException(toolDefinition, e);
-			}
+		public CompletionStage<ToolResult> execute(ToolCall call, ToolContext toolContext) {
+			Objects.requireNonNull(call, "call must not be null");
+			Objects.requireNonNull(toolContext, "toolContext must not be null");
+			// Child graph execution is blocking. Disposing the future interrupts its
+			// worker.
+			return Mono.fromCallable(() -> {
+				ChatMessage result = executor.executeAgent(call.arguments(), toolContext);
+				return new ToolResult(result.content(), false, result.metadata());
+			}).subscribeOn(Schedulers.boundedElastic()).toFuture();
 		}
 
 	}
@@ -179,38 +157,39 @@ public class AgentTool {
 		private final ReactAgent agent;
 
 		public AgentToolExecutor(ReactAgent agent) {
-			this.agent = agent;
+			this.agent = Objects.requireNonNull(agent, "agent must not be null");
 		}
 
 		/**
-		 * Execute the agent tool with the given input.
-		 * This method is called by AgentToolCallback with the raw tool-call JSON and the injected ToolContext.
-		 * 
+		 * Execute the agent tool with the given input. Receives raw tool-call JSON and
+		 * the invocation-local neutral context.
 		 * @param input the input JSON string containing the "input" parameter
 		 * @param toolContext the tool context containing state, config, etc.
-		 * @return AssistantMessage the response from the agent
+		 * @return the complete assistant response from the agent
 		 */
-		public AssistantMessage executeAgent(String input, ToolContext toolContext) {
+		public ChatMessage executeAgent(String input, ToolContext toolContext) {
+			Objects.requireNonNull(toolContext, "toolContext must not be null");
 			// Extract the actual input value from the wrapped JSON structure
 			// The input parameter is wrapped as {"input": "actual_value"}
 			String actualInput = extractInputValue(input);
 
 			// Instruction is injected exactly once by the child agent's default
 			// InstructionAgentHook (see issue #77); only the user input is added here.
-			List<Message> messagesToAdd = List.of(new UserMessage(actualInput));
+			List<ChatMessage> messagesToAdd = List.of(ChatMessage.user(actualInput));
 
 			Optional<OverAllState> resultState;
-			Optional<RunnableConfig> parentConfigOpt = ToolContextHelper.getConfig(toolContext);
+			Optional<RunnableConfig> parentConfigOpt = Optional
+				.ofNullable(toolContext.attributes().get(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY))
+				.filter(RunnableConfig.class::isInstance)
+				.map(RunnableConfig.class::cast);
 			try {
 				if (parentConfigOpt.isPresent()) {
 					RunnableConfig parentConfig = parentConfigOpt.get();
 					RunnableConfig subConfig = RunnableConfig.builder(parentConfig)
-							.threadId(parentConfig.threadId()
-									.map(id -> id + "_" + agent.name())
-									.orElseGet(agent::name))
-							.nextNode(null)
-							.checkPointId(null)
-							.build();
+						.threadId(parentConfig.threadId().map(id -> id + "_" + agent.name()).orElseGet(agent::name))
+						.nextNode(null)
+						.checkPointId(null)
+						.build();
 					subConfig.clearContext();
 					resultState = agent.invoke(Map.of("messages", messagesToAdd), subConfig);
 				}
@@ -229,19 +208,20 @@ public class AgentTool {
 
 			Optional<List> messages = resultState.flatMap(overAllState -> overAllState.value("messages", List.class));
 			if (messages.isPresent()) {
-				@SuppressWarnings("unchecked")
-				List<Message> messageList = (List<Message>) messages.get();
-				if (!messageList.isEmpty() && messageList.get(messageList.size() - 1) instanceof AssistantMessage assistantMessage) {
-					return assistantMessage;
+				List<?> messageList = messages.get();
+				Object last = messageList.isEmpty() ? null : messageList.get(messageList.size() - 1);
+				ChatMessage response = last instanceof ChatMessage chat ? chat : null;
+				if (response != null && response.role() == ChatRole.ASSISTANT) {
+					return response;
 				}
 				throw buildExecutionException(actualInput, parentConfigOpt.orElse(null),
-						"sub-agent returned no assistant message. Last message type: "
-								+ (messageList.isEmpty() ? "<empty>" : messageList.get(messageList.size() - 1).getMessageType()),
+						"sub-agent returned no assistant message. Last message type: " + (response != null
+								? response.role() : last == null ? "<empty>" : last.getClass().getName()),
 						null);
 			}
-			
-			throw buildExecutionException(actualInput, parentConfigOpt.orElse(null),
-					"sub-agent returned no messages", null);
+
+			throw buildExecutionException(actualInput, parentConfigOpt.orElse(null), "sub-agent returned no messages",
+					null);
 		}
 
 		private RuntimeException buildExecutionException(String actualInput, RunnableConfig parentConfig, String detail,
@@ -253,11 +233,10 @@ public class AgentTool {
 		}
 
 		/**
-		 * Extract the actual input value from the wrapped JSON structure.
-		 * The input is expected to be in the format: {"input": "actual_value"}
-		 * If the input is not a valid JSON object or doesn't contain "input" field,
-		 * the original input string is returned as-is.
-		 * 
+		 * Extract the actual input value from the wrapped JSON structure. The input is
+		 * expected to be in the format: {"input": "actual_value"} If the input is not a
+		 * valid JSON object or doesn't contain "input" field, the original input string
+		 * is returned as-is.
 		 * @param input the wrapped input JSON string
 		 * @return the extracted input value, or the original input if extraction fails
 		 */
@@ -290,5 +269,7 @@ public class AgentTool {
 			// If extraction fails, return the original input
 			return input;
 		}
+
 	}
+
 }

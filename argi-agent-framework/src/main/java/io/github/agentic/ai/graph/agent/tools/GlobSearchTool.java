@@ -17,9 +17,9 @@ package io.github.agentic.ai.graph.agent.tools;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.io.IOException;
 import java.nio.file.FileSystems;
@@ -41,17 +41,15 @@ import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
 /**
- * Glob search tool for fast file pattern matching.
- * Supports glob patterns like **&#47;*.js or src/**&#47;*.ts.
- * Returns matching file paths sorted by modification time.
+ * Glob search tool for fast file pattern matching. Supports glob patterns like
+ * **&#47;*.js or src/**&#47;*.ts. Returns matching file paths sorted by modification
+ * time.
  */
 public class GlobSearchTool implements BiFunction<GlobSearchTool.Request, ToolContext, String> {
 
 	private static final int DEFAULT_MAX_RESULTS = 2000;
 
-	private static final Set<String> FORBIDDEN_BROAD_PATTERNS = Set.of(
-			"**/*", "**/**", "*", "**"
-	);
+	private static final Set<String> FORBIDDEN_BROAD_PATTERNS = Set.of("**/*", "**/**", "*", "**");
 
 	private final Path rootPath;
 
@@ -67,14 +65,11 @@ public class GlobSearchTool implements BiFunction<GlobSearchTool.Request, ToolCo
 	}
 
 	public record Request(
-			@JsonProperty(required = true)
-			@JsonPropertyDescription("The glob pattern to match files against")
-			String pattern,
+			@JsonProperty(
+					required = true) @JsonPropertyDescription("The glob pattern to match files against") String pattern,
 
-			@JsonProperty(defaultValue = "/")
-			@JsonPropertyDescription("The directory to search in. If not specified, searches from root.")
-			String path
-	) {
+			@JsonProperty(
+					defaultValue = "/") @JsonPropertyDescription("The directory to search in. If not specified, searches from root.") String path) {
 		public Request {
 			if (path == null || path.isEmpty()) {
 				path = "/";
@@ -90,7 +85,8 @@ public class GlobSearchTool implements BiFunction<GlobSearchTool.Request, ToolCo
 				return "Error: Pattern is required";
 			}
 			if (FORBIDDEN_BROAD_PATTERNS.contains(pattern)) {
-				return "Error: Pattern '" + pattern + "' matches all files and is not allowed (would return too many results). "
+				return "Error: Pattern '" + pattern
+						+ "' matches all files and is not allowed (would return too many results). "
 						+ "Use a more specific pattern, e.g. **/*.java, src/**/*.ts, or **/pom.xml.";
 			}
 
@@ -118,7 +114,8 @@ public class GlobSearchTool implements BiFunction<GlobSearchTool.Request, ToolCo
 							String virtualPath = "/" + rootPath.relativize(file).toString().replace("\\", "/");
 							Instant modifiedTime = attrs.lastModifiedTime().toInstant();
 							matchingFiles.add(new FileInfo(virtualPath, modifiedTime));
-						} catch (Exception e) {
+						}
+						catch (Exception e) {
 							// Skip files that can't be processed
 						}
 					}
@@ -139,21 +136,23 @@ public class GlobSearchTool implements BiFunction<GlobSearchTool.Request, ToolCo
 			// Sort by modification time (most recent first)
 			matchingFiles.sort(Comparator.comparing(FileInfo::modifiedTime).reversed());
 
-			String result = matchingFiles.stream()
-					.map(FileInfo::path)
-					.collect(Collectors.joining("\n"));
+			String result = matchingFiles.stream().map(FileInfo::path).collect(Collectors.joining("\n"));
 			if (truncated[0]) {
 				result += "\n(Truncated at " + maxResults + " results; use a more specific pattern to reduce matches.)";
 			}
 			return result;
 
-		} catch (PatternSyntaxException e) {
+		}
+		catch (PatternSyntaxException e) {
 			return "Error: Invalid glob pattern syntax - " + e.getDescription();
-		} catch (InvalidPathException e) {
+		}
+		catch (InvalidPathException e) {
 			return "Error: Invalid path format - " + e.getReason();
-		} catch (IOException e) {
+		}
+		catch (IOException e) {
 			return "Error: I/O error - " + e.getMessage();
-		} catch (Exception e) {
+		}
+		catch (Exception e) {
 			return "Error: Unexpected error occurred - " + e.getMessage();
 		}
 	}
@@ -181,7 +180,8 @@ public class GlobSearchTool implements BiFunction<GlobSearchTool.Request, ToolCo
 		return fullPath;
 	}
 
-	private record FileInfo(String path, Instant modifiedTime) {}
+	private record FileInfo(String path, Instant modifiedTime) {
+	}
 
 	public static Builder builder(String rootPath) {
 		return new Builder(rootPath);
@@ -223,8 +223,8 @@ public class GlobSearchTool implements BiFunction<GlobSearchTool.Request, ToolCo
 			return this;
 		}
 
-		public ToolCallback build() {
-			return FunctionToolCallback.builder(name, new GlobSearchTool(rootPath, maxResults))
+		public Tool build() {
+			return TypedTool.builder(name, new GlobSearchTool(rootPath, maxResults))
 				.description(description)
 				.inputType(Request.class)
 				.build();

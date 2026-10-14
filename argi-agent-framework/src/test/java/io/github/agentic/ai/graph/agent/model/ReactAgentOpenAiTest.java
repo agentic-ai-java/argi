@@ -23,10 +23,7 @@ import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import reactor.core.publisher.Flux;
 
@@ -37,7 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
+import io.github.agentic.ai.graph.agent.support.OpenAiCompatibleTestModels;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -45,15 +43,18 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class ReactAgentOpenAiTest {
 
 	private ChatModel chatModel;
 
 	// Inner class for outputType example
 	public static class PoemOutput {
+
 		private String title;
+
 		private String content;
+
 		private String style;
 
 		public String getTitle() {
@@ -82,48 +83,43 @@ class ReactAgentOpenAiTest {
 
 		@Override
 		public String toString() {
-			return "PoemOutput{" +
-					"title='" + title + '\'' +
-					", content='" + content + '\'' +
-					", style='" + style + '\'' +
-					'}';
+			return "PoemOutput{" + "title='" + title + '\'' + ", content='" + content + '\'' + ", style='" + style
+					+ '\'' + '}';
 		}
+
 	}
 
 	@BeforeEach
 	void setUp() {
-		OpenAiChatModel openAiChatModel = OpenAiChatModel.builder()
-				.options(OpenAiChatOptions.builder()
-						.baseUrl("https://dashscope.aliyuncs.com/compatible-mode/")
-						.apiKey(System.getenv("AI_DASHSCOPE_API_KEY"))
-						.model("qwen-plus")
-						.build())
-				.build();
-
-		// Create OpenAi ChatModel instance
-		this.chatModel = openAiChatModel;
+		this.chatModel = OpenAiCompatibleTestModels.chatModel();
 	}
 
 	@Test
 	public void testReactAgent() throws Exception {
-		ReactAgent agent = ReactAgent.builder().name("single_agent").model(chatModel).saver(new MemorySaver()).build();
+		ReactAgent agent = ReactAgent.builder()
+			.name("single_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("帮我写一篇100字左右散文。");
-			Optional<OverAllState> result2 = agent.invoke(new UserMessage("帮我写一首现代诗歌。"));
+			Optional<OverAllState> result2 = agent.invoke(io.github.agentic.ai.api.chat.ChatMessage.user("帮我写一首现代诗歌。"));
 			Optional<OverAllState> result3 = agent.invoke("帮我写一首现代诗歌2。");
 
 			assertTrue(result.isPresent(), "First result should be present");
 			OverAllState state1 = result.get();
 			assertTrue(state1.value("messages").isPresent(), "Messages should be present in first result");
-			assertEquals(2, ((List)state1.value("messages").get()).size(), "There should be 2 messages in the first result");
+			assertEquals(2, ((List) state1.value("messages").get()).size(),
+					"There should be 2 messages in the first result");
 			Object messages1 = state1.value("messages").get();
 			assertNotNull(messages1, "Messages should not be null in first result");
 
 			assertTrue(result2.isPresent(), "Second result should be present");
 			OverAllState state2 = result2.get();
 			assertTrue(state2.value("messages").isPresent(), "Messages should be present in second result");
-			assertEquals(4, ((List<?>)state2.value("messages").get()).size(), "There should be 2 messages in the first result");
+			assertEquals(4, ((List<?>) state2.value("messages").get()).size(),
+					"There should be 2 messages in the first result");
 			Object messages2 = state2.value("messages").get();
 			assertNotNull(messages2, "Messages should not be null in second result");
 
@@ -140,10 +136,13 @@ class ReactAgentOpenAiTest {
 
 	@Test
 	public void testReactAgentMessage() throws Exception {
-		ReactAgent agent = ReactAgent.builder().name("single_agent").model(chatModel).saver(new MemorySaver())
-				.build();
-		AssistantMessage message = agent.call("帮我写一篇100字左右散文。");
-		System.out.println(message.getText());
+		ReactAgent agent = ReactAgent.builder()
+			.name("single_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.build();
+		var message = agent.call("帮我写一篇100字左右散文。");
+		System.out.println(message.text());
 	}
 
 	@Test
@@ -170,48 +169,45 @@ class ReactAgentOpenAiTest {
 				""";
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("schema_agent")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.outputSchema(customSchema)
-				.build();
+			.name("schema_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.outputSchema(customSchema)
+			.build();
 
-		AssistantMessage message = agent.call("帮我写一首关于春天的诗歌。");
+		var message = agent.call("帮我写一首关于春天的诗歌。");
 		assertNotNull(message, "Message should not be null");
-		assertNotNull(message.getText(), "Message text should not be null");
+		assertNotNull(message.text(), "Message text should not be null");
 		System.out.println("=== Output with custom schema ===");
-		System.out.println(message.getText());
+		System.out.println(message.text());
 
-		assertTrue(message.getText().contains("title") || message.getText().contains("标题"),
+		assertTrue(message.text().contains("title") || message.text().contains("标题"),
 				"Output should contain title field");
 	}
 
 	@Test
 	public void testReactAgentWithOutputType() throws Exception {
 
-
 		// outputType will be automatically convert to schema
 		ReactAgent agent = ReactAgent.builder()
-				.name("type_agent")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.outputType(PoemOutput.class)
-				.build();
+			.name("type_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.outputType(PoemOutput.class)
+			.build();
 
-		AssistantMessage message = agent.call("帮我写一首关于秋天的现代诗。");
+		var message = agent.call("帮我写一首关于秋天的现代诗。");
 		assertNotNull(message, "Message should not be null");
-		assertNotNull(message.getText(), "Message text should not be null");
+		assertNotNull(message.text(), "Message text should not be null");
 		System.out.println("=== Output with outputType (auto-generated schema) ===");
-		System.out.println(message.getText());
+		System.out.println(message.text());
 
-		assertTrue(message.getText().contains("title") || message.getText().contains("content") ||
-				message.getText().contains("style"),
-				"Output should contain structured fields");
+		assertTrue(message.text().contains("title") || message.text().contains("content")
+				|| message.text().contains("style"), "Output should contain structured fields");
 	}
 
 	@Test
 	public void testReactAgentWithOutputSchemaAndInvoke() throws Exception {
-
 
 		String jsonSchema = """
 				{
@@ -236,11 +232,11 @@ class ReactAgentOpenAiTest {
 				""";
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("analysis_agent")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.outputSchema(jsonSchema)
-				.build();
+			.name("analysis_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.outputSchema(jsonSchema)
+			.build();
 
 		Optional<OverAllState> result = agent.invoke("分析这句话：春天来了，万物复苏，生机勃勃。");
 
@@ -253,21 +249,21 @@ class ReactAgentOpenAiTest {
 	public void testReactAgentStreamWithCustomChatOptions() throws Exception {
 		// Configure custom OpenAiChatOptions with extra body parameters
 		OpenAiChatOptions customChatOptions = OpenAiChatOptions.builder()
-				.model("qwen-plus")
-				.temperature(0.7)
-				.extraBody(Map.of(
-						"enable_thinking", true
-				))
-				.build();
+			.model(System.getenv("ARGI_MODEL"))
+			.temperature(0.7)
+			.extraBody(Map.of("enable_thinking", true))
+			.build();
 
 		// Create ReactAgent with custom chat options
 		ReactAgent agent = ReactAgent.builder()
-				.name("streaming_agent")
-				.model(chatModel)
-				.chatOptions(customChatOptions)
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("streaming_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(
+					org.springframework.ai.chat.client.ChatClient.builder(chatModel)
+						.defaultOptions(customChatOptions.mutate())
+						.build()))
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		System.out.println("=== Testing stream() with custom chat options ===");
 		System.out.println("Model: qwen-plus");
@@ -287,38 +283,34 @@ class ReactAgentOpenAiTest {
 
 			if (output instanceof StreamingOutput<?> streamingOutput) {
 				// Handle streaming output
-				if (streamingOutput.message() != null && streamingOutput.message().getText() != null) {
-					String content = streamingOutput.message().getText();
+				if (!streamingOutput.text().isEmpty()) {
+					String content = streamingOutput.text();
 					if (!content.isEmpty()) {
 						System.out.print(content);
 						completeContent.append(content);
 						chunkCount.incrementAndGet();
 					}
 				}
-			} else {
+			}
+			else {
 				// Handle final node output
 				System.out.println("\n[节点完成] State: " + output.state());
 			}
-		})
-		.doOnComplete(() -> {
+		}).doOnComplete(() -> {
 			System.out.println("\n\n=== Stream completed ===");
 			System.out.println("Total chunks: " + chunkCount.get());
 			System.out.println("Complete content length: " + completeContent.length());
 			assertTrue(chunkCount.get() > 0, "Should have received at least one streaming chunk");
 			assertTrue(completeContent.length() > 0, "Should have received some content");
-		})
-		.doOnError(error -> {
+		}).doOnError(error -> {
 			System.err.println("Error during streaming: " + error.getMessage());
 			error.printStackTrace();
 			fail("Stream execution failed: " + error.getMessage());
-		})
-		.blockLast(); // Block to wait for completion in test
+		}).blockLast(); // Block to wait for completion in test
 	}
 
 	private static CompileConfig getCompileConfig() {
-		SaverConfig saverConfig = SaverConfig.builder()
-				.register(new MemorySaver())
-				.build();
+		SaverConfig saverConfig = SaverConfig.builder().register(new MemorySaver()).build();
 		CompileConfig compileConfig = CompileConfig.builder().saverConfig(saverConfig).build();
 		return compileConfig;
 	}

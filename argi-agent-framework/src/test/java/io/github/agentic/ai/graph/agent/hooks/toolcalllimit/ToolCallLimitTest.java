@@ -25,7 +25,7 @@ import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 import io.github.agentic.ai.graph.exception.GraphStateException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 import org.springframework.ai.chat.model.ChatModel;
 
 import java.util.List;
@@ -35,69 +35,69 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 public class ToolCallLimitTest {
 
-    private ChatModel chatModel;
+	private ChatModel chatModel;
 
-    @BeforeEach
-    void setUp() {
+	@BeforeEach
+	void setUp() {
 		this.chatModel = OpenAiCompatibleTestModels.chatModel();
-    }
+	}
 
-    @Test
-    public void testThreadLimitWithErrorBehavior() throws Exception {
-        // 限制 1 次
-        ToolCallLimitHook hook = ToolCallLimitHook.builder()
-                .threadLimit(2)
-                .exitBehavior(ToolCallLimitHook.ExitBehavior.ERROR)
-                .build();
+	@Test
+	public void testThreadLimitWithErrorBehavior() throws Exception {
+		// 限制 1 次
+		ToolCallLimitHook hook = ToolCallLimitHook.builder()
+			.threadLimit(2)
+			.exitBehavior(ToolCallLimitHook.ExitBehavior.ERROR)
+			.build();
 
-        ReactAgent agent = createAgent(hook, "test-agent", chatModel);
+		ReactAgent agent = createAgent(hook, "test-agent", chatModel);
 
-        // 第一次调用，执行第二次工具时报错
-        assertThrows(ToolCallLimitExceededException.class, () -> {
-            agent.invoke("你好，帮我分别调用几次weather工具，查询北京、上海、杭州的天气");
-        }, "第一次调用应该抛出ModelCallLimitExceededException异常");
+		// 第一次调用，执行第二次工具时报错
+		assertThrows(ToolCallLimitExceededException.class, () -> {
+			agent.invoke("你好，帮我分别调用几次weather工具，查询北京、上海、杭州的天气");
+		}, "第一次调用应该抛出ModelCallLimitExceededException异常");
 
-        // 第二次调用，正常执行，不受之前影响
-        Optional<OverAllState> result2 = agent.invoke("帮我查询成都天气");
-        assertTrue(result2.isPresent(), "第二次调用应该返回结果而不是抛出异常");
-    }
+		// 第二次调用，正常执行，不受之前影响
+		Optional<OverAllState> result2 = agent.invoke("帮我查询成都天气");
+		assertTrue(result2.isPresent(), "第二次调用应该返回结果而不是抛出异常");
+	}
 
-    @Test
-    public void testRunLimitWithEndBehavior() throws Exception {
-        ToolCallLimitHook hook = ToolCallLimitHook.builder()
-                .runLimit(1)
-                .exitBehavior(ToolCallLimitHook.ExitBehavior.END)
-                .build();
+	@Test
+	public void testRunLimitWithEndBehavior() throws Exception {
+		ToolCallLimitHook hook = ToolCallLimitHook.builder()
+			.runLimit(1)
+			.exitBehavior(ToolCallLimitHook.ExitBehavior.END)
+			.build();
 
-        ReactAgent agent = createAgent(hook, "test-agent", chatModel);
+		ReactAgent agent = createAgent(hook, "test-agent", chatModel);
 
-        // 第一次调用，正常执行，不受之前影响
-        Optional<OverAllState> result1 = agent.invoke("你好");
-        assertTrue(result1.isPresent(), "第一次调用应该返回结果而不是抛出异常");
+		// 第一次调用，正常执行，不受之前影响
+		Optional<OverAllState> result1 = agent.invoke("你好");
+		assertTrue(result1.isPresent(), "第一次调用应该返回结果而不是抛出异常");
 
-        // 第二次调用，正常执行，不会导致异常
-        assertDoesNotThrow(() -> {
-            agent.invoke("你好，调用weather工具，查询北京的天气");
-        });
+		// 第二次调用，正常执行，不会导致异常
+		assertDoesNotThrow(() -> {
+			agent.invoke("你好，调用weather工具，查询北京的天气");
+		});
 
-        // 第三次调用，正常执行，不会导致异常
-        assertDoesNotThrow(() -> {
-            agent.invoke("你好，调用weather工具，查询上海的天气");
-        });
-    }
+		// 第三次调用，正常执行，不会导致异常
+		assertDoesNotThrow(() -> {
+			agent.invoke("你好，调用weather工具，查询上海的天气");
+		});
+	}
 
-    public ReactAgent createAgent(ToolCallLimitHook hook, String name, ChatModel model) throws GraphStateException {
-        return ReactAgent.builder()
-                .name(name)
-                .model(model)
-                .hooks(List.of(hook))
-                .tools(WeatherTool.createWeatherTool("weather_tool", new WeatherTool()))
-                .saver(new MemorySaver())
-                .build();
-    }
+	public ReactAgent createAgent(ToolCallLimitHook hook, String name, ChatModel model) throws GraphStateException {
+		return ReactAgent.builder()
+			.name(name)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.hooks(List.of(hook))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(WeatherTool.createWeatherTool("weather_tool", new WeatherTool())))
+			.saver(new MemorySaver())
+			.build();
+	}
 
-    
 }

@@ -15,46 +15,33 @@
  */
 package io.github.agentic.ai.graph.serializer;
 
-import org.springframework.ai.chat.messages.AbstractMessage;
-import org.springframework.ai.chat.messages.MessageType;
-
-import org.springframework.lang.Nullable;
+import io.github.agentic.ai.api.chat.ChatMessage;
 
 import java.util.HashMap;
 import java.util.Map;
 
-public class AgentInstructionMessage extends AbstractMessage {
-	private boolean rendered;
+/** Metadata helpers for instruction templates carried by ordinary neutral messages. */
+public final class AgentInstructionMessage {
 
-	public AgentInstructionMessage(String textContent, Map<String, Object> metadata, boolean rendered) {
-		super(MessageType.USER, textContent, metadata);
-		this.rendered = rendered;
+	private static final String TEMPLATE = "argiInstructionTemplate";
+
+	private static final String RENDERED = "argiInstructionRendered";
+
+	private AgentInstructionMessage() {
 	}
 
-	public AgentInstructionMessage(String textContent, Map<String, Object> metadata) {
-		super(MessageType.USER, textContent, metadata);
+	public static boolean isTemplate(ChatMessage message) {
+		return Boolean.TRUE.equals(message.metadata().get(TEMPLATE));
 	}
 
-	public AgentInstructionMessage(String textContent) {
-		this(textContent, Map.of());
+	public static boolean isRendered(ChatMessage message) {
+		return Boolean.TRUE.equals(message.metadata().get(RENDERED));
 	}
 
-	public boolean isRendered() {
-		return rendered;
-	}
-
-	public AgentInstructionMessage copy() {
-		return new Builder().text(getText()).metadata(Map.copyOf(getMetadata())).rendered(isRendered()).build();
-	}
-
-	public AgentInstructionMessage.Builder mutate() {
-		return new Builder().text(getText()).metadata(Map.copyOf(getMetadata())).rendered(isRendered());
-	}
-
-	@Override
-	public String toString() {
-		return "AgentInstructionMessage{" + "content='" + getText() + '\'' + ", properties=" + this.metadata + ", messageType="
-				+ this.messageType + '}';
+	public static ChatMessage rendered(ChatMessage message, String text) {
+		var metadata = new HashMap<>(message.metadata());
+		metadata.put(RENDERED, true);
+		return message.withText(text).withMetadata(metadata);
 	}
 
 	public static Builder builder() {
@@ -63,7 +50,6 @@ public class AgentInstructionMessage extends AbstractMessage {
 
 	public static class Builder {
 
-		@Nullable
 		private String textContent;
 
 		private boolean rendered;
@@ -85,11 +71,13 @@ public class AgentInstructionMessage extends AbstractMessage {
 			return this;
 		}
 
-		public AgentInstructionMessage build() {
-			return new AgentInstructionMessage(this.textContent, this.metadata, this.rendered);
+		public ChatMessage build() {
+			var properties = new HashMap<>(metadata);
+			properties.put(TEMPLATE, true);
+			properties.put(RENDERED, rendered);
+			return ChatMessage.user(textContent).withMetadata(properties);
 		}
 
 	}
-
 
 }

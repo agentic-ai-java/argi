@@ -16,7 +16,8 @@
 
 package io.github.agentic.ai.graph.agent.flow.agent.loop;
 
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import org.springframework.core.convert.converter.Converter;
 
 import java.util.List;
@@ -29,23 +30,25 @@ import java.util.function.Predicate;
  * @since 2025/11/1
  */
 public final class LoopMode {
-    private LoopMode() {
-        throw new UnsupportedOperationException();
-    }
 
-    public static CountLoopStrategy count(int maxCount) {
-        return new CountLoopStrategy(maxCount);
-    }
+	private LoopMode() {
+		throw new UnsupportedOperationException();
+	}
 
-    public static ArrayLoopStrategy array() {
-        return new ArrayLoopStrategy();
-    }
+	public static CountLoopStrategy count(int maxCount) {
+		return new CountLoopStrategy(maxCount);
+	}
 
-    public static ArrayLoopStrategy array(Converter<List<Message>, List<?>> converter) {
-        return new ArrayLoopStrategy(converter);
-    }
+	public static ArrayLoopStrategy array() {
+		return new ArrayLoopStrategy();
+	}
 
-    public static ConditionLoopStrategy condition(Predicate<List<Message>> messagePredicate) {
-        return new ConditionLoopStrategy(messagePredicate);
-    }
+	public static ArrayLoopStrategy array(Converter<List<ChatMessage>, List<?>> converter) {
+		return new ArrayLoopStrategy(converter);
+	}
+
+	public static ConditionLoopStrategy condition(Predicate<List<ChatMessage>> messagePredicate) {
+		return new ConditionLoopStrategy(messagePredicate);
+	}
+
 }

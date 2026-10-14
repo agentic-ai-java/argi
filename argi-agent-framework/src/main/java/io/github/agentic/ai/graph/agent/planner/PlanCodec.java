@@ -21,7 +21,6 @@ import java.nio.charset.StandardCharsets;
 import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SpecificationVersion;
-import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.core.io.ClassPathResource;
 import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.DeserializationFeature;
@@ -46,8 +45,6 @@ public final class PlanCodec {
 
 	private static final Schema WIRE_SCHEMA = SCHEMAS.getSchema(MAPPER.readTree(JSON_SCHEMA));
 
-	private final BeanOutputConverter<PlanSpec> converter = new BeanOutputConverter<>(PlanSpec.class, MAPPER);
-
 	/** Return the authoritative, self-contained wire schema for fixtures and prompts. */
 	public String jsonSchema() {
 		return JSON_SCHEMA;
@@ -66,7 +63,7 @@ public final class PlanCodec {
 	public PlanSpec decode(String json) {
 		try {
 			validateWire(MAPPER.readTree(json));
-			return this.converter.convert(json);
+			return MAPPER.readValue(json, PlanSpec.class);
 		}
 		catch (PlanValidationException ex) {
 			throw ex;

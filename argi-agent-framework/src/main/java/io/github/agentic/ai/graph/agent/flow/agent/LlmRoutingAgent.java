@@ -21,18 +21,22 @@ import io.github.agentic.ai.graph.agent.flow.builder.FlowGraphBuilder;
 import io.github.agentic.ai.graph.agent.flow.enums.FlowAgentEnum;
 import io.github.agentic.ai.graph.exception.GraphStateException;
 
-import org.springframework.ai.chat.model.ChatModel;
+import io.github.agentic.ai.api.chat.ChatClient;
 
 public class LlmRoutingAgent extends FlowAgent {
 
-	private final ChatModel chatModel;
+	private final ChatClient chatClient;
+
 	private final String fallbackAgent;
+
 	private final String systemPrompt;
+
 	private final String instruction;
 
 	protected LlmRoutingAgent(LlmRoutingAgentBuilder builder) {
-		super(builder.name, builder.description, builder.compileConfig, builder.subAgents, builder.stateSerializer, builder.executor, builder.hooks);
-		this.chatModel = builder.chatModel;
+		super(builder.name, builder.description, builder.compileConfig, builder.subAgents, builder.stateSerializer,
+				builder.executor, builder.hooks);
+		this.chatClient = builder.chatClient;
 		this.fallbackAgent = builder.fallbackAgent;
 		this.systemPrompt = builder.systemPrompt;
 		this.instruction = builder.instruction;
@@ -56,7 +60,7 @@ public class LlmRoutingAgent extends FlowAgent {
 
 	@Override
 	protected StateGraph buildSpecificGraph(FlowGraphBuilder.FlowGraphConfig config) throws GraphStateException {
-		config.setChatModel(this.chatModel);
+		config.setChatClient(this.chatClient);
 		return FlowGraphBuilder.buildGraph(FlowAgentEnum.ROUTING.getType(), config);
 	}
 
@@ -66,18 +70,21 @@ public class LlmRoutingAgent extends FlowAgent {
 	 */
 	public static class LlmRoutingAgentBuilder extends FlowAgentBuilder<LlmRoutingAgent, LlmRoutingAgentBuilder> {
 
-		private ChatModel chatModel;
+		private ChatClient chatClient;
+
 		private String fallbackAgent;
+
 		private String systemPrompt;
+
 		private String instruction;
 
 		/**
-		 * Sets the ChatModel for LLM-based routing decisions.
-		 * @param chatModel the chat model to use for routing
+		 * Sets the provider-neutral client for routing and multi-source synthesis.
+		 * @param chatClient the client to use for routing
 		 * @return this builder instance for method chaining
 		 */
-		public LlmRoutingAgentBuilder model(ChatModel chatModel) {
-			this.chatModel = chatModel;
+		public LlmRoutingAgentBuilder chatClient(ChatClient chatClient) {
+			this.chatClient = chatClient;
 			return this;
 		}
 
@@ -104,8 +111,8 @@ public class LlmRoutingAgent extends FlowAgent {
 		@Override
 		protected void validate() {
 			super.validate();
-			if (chatModel == null) {
-				throw new IllegalArgumentException("ChatModel must be provided for LLM routing agent");
+			if (chatClient == null) {
+				throw new IllegalArgumentException("ChatClient must be provided for LLM routing agent");
 			}
 		}
 

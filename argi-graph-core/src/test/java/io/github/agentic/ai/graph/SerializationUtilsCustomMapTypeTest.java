@@ -15,10 +15,11 @@
  */
 package io.github.agentic.ai.graph;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.graph.utils.SerializationUtils;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -44,8 +45,8 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
 public class SerializationUtilsCustomMapTypeTest {
 
 	/**
-	 * Mock JSONObject class that mimics fastjson2's JSONObject behavior.
-	 * fastjson2's JSONObject extends LinkedHashMap, so this mock does the same.
+	 * Mock JSONObject class that mimics fastjson2's JSONObject behavior. fastjson2's
+	 * JSONObject extends LinkedHashMap, so this mock does the same.
 	 */
 	static class MockJSONObject extends LinkedHashMap<String, Object> {
 
@@ -125,7 +126,7 @@ public class SerializationUtilsCustomMapTypeTest {
 
 	@Test
 	public void testDeepCopyPreservesUserMessageType() {
-		UserMessage userMessage = UserMessage.builder()
+		ChatMessage userMessage = ChatMessage.builder(ChatRole.USER)
 			.text("Hello from user")
 			.metadata(Map.of("user_id", "123"))
 			.build();
@@ -138,17 +139,17 @@ public class SerializationUtilsCustomMapTypeTest {
 		Object copiedMessages = copied.get("messages");
 		assertInstanceOf(List.class, copiedMessages);
 		Object copiedMessage = ((List<?>) copiedMessages).get(0);
-		assertInstanceOf(UserMessage.class, copiedMessage);
-		assertNotSame(userMessage, copiedMessage, "UserMessage should be deep copied instead of reused");
+		assertInstanceOf(ChatMessage.class, copiedMessage);
+		assertNotSame(userMessage, copiedMessage, "ChatMessage should be deep copied instead of reused");
 
-		UserMessage copiedUserMessage = (UserMessage) copiedMessage;
-		assertEquals(userMessage.getText(), copiedUserMessage.getText());
-		assertEquals(userMessage.getMetadata(), copiedUserMessage.getMetadata());
+		ChatMessage copiedUserMessage = (ChatMessage) copiedMessage;
+		assertEquals(userMessage.text(), copiedUserMessage.text());
+		assertEquals(userMessage.metadata(), copiedUserMessage.metadata());
 	}
 
 	@Test
 	public void testDeepCopyPreservesSystemMessageType() {
-		SystemMessage systemMessage = SystemMessage.builder()
+		ChatMessage systemMessage = ChatMessage.builder(ChatRole.SYSTEM)
 			.text("You are a helpful assistant")
 			.metadata(Map.of("source", "system"))
 			.build();
@@ -161,46 +162,46 @@ public class SerializationUtilsCustomMapTypeTest {
 		Object copiedMessages = copied.get("messages");
 		assertInstanceOf(List.class, copiedMessages);
 		Object copiedMessage = ((List<?>) copiedMessages).get(0);
-		assertInstanceOf(SystemMessage.class, copiedMessage);
-		assertNotSame(systemMessage, copiedMessage, "SystemMessage should be deep copied instead of reused");
+		assertInstanceOf(ChatMessage.class, copiedMessage);
+		assertNotSame(systemMessage, copiedMessage, "ChatMessage should be deep copied instead of reused");
 
-		SystemMessage copiedSystemMessage = (SystemMessage) copiedMessage;
-		assertEquals(systemMessage.getText(), copiedSystemMessage.getText());
-		assertEquals(systemMessage.getMetadata(), copiedSystemMessage.getMetadata());
+		ChatMessage copiedSystemMessage = (ChatMessage) copiedMessage;
+		assertEquals(systemMessage.text(), copiedSystemMessage.text());
+		assertEquals(systemMessage.metadata(), copiedSystemMessage.metadata());
 	}
 
 	@Test
 	public void testDeepCopyValueOfUserMessage() {
-		UserMessage userMessage = UserMessage.builder()
+		ChatMessage userMessage = ChatMessage.builder(ChatRole.USER)
 			.text("Hello from user")
 			.metadata(Map.of("user_id", "123"))
 			.build();
 
 		Object copied = SerializationUtils.deepCopyValue(userMessage);
 
-		assertInstanceOf(UserMessage.class, copied);
-		assertNotSame(userMessage, copied, "UserMessage should be a new instance after deep copy");
+		assertInstanceOf(ChatMessage.class, copied);
+		assertNotSame(userMessage, copied, "ChatMessage should be a new instance after deep copy");
 
-		UserMessage copiedUserMessage = (UserMessage) copied;
-		assertEquals(userMessage.getText(), copiedUserMessage.getText());
-		assertEquals(userMessage.getMetadata(), copiedUserMessage.getMetadata());
+		ChatMessage copiedUserMessage = (ChatMessage) copied;
+		assertEquals(userMessage.text(), copiedUserMessage.text());
+		assertEquals(userMessage.metadata(), copiedUserMessage.metadata());
 	}
 
 	@Test
 	public void testDeepCopyValueOfSystemMessage() {
-		SystemMessage systemMessage = SystemMessage.builder()
+		ChatMessage systemMessage = ChatMessage.builder(ChatRole.SYSTEM)
 			.text("You are a helpful assistant")
 			.metadata(Map.of("priority", 1))
 			.build();
 
 		Object copied = SerializationUtils.deepCopyValue(systemMessage);
 
-		assertInstanceOf(SystemMessage.class, copied);
-		assertNotSame(systemMessage, copied, "SystemMessage should be a new instance after deep copy");
+		assertInstanceOf(ChatMessage.class, copied);
+		assertNotSame(systemMessage, copied, "ChatMessage should be a new instance after deep copy");
 
-		SystemMessage copiedSystemMessage = (SystemMessage) copied;
-		assertEquals(systemMessage.getText(), copiedSystemMessage.getText());
-		assertEquals(systemMessage.getMetadata(), copiedSystemMessage.getMetadata());
+		ChatMessage copiedSystemMessage = (ChatMessage) copied;
+		assertEquals(systemMessage.text(), copiedSystemMessage.text());
+		assertEquals(systemMessage.metadata(), copiedSystemMessage.metadata());
 	}
 
 	@Test
@@ -209,25 +210,25 @@ public class SerializationUtilsCustomMapTypeTest {
 		metadata.put("user_id", "123");
 		metadata.put("nested", new HashMap<>(Map.of("deep", "value")));
 
-		UserMessage userMessage = UserMessage.builder()
-			.text("Hello")
-			.metadata(metadata)
-			.build();
+		ChatMessage userMessage = ChatMessage.builder(ChatRole.USER).text("Hello").metadata(metadata).build();
 
-		UserMessage copied = (UserMessage) SerializationUtils.deepCopyValue(userMessage);
+		ChatMessage copied = (ChatMessage) SerializationUtils.deepCopyValue(userMessage);
 
-		// Mutating the original message's metadata must not affect the copy, proving a deep copy.
-		userMessage.getMetadata().put("user_id", "changed");
+		// The record's outer map is immutable; nested application values still need deep
+		// copying.
+		@SuppressWarnings("unchecked")
+		Map<String, Object> nested = (Map<String, Object>) userMessage.metadata().get("nested");
+		nested.put("deep", "changed");
 
-		assertNotEquals(userMessage.getMetadata().get("user_id"), copied.getMetadata().get("user_id"),
-				"Copied UserMessage metadata should be decoupled from the original");
-		assertEquals("123", copied.getMetadata().get("user_id"));
+		assertNotEquals(userMessage.metadata().get("nested"), copied.metadata().get("nested"),
+				"Copied ChatMessage metadata should be decoupled from the original");
+		assertEquals("123", copied.metadata().get("user_id"));
 	}
 
 	@Test
 	public void testDeepCopyMixedMessagesInList() {
-		UserMessage userMessage = UserMessage.builder().text("Hello").build();
-		SystemMessage systemMessage = SystemMessage.builder().text("System prompt").build();
+		ChatMessage userMessage = ChatMessage.builder(ChatRole.USER).text("Hello").build();
+		ChatMessage systemMessage = ChatMessage.builder(ChatRole.SYSTEM).text("System prompt").build();
 
 		Map<String, Object> original = new HashMap<>();
 		original.put("messages", List.of(systemMessage, userMessage));
@@ -236,8 +237,8 @@ public class SerializationUtilsCustomMapTypeTest {
 
 		List<?> copiedMessages = (List<?>) copied.get("messages");
 		assertEquals(2, copiedMessages.size());
-		assertInstanceOf(SystemMessage.class, copiedMessages.get(0));
-		assertInstanceOf(UserMessage.class, copiedMessages.get(1));
+		assertInstanceOf(ChatMessage.class, copiedMessages.get(0));
+		assertInstanceOf(ChatMessage.class, copiedMessages.get(1));
 		assertNotSame(systemMessage, copiedMessages.get(0));
 		assertNotSame(userMessage, copiedMessages.get(1));
 	}
@@ -265,4 +266,5 @@ public class SerializationUtilsCustomMapTypeTest {
 		assertEquals("value1", retrieved.get("key1"));
 		assertEquals(123, retrieved.get("key2"));
 	}
+
 }

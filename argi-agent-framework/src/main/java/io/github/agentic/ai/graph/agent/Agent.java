@@ -35,15 +35,12 @@ import io.github.agentic.ai.graph.state.StateSnapshot;
 
 import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 
 import reactor.core.publisher.Flux;
 
 import org.springframework.scheduling.Trigger;
-
-import static io.github.agentic.ai.graph.utils.Messageutils.convertToMessages;
 
 /**
  * Abstract base class for all agents in the graph system. Contains common properties and
@@ -127,7 +124,8 @@ public abstract class Agent {
 			else {
 				this.compiledGraph = graph.compile(this.compileConfig);
 			}
-		} catch (GraphStateException e) {
+		}
+		catch (GraphStateException e) {
 			throw new RuntimeException(e);
 		}
 		return this.compiledGraph;
@@ -171,22 +169,23 @@ public abstract class Agent {
 		return doInvoke(inputs, config);
 	}
 
-	public Optional<OverAllState> invoke(UserMessage message) throws GraphRunnerException {
+	public Optional<OverAllState> invoke(ChatMessage message) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(message);
 		return doInvoke(inputs, null);
 	}
 
-	public Optional<OverAllState> invoke(UserMessage message, RunnableConfig config) throws GraphRunnerException {
+	public Optional<OverAllState> invoke(ChatMessage message, RunnableConfig config) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(message);
 		return doInvoke(inputs, config);
 	}
 
-	public Optional<OverAllState> invoke(List<Message> messages) throws GraphRunnerException {
+	public Optional<OverAllState> invoke(List<ChatMessage> messages) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(messages);
 		return doInvoke(inputs, null);
 	}
 
-	public Optional<OverAllState> invoke(List<Message> messages, RunnableConfig config) throws GraphRunnerException {
+	public Optional<OverAllState> invoke(List<ChatMessage> messages, RunnableConfig config)
+			throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(messages);
 		return doInvoke(inputs, config);
 	}
@@ -194,41 +193,40 @@ public abstract class Agent {
 	/**
 	 * Invokes the agent with the given inputs map.
 	 * <p>
-	 * When you need to pass additional parameters beyond {@code messages} and {@code input},
-	 * use this overload.
+	 * When you need to pass additional parameters beyond {@code messages} and
+	 * {@code input}, use this overload.
 	 * <p>
-	 * Reserved keys: {@code messages} and {@code input} are used as question/input for the
-	 * agent. Other keys can be arbitrary and are passed as graph state, e.g. for prompt
-	 * placeholders or any other state values.
-	 *
+	 * Reserved keys: {@code messages} and {@code input} are used as question/input for
+	 * the agent. Other keys can be arbitrary and are passed as graph state, e.g. for
+	 * prompt placeholders or any other state values.
 	 * @param inputs the input map (reserved: messages, input; other keys as state)
 	 * @return the resulting overall state, or empty if none
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
 	public Optional<OverAllState> invoke(Map<String, Object> inputs) throws GraphRunnerException {
-		return doInvoke(inputs, null);
+		return doInvoke(normalizeMessageInput(inputs), null);
 	}
 
 	/**
 	 * Invokes the agent with the given inputs map and runtime config.
 	 * <p>
-	 * When you need to pass additional parameters beyond {@code messages} and {@code input},
-	 * use this overload.
+	 * When you need to pass additional parameters beyond {@code messages} and
+	 * {@code input}, use this overload.
 	 * <p>
-	 * Reserved keys: {@code messages} and {@code input} are used as question/input for the
-	 * agent. Other keys can be arbitrary and are passed as graph state, e.g. for prompt
-	 * placeholders or any other state values.
-	 *
+	 * Reserved keys: {@code messages} and {@code input} are used as question/input for
+	 * the agent. Other keys can be arbitrary and are passed as graph state, e.g. for
+	 * prompt placeholders or any other state values.
 	 * @param inputs the input map (reserved: messages, input; other keys as state)
 	 * @param config runtime configuration controlling execution behavior
 	 * @return the resulting overall state, or empty if none
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Optional<OverAllState> invoke(Map<String, Object> inputs, RunnableConfig config) throws GraphRunnerException {
-		return doInvoke(inputs, config);
+	public Optional<OverAllState> invoke(Map<String, Object> inputs, RunnableConfig config)
+			throws GraphRunnerException {
+		return doInvoke(normalizeMessageInput(inputs), config);
 	}
 
-	// ------------------- Invoke  methods with Output as return value -------------------
+	// ------------------- Invoke methods with Output as return value -------------------
 
 	public Optional<NodeOutput> invokeAndGetOutput(String message) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(message);
@@ -240,22 +238,24 @@ public abstract class Agent {
 		return doInvokeAndGetOutput(inputs, config);
 	}
 
-	public Optional<NodeOutput> invokeAndGetOutput(UserMessage message) throws GraphRunnerException {
+	public Optional<NodeOutput> invokeAndGetOutput(ChatMessage message) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(message);
 		return doInvokeAndGetOutput(inputs, null);
 	}
 
-	public Optional<NodeOutput> invokeAndGetOutput(UserMessage message, RunnableConfig config) throws GraphRunnerException {
+	public Optional<NodeOutput> invokeAndGetOutput(ChatMessage message, RunnableConfig config)
+			throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(message);
 		return doInvokeAndGetOutput(inputs, config);
 	}
 
-	public Optional<NodeOutput> invokeAndGetOutput(List<Message> messages) throws GraphRunnerException {
+	public Optional<NodeOutput> invokeAndGetOutput(List<ChatMessage> messages) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(messages);
 		return doInvokeAndGetOutput(inputs, null);
 	}
 
-	public Optional<NodeOutput> invokeAndGetOutput(List<Message> messages, RunnableConfig config) throws GraphRunnerException {
+	public Optional<NodeOutput> invokeAndGetOutput(List<ChatMessage> messages, RunnableConfig config)
+			throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(messages);
 		return doInvokeAndGetOutput(inputs, config);
 	}
@@ -263,166 +263,153 @@ public abstract class Agent {
 	/**
 	 * Invokes the agent with the given inputs map and returns the node output.
 	 * <p>
-	 * When you need to pass additional parameters beyond {@code messages} and {@code input},
-	 * use this overload.
+	 * When you need to pass additional parameters beyond {@code messages} and
+	 * {@code input}, use this overload.
 	 * <p>
-	 * Reserved keys: {@code messages} and {@code input} are used as question/input for the
-	 * agent. Other keys can be arbitrary and are passed as graph state, e.g. for prompt
-	 * placeholders or any other state values.
-	 *
+	 * Reserved keys: {@code messages} and {@code input} are used as question/input for
+	 * the agent. Other keys can be arbitrary and are passed as graph state, e.g. for
+	 * prompt placeholders or any other state values.
 	 * @param inputs the input map (reserved: messages, input; other keys as state)
 	 * @return the node output, or empty if none
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
 	public Optional<NodeOutput> invokeAndGetOutput(Map<String, Object> inputs) throws GraphRunnerException {
-		return doInvokeAndGetOutput(inputs, null);
+		return doInvokeAndGetOutput(normalizeMessageInput(inputs), null);
 	}
 
 	/**
-	 * Invokes the agent with the given inputs map and runtime config, returns the node output.
+	 * Invokes the agent with the given inputs map and runtime config, returns the node
+	 * output.
 	 * <p>
-	 * When you need to pass additional parameters beyond {@code messages} and {@code input},
-	 * use this overload.
+	 * When you need to pass additional parameters beyond {@code messages} and
+	 * {@code input}, use this overload.
 	 * <p>
-	 * Reserved keys: {@code messages} and {@code input} are used as question/input for the
-	 * agent. Other keys can be arbitrary and are passed as graph state, e.g. for prompt
-	 * placeholders or any other state values.
-	 *
+	 * Reserved keys: {@code messages} and {@code input} are used as question/input for
+	 * the agent. Other keys can be arbitrary and are passed as graph state, e.g. for
+	 * prompt placeholders or any other state values.
 	 * @param inputs the input map (reserved: messages, input; other keys as state)
 	 * @param config runtime configuration controlling execution behavior
 	 * @return the node output, or empty if none
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Optional<NodeOutput> invokeAndGetOutput(Map<String, Object> inputs, RunnableConfig config) throws GraphRunnerException {
-		return doInvokeAndGetOutput(inputs, config);
+	public Optional<NodeOutput> invokeAndGetOutput(Map<String, Object> inputs, RunnableConfig config)
+			throws GraphRunnerException {
+		return doInvokeAndGetOutput(normalizeMessageInput(inputs), config);
 	}
 
-	// ------------------- Message Stream methods -------------------
+	// ------------------- ChatMessage Stream methods -------------------
 
 	/**
-	 * Streams the execution result as a {@link Flux} of {@link Message} objects
-	 * using a plain text input.
+	 * Streams the execution result as a {@link Flux} of {@link ChatMessage} objects using
+	 * a plain text input.
 	 * <p>
-	 * This is a convenience API built on top of {@code stream(...)} that extracts
-	 * and emits {@link Message} instances directly instead of low-level
-	 * {@code NodeOutput} objects. It is intended for use cases that only care
-	 * about the generated messages and do not require access to graph
-	 * orchestration or node execution details.
-	 *
+	 * This is a convenience API built on top of {@code stream(...)} that extracts and
+	 * emits {@link ChatMessage} instances directly instead of low-level
+	 * {@code NodeOutput} objects. It is intended for use cases that only care about the
+	 * generated messages and do not require access to graph orchestration or node
+	 * execution details.
 	 * @param message the input message as plain text
-	 * @return a {@link Flux} emitting {@link Message} objects as they are produced
+	 * @return a {@link Flux} emitting {@link ChatMessage} objects as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Flux<Message> streamMessages(String message) throws GraphRunnerException {
-		return stream(message)
-				.transform(this::extractMessages);
-    }
+	public Flux<ChatMessage> streamMessages(String message) throws GraphRunnerException {
+		return stream(message).transform(this::extractMessages);
+	}
 
 	/**
-	 * Streams the execution result as a {@link Flux} of {@link Message} objects
-	 * using a plain text input and a custom {@link RunnableConfig}.
-	 *
+	 * Streams the execution result as a {@link Flux} of {@link ChatMessage} objects using
+	 * a plain text input and a custom {@link RunnableConfig}.
 	 * @param message the input message as plain text
 	 * @param config runtime configuration controlling execution behavior
-	 * @return a {@link Flux} emitting {@link Message} objects as they are produced
+	 * @return a {@link Flux} emitting {@link ChatMessage} objects as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Flux<Message> streamMessages(String message, RunnableConfig config) throws GraphRunnerException {
-		return stream(message, config)
-				.transform(this::extractMessages);
-    }
+	public Flux<ChatMessage> streamMessages(String message, RunnableConfig config) throws GraphRunnerException {
+		return stream(message, config).transform(this::extractMessages);
+	}
 
 	/**
-	 * Streams the execution result as a {@link Flux} of {@link Message} objects
-	 * using a {@link UserMessage} as input.
-	 *
+	 * Streams the execution result as a {@link Flux} of {@link ChatMessage} objects using
+	 * a {@link ChatMessage} as input.
 	 * @param message the user message input
-	 * @return a {@link Flux} emitting {@link Message} objects as they are produced
+	 * @return a {@link Flux} emitting {@link ChatMessage} objects as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Flux<Message> streamMessages(UserMessage message) throws GraphRunnerException {
-		return stream(message)
-				.transform(this::extractMessages);
-    }
+	public Flux<ChatMessage> streamMessages(ChatMessage message) throws GraphRunnerException {
+		return stream(message).transform(this::extractMessages);
+	}
 
 	/**
-	 * Streams the execution result as a {@link Flux} of {@link Message} objects
-	 * using a {@link UserMessage} as input and a custom {@link RunnableConfig}.
-	 *
+	 * Streams the execution result as a {@link Flux} of {@link ChatMessage} objects using
+	 * a {@link ChatMessage} as input and a custom {@link RunnableConfig}.
 	 * @param message the user message input
 	 * @param config runtime configuration controlling execution behavior
-	 * @return a {@link Flux} emitting {@link Message} objects as they are produced
+	 * @return a {@link Flux} emitting {@link ChatMessage} objects as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Flux<Message> streamMessages(UserMessage message, RunnableConfig config) throws GraphRunnerException {
-		return stream(message, config)
-				.transform(this::extractMessages);
-    }
+	public Flux<ChatMessage> streamMessages(ChatMessage message, RunnableConfig config) throws GraphRunnerException {
+		return stream(message, config).transform(this::extractMessages);
+	}
 
 	/**
-	 * Streams the execution result as a {@link Flux} of {@link Message} objects
-	 * using a list of input {@link Message} instances.
-	 *
+	 * Streams the execution result as a {@link Flux} of {@link ChatMessage} objects using
+	 * a list of input {@link ChatMessage} instances.
 	 * @param messages the input messages
-	 * @return a {@link Flux} emitting {@link Message} objects as they are produced
+	 * @return a {@link Flux} emitting {@link ChatMessage} objects as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Flux<Message> streamMessages(List<Message> messages) throws GraphRunnerException {
-		return stream(messages)
-				.transform(this::extractMessages);
-    }
+	public Flux<ChatMessage> streamMessages(List<ChatMessage> messages) throws GraphRunnerException {
+		return stream(messages).transform(this::extractMessages);
+	}
 
 	/**
-	 * Streams the execution result as a {@link Flux} of {@link Message} objects
-	 * using a list of input {@link Message} instances and a custom
-	 * {@link RunnableConfig}.
-	 *
+	 * Streams the execution result as a {@link Flux} of {@link ChatMessage} objects using
+	 * a list of input {@link ChatMessage} instances and a custom {@link RunnableConfig}.
 	 * @param messages the input messages
 	 * @param config runtime configuration controlling execution behavior
-	 * @return a {@link Flux} emitting {@link Message} objects as they are produced
+	 * @return a {@link Flux} emitting {@link ChatMessage} objects as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Flux<Message> streamMessages(List<Message> messages, RunnableConfig config) throws GraphRunnerException {
-		return stream(messages, config)
-			.transform(this::extractMessages);
-    }
+	public Flux<ChatMessage> streamMessages(List<ChatMessage> messages, RunnableConfig config)
+			throws GraphRunnerException {
+		return stream(messages, config).transform(this::extractMessages);
+	}
 
 	/**
-	 * Streams the execution result as a {@link Flux} of {@link Message} objects using an
-	 * inputs map.
+	 * Streams the execution result as a {@link Flux} of {@link ChatMessage} objects using
+	 * an inputs map.
 	 * <p>
-	 * When you need to pass additional parameters beyond {@code messages} and {@code input},
-	 * use this overload.
+	 * When you need to pass additional parameters beyond {@code messages} and
+	 * {@code input}, use this overload.
 	 * <p>
-	 * Reserved keys: {@code messages} and {@code input} are used as question/input for the
-	 * agent. Other keys can be arbitrary and are passed as graph state, e.g. for prompt
-	 * placeholders or any other state values.
-	 *
+	 * Reserved keys: {@code messages} and {@code input} are used as question/input for
+	 * the agent. Other keys can be arbitrary and are passed as graph state, e.g. for
+	 * prompt placeholders or any other state values.
 	 * @param inputs the input map (reserved: messages, input; other keys as state)
-	 * @return a {@link Flux} emitting {@link Message} objects as they are produced
+	 * @return a {@link Flux} emitting {@link ChatMessage} objects as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Flux<Message> streamMessages(Map<String, Object> inputs) throws GraphRunnerException {
+	public Flux<ChatMessage> streamMessages(Map<String, Object> inputs) throws GraphRunnerException {
 		return stream(inputs).transform(this::extractMessages);
 	}
 
 	/**
-	 * Streams the execution result as a {@link Flux} of {@link Message} objects using an
-	 * inputs map and a custom {@link RunnableConfig}.
+	 * Streams the execution result as a {@link Flux} of {@link ChatMessage} objects using
+	 * an inputs map and a custom {@link RunnableConfig}.
 	 * <p>
-	 * When you need to pass additional parameters beyond {@code messages} and {@code input},
-	 * use this overload.
+	 * When you need to pass additional parameters beyond {@code messages} and
+	 * {@code input}, use this overload.
 	 * <p>
-	 * Reserved keys: {@code messages} and {@code input} are used as question/input for the
-	 * agent. Other keys can be arbitrary and are passed as graph state, e.g. for prompt
-	 * placeholders or any other state values.
-	 *
+	 * Reserved keys: {@code messages} and {@code input} are used as question/input for
+	 * the agent. Other keys can be arbitrary and are passed as graph state, e.g. for
+	 * prompt placeholders or any other state values.
 	 * @param inputs the input map (reserved: messages, input; other keys as state)
 	 * @param config runtime configuration controlling execution behavior
-	 * @return a {@link Flux} emitting {@link Message} objects as they are produced
+	 * @return a {@link Flux} emitting {@link ChatMessage} objects as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
-	public Flux<Message> streamMessages(Map<String, Object> inputs, RunnableConfig config) throws GraphRunnerException {
+	public Flux<ChatMessage> streamMessages(Map<String, Object> inputs, RunnableConfig config)
+			throws GraphRunnerException {
 		return stream(inputs, config).transform(this::extractMessages);
 	}
 
@@ -438,22 +425,22 @@ public abstract class Agent {
 		return doStream(inputs, config);
 	}
 
-	public Flux<NodeOutput> stream(UserMessage message) throws GraphRunnerException {
+	public Flux<NodeOutput> stream(ChatMessage message) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(message);
 		return doStream(inputs, buildStreamConfig(null));
 	}
 
-	public Flux<NodeOutput> stream(UserMessage message, RunnableConfig config) throws GraphRunnerException {
+	public Flux<NodeOutput> stream(ChatMessage message, RunnableConfig config) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(message);
 		return doStream(inputs, config);
 	}
 
-	public Flux<NodeOutput> stream(List<Message> messages) throws GraphRunnerException {
+	public Flux<NodeOutput> stream(List<ChatMessage> messages) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(messages);
 		return doStream(inputs, buildStreamConfig(null));
 	}
 
-	public Flux<NodeOutput> stream(List<Message> messages, RunnableConfig config) throws GraphRunnerException {
+	public Flux<NodeOutput> stream(List<ChatMessage> messages, RunnableConfig config) throws GraphRunnerException {
 		Map<String, Object> inputs = buildMessageInput(messages);
 		return doStream(inputs, config);
 	}
@@ -461,38 +448,36 @@ public abstract class Agent {
 	/**
 	 * Streams the graph execution with the given inputs map.
 	 * <p>
-	 * When you need to pass additional parameters beyond {@code messages} and {@code input},
-	 * use this overload.
+	 * When you need to pass additional parameters beyond {@code messages} and
+	 * {@code input}, use this overload.
 	 * <p>
-	 * Reserved keys: {@code messages} and {@code input} are used as question/input for the
-	 * agent. Other keys can be arbitrary and are passed as graph state, e.g. for prompt
-	 * placeholders or any other state values.
-	 *
+	 * Reserved keys: {@code messages} and {@code input} are used as question/input for
+	 * the agent. Other keys can be arbitrary and are passed as graph state, e.g. for
+	 * prompt placeholders or any other state values.
 	 * @param inputs the input map (reserved: messages, input; other keys as state)
 	 * @return a {@link Flux} emitting {@link NodeOutput} as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
 	public Flux<NodeOutput> stream(Map<String, Object> inputs) throws GraphRunnerException {
-		return doStream(inputs, buildStreamConfig(null));
+		return doStream(normalizeMessageInput(inputs), buildStreamConfig(null));
 	}
 
 	/**
 	 * Streams the graph execution with the given inputs map and runtime config.
 	 * <p>
-	 * When you need to pass additional parameters beyond {@code messages} and {@code input},
-	 * use this overload.
+	 * When you need to pass additional parameters beyond {@code messages} and
+	 * {@code input}, use this overload.
 	 * <p>
-	 * Reserved keys: {@code messages} and {@code input} are used as question/input for the
-	 * agent. Other keys can be arbitrary and are passed as graph state, e.g. for prompt
-	 * placeholders or any other state values.
-	 *
+	 * Reserved keys: {@code messages} and {@code input} are used as question/input for
+	 * the agent. Other keys can be arbitrary and are passed as graph state, e.g. for
+	 * prompt placeholders or any other state values.
 	 * @param inputs the input map (reserved: messages, input; other keys as state)
 	 * @param config runtime configuration controlling execution behavior
 	 * @return a {@link Flux} emitting {@link NodeOutput} as they are produced
 	 * @throws GraphRunnerException if the graph execution fails
 	 */
 	public Flux<NodeOutput> stream(Map<String, Object> inputs, RunnableConfig config) throws GraphRunnerException {
-		return doStream(inputs, config);
+		return doStream(normalizeMessageInput(inputs), config);
 	}
 
 	protected Optional<OverAllState> doInvoke(Map<String, Object> input, RunnableConfig runnableConfig) {
@@ -511,30 +496,26 @@ public abstract class Agent {
 	}
 
 	protected RunnableConfig buildNonStreamConfig(RunnableConfig config) {
-		RunnableConfig.Builder builder = config == null 
-			? RunnableConfig.builder() 
-			: RunnableConfig.builder(config);
-		
+		RunnableConfig.Builder builder = config == null ? RunnableConfig.builder() : RunnableConfig.builder(config);
+
 		builder.addMetadata("_stream_", false).addMetadata("_AGENT_", name);
 		applyExecutorConfig(builder);
-		
+
 		return builder.build();
 	}
 
 	protected RunnableConfig buildStreamConfig(RunnableConfig config) {
-		RunnableConfig.Builder builder = config == null 
-			? RunnableConfig.builder() 
-			: RunnableConfig.builder(config);
-		
+		RunnableConfig.Builder builder = config == null ? RunnableConfig.builder() : RunnableConfig.builder(config);
+
 		builder.addMetadata("_AGENT_", name);
 		applyExecutorConfig(builder);
-		
+
 		return builder.build();
 	}
 
 	/**
-	 * Applies executor configuration to the RunnableConfig builder.
-	 * This method sets the default executor for parallel nodes from the agent's configuration.
+	 * Applies executor configuration to the RunnableConfig builder. This method sets the
+	 * default executor for parallel nodes from the agent's configuration.
 	 * @param builder the RunnableConfig builder to apply executor configuration to
 	 */
 	protected void applyExecutorConfig(RunnableConfig.Builder builder) {
@@ -544,78 +525,103 @@ public abstract class Agent {
 	}
 
 	protected Map<String, Object> buildMessageInput(Object message) {
-		List<Message> messages;
-		if (message instanceof List) {
-			messages = (List<Message>) message;
-		} else {
-			messages = convertToMessages(message);
-		}
+		List<ChatMessage> messages = chatMessages(message);
 
 		Map<String, Object> inputs = new HashMap<>();
 		inputs.put("messages", messages);
 
-		UserMessage lastUserMessage = null;
+		ChatMessage lastUserMessage = null;
 		for (int i = messages.size() - 1; i >= 0; i--) {
-			Message msg = messages.get(i);
-			if (msg instanceof UserMessage) {
-				lastUserMessage = (UserMessage) msg;
+			ChatMessage msg = messages.get(i);
+			if (msg.role() == ChatRole.USER) {
+				lastUserMessage = msg;
 				break;
 			}
 		}
 		if (lastUserMessage != null) {
-			inputs.put("input", lastUserMessage.getText());
+			inputs.put("input", lastUserMessage.text());
 		}
 		return inputs;
+	}
+
+	/**
+	 * Copies external inputs and validates message types before entering the internal
+	 * runtime.
+	 */
+	protected Map<String, Object> normalizeMessageInput(Map<String, Object> input) {
+		Map<String, Object> normalized = new HashMap<>(
+				java.util.Objects.requireNonNull(input, "input must not be null"));
+		if (normalized.containsKey("messages")) {
+			normalized.put("messages", chatMessages(normalized.get("messages")));
+		}
+		return normalized;
+	}
+
+	private static List<ChatMessage> chatMessages(Object value) {
+		java.util.Objects.requireNonNull(value, "messages must not be null");
+		if (value instanceof String text) {
+			return text.isEmpty() ? List.of() : List.of(ChatMessage.user(text));
+		}
+		if (value instanceof ChatMessage message) {
+			return List.of(message);
+		}
+		if (value instanceof List<?> messages && messages.stream().allMatch(ChatMessage.class::isInstance)) {
+			return messages.stream().map(ChatMessage.class::cast).toList();
+		}
+		throw new IllegalArgumentException("Agent messages must be ARGI ChatMessage values");
 	}
 
 	protected abstract StateGraph initGraph() throws GraphStateException;
 
 	/**
-	 * Extracts {@link Message} objects from a stream of {@link NodeOutput}.
+	 * Extracts neutral {@link ChatMessage} values from a stream of {@link NodeOutput}.
 	 * <p>
 	 * This helper method filters the incoming {@link NodeOutput} stream to retain only
 	 * {@link StreamingOutput} instances whose {@link OutputType} is intended to expose
 	 * messages at the Agent API level ({@code AGENT_MODEL_STREAMING} or
-	 * {@code AGENT_TOOL_FINISHED}), and whose embedded {@link Message} is non-null.
+	 * {@code AGENT_TOOL_FINISHED}). A multi-tool turn emits each result independently.
 	 * <p>
-	 * All other {@link NodeOutput} types (such as tool or hook intermediate outputs)
-	 * are intentionally filtered out to avoid leaking graph-level implementation
-	 * details to Agent API consumers.
-	 *
+	 * All other {@link NodeOutput} types (such as tool or hook intermediate outputs) are
+	 * intentionally filtered out to avoid leaking graph-level implementation details to
+	 * Agent API consumers.
 	 * @param stream the stream of {@link NodeOutput} produced during graph execution
-	 * @return a {@link Flux} emitting only user-facing {@link Message} instances
+	 * @return a {@link Flux} emitting only user-facing {@link ChatMessage} values
 	 */
-	private Flux<Message> extractMessages(Flux<NodeOutput> stream) {
-		return stream.filter(o -> o instanceof StreamingOutput<?> so
-						&& so.message() != null
-						&& (isMessageOutputType(so.getOutputType())
-								|| isUserFacingHookMessage(so.getOutputType(), so.message())))
-				.map(o -> ((StreamingOutput<?>) o).message());
+	private Flux<ChatMessage> extractMessages(Flux<NodeOutput> stream) {
+		return stream.concatMapIterable(output -> {
+			if (output instanceof StreamingOutput<?> streamed) {
+				return streamed.messages()
+					.stream()
+					.filter(message -> isMessageOutputType(streamed.getOutputType())
+							|| isUserFacingHookMessage(streamed.getOutputType(), message))
+					.toList();
+			}
+			return List.<ChatMessage>of();
+		});
 	}
 
 	/**
-	 * Returns true for user-facing messages produced by hooks in the streaming path. The main
-	 * case is the assistant message generated by {@code ReturnDirectModelHook} when a
-	 * {@code returnDirect} tool finishes. Only tool-call-free {@link AssistantMessage}s are
-	 * surfaced; hook bookkeeping updates (e.g. HITL-approved tool-call messages) stay hidden.
+	 * Returns true for user-facing messages produced by hooks in the streaming path. The
+	 * main case is the assistant message generated by {@code ReturnDirectModelHook} when
+	 * a {@code returnDirect} tool finishes. Only tool-call-free assistant messages are
+	 * surfaced; hook bookkeeping updates (e.g. HITL-approved tool-call messages) stay
+	 * hidden.
 	 */
-	private boolean isUserFacingHookMessage(OutputType type, Message message) {
-		return type == OutputType.AGENT_HOOK_FINISHED
-				&& message instanceof AssistantMessage assistantMessage
-				&& !assistantMessage.hasToolCalls();
+	private boolean isUserFacingHookMessage(OutputType type, ChatMessage message) {
+		return type == OutputType.AGENT_HOOK_FINISHED && message.role() == ChatRole.ASSISTANT
+				&& message.toolCalls().isEmpty();
 	}
 
 	/**
 	 * Checks whether the given {@link OutputType} indicates a message-type output.
 	 * <p>
-	 * include {@link OutputType#AGENT_MODEL_STREAMING} and {@link OutputType#AGENT_TOOL_FINISHED}.
-	 *
+	 * include {@link OutputType#AGENT_MODEL_STREAMING} and
+	 * {@link OutputType#AGENT_TOOL_FINISHED}.
 	 * @param type the {@link OutputType} to check
 	 * @return true if the output type is a message-type output, false otherwise
 	 */
 	private boolean isMessageOutputType(OutputType type) {
-		return type == OutputType.AGENT_MODEL_STREAMING
-				|| type == OutputType.AGENT_TOOL_FINISHED;
+		return type == OutputType.AGENT_MODEL_STREAMING || type == OutputType.AGENT_TOOL_FINISHED;
 	}
 
 }

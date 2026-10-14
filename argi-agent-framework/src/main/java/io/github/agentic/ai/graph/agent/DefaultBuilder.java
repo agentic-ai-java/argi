@@ -22,38 +22,20 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
 import io.github.agentic.ai.graph.agent.node.AgentLlmNode;
 import io.github.agentic.ai.graph.agent.node.AgentToolNode;
-import io.github.agentic.ai.graph.agent.tool.ToolCallbackUtils;
-import io.micrometer.observation.ObservationRegistry;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolRegistry;
 import org.apache.commons.collections4.CollectionUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import reactor.core.publisher.Flux;
-
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.converter.BeanOutputConverter;
-import org.springframework.ai.converter.FormatProvider;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.execution.DefaultToolExecutionExceptionProcessor;
+import io.github.agentic.ai.graph.agent.tool.ToolSchema;
 import org.springframework.util.StringUtils;
 
-import java.lang.reflect.Field;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import io.github.agentic.ai.graph.agent.node.AgentToolBindingStore;
 
 public class DefaultBuilder extends Builder {
 
-	private static final Logger logger = LoggerFactory.getLogger(DefaultBuilder.class);
-
-	public static final String POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING
-				= "LLM may have adapted the tool name '{}', especially if the name was truncated due to length limits. If this is the case, you can customize the prefixing and processing logic using McpToolNamePrefixGenerator";
+	public static final String POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING = "LLM may have adapted the tool name '{}', especially if the name was truncated due to length limits. If this is the case, you can customize the prefixing and processing logic using McpToolNamePrefixGenerator";
 
 	@Override
 	public ReactAgent build() {
@@ -63,40 +45,16 @@ public class DefaultBuilder extends Builder {
 			throw new IllegalArgumentException("Agent name must not be empty");
 		}
 
-		// Validate either chatClient or model is provided
-		if (chatClient == null && model == null) {
-			throw new IllegalArgumentException("Either chatClient or model must be provided");
-		}
-
-		// Get source options from ChatClient (when provided) or from ChatModel (when building from model).
-		ChatOptions sourceOptions = (chatClient != null)
-				? getChatClientDefaultOptions(chatClient)
-				: getChatModelDefaultOptions(model);
-		ChatOptions effectiveOptions = mergeSourceOptionsWithAgentOptions(sourceOptions, this.chatOptions);
-
 		if (chatClient == null) {
-			ChatModel effectiveModel = withDefaultOptions(model, effectiveOptions);
-			ChatClient.Builder clientBuilder = ChatClient.builder(effectiveModel,
-					this.observationRegistry == null ? ObservationRegistry.NOOP : this.observationRegistry,
-					this.customObservationConvention, this.advisorObservationConvention);
-			if (effectiveOptions != null && effectiveModel == model) {
-				clientBuilder.defaultOptions(effectiveOptions.mutate());
-			}
-			chatClient = clientBuilder.build();
-		} else {
-			ChatClient.Builder chatClientBuilder = chatClient.mutate();
-			boolean optionsAppliedToModel = replaceChatClientBuilderModelOptions(chatClientBuilder, effectiveOptions);
-			if (effectiveOptions != null && !optionsAppliedToModel) {
-				chatClientBuilder.defaultOptions(effectiveOptions.mutate());
-			}
-			chatClient = chatClientBuilder.build();
+			throw new IllegalArgumentException("ChatClient must be provided");
 		}
 
 		AgentLlmNode.Builder llmNodeBuilder = AgentLlmNode.builder()
-				.agentName(this.name)
-				.chatOptions(effectiveOptions)
-				.throwOnModelError(this.throwOnModelError)
-				.chatClient(chatClient);
+			.agentName(this.name)
+			.generationOptions(this.generationOptions)
+			.throwOnModelError(this.throwOnModelError)
+			.toolRegistry(this.toolRegistry)
+			.chatClient(chatClient);
 
 		if (outputKey != null && !outputKey.isEmpty()) {
 			llmNodeBuilder.outputKey(outputKey);
@@ -108,74 +66,56 @@ public class DefaultBuilder extends Builder {
 
 		if (templateRenderer != null) {
 			llmNodeBuilder.templateRenderer(templateRenderer);
-    }
-    
+		}
+
 		if (instruction != null) {
 			llmNodeBuilder.instruction(instruction);
 		}
 
 		String outputSchema = null;
-		if (StringUtils.hasLength(this.outputSchema) ) {
+		if (StringUtils.hasLength(this.outputSchema)) {
 			outputSchema = this.outputSchema;
-		} else if (this.outputType != null) {
-			FormatProvider formatProvider = new BeanOutputConverter<>(this.outputType);
-			outputSchema = formatProvider.getFormat();
+		}
+		else if (this.outputType != null) {
+			outputSchema = "Return only valid JSON matching this schema: " + ToolSchema.forType(this.outputType);
 		}
 
 		if (StringUtils.hasLength(outputSchema)) {
 			llmNodeBuilder.outputSchema(outputSchema);
 		}
-		
+
 		separateInterceptorsByType();
 
 		registerDefaultModelInterceptors();
 
-		List<ToolCallback> allTools = gatherLocalTools();
-		
-		// Set combined tools to LLM node
-		if (CollectionUtils.isNotEmpty(allTools)) {
-			llmNodeBuilder.toolCallbacks(Collections.unmodifiableList(allTools));
-		}
+		List<Tool> allTools = gatherLocalTools();
+		ToolRegistry bindings = new ToolRegistry(allTools);
+		llmNodeBuilder.toolRegistry(bindings);
 
 		if (enableLogging) {
 			llmNodeBuilder.enableReasoningLog(true);
 		}
 
-		// Shared in-memory registry for tool callbacks disclosed dynamically at model-call
-		// time. AgentLlmNode fills it; AgentToolNode falls back to it when the config context
-		// no longer carries the callbacks (e.g. after a Human-in-the-Loop resumption).
-		Map<String, ToolCallback> dynamicToolCallbacksRegistry = new ConcurrentHashMap<>();
-		llmNodeBuilder.dynamicToolCallbacksRegistry(dynamicToolCallbacksRegistry);
+		AgentToolBindingStore toolBindings = new AgentToolBindingStore();
+		llmNodeBuilder.toolBindingStore(toolBindings);
 
 		AgentLlmNode llmNode = llmNodeBuilder.build();
 
 		// Setup tool node with all available tools
 		AgentToolNode toolNode;
 		AgentToolNode.Builder toolBuilder = AgentToolNode.builder()
-				.agentName(this.name)
-				.parallelToolExecution(this.parallelToolExecution)
-				.maxParallelTools(this.maxParallelTools)
-				.toolExecutionTimeout(this.toolExecutionTimeout)
-				.wrapSyncToolsAsAsync(this.wrapSyncToolsAsAsync)
-				.validateToolArguments(this.validateToolArguments)
-				.dynamicToolCallbacksRegistry(dynamicToolCallbacksRegistry);
+			.agentName(this.name)
+			.toolRegistry(bindings)
+			.parallelToolExecution(this.parallelToolExecution)
+			.maxParallelTools(this.maxParallelTools)
+			.toolExecutionTimeout(this.toolExecutionTimeout)
+			.validateToolArguments(this.validateToolArguments)
+			.toolBindingStore(toolBindings);
 
-		if (resolver != null) {
-			toolBuilder.toolCallbackResolver(resolver);
-		}
-		if (CollectionUtils.isNotEmpty(allTools)) {
-			toolBuilder.toolCallbacks(allTools);
-		}
+		toolBuilder.throwOnToolError(throwOnToolError);
 
 		if (enableLogging) {
 			toolBuilder.enableActingLog(true);
-		}
-		if (toolExecutionExceptionProcessor == null) {
-			toolBuilder.toolExecutionExceptionProcessor(DefaultToolExecutionExceptionProcessor.builder()
-					.alwaysThrow(false)
-					.build());
-		} else {
-			toolBuilder.toolExecutionExceptionProcessor(toolExecutionExceptionProcessor);
 		}
 
 		if (toolContext != null && !toolContext.isEmpty()) {
@@ -186,16 +126,16 @@ public class DefaultBuilder extends Builder {
 
 		return new ReactAgent(llmNode, toolNode, buildConfig(), this);
 	}
-	
+
 	/**
 	 * Register framework-provided model interceptors that are enabled by default.
 	 * <p>
-	 * The {@link AssistantMessageSanitizerInterceptor} is appended last so it sits innermost
-	 * in the interceptor chain (closest to the model call). This way it normalizes the message
-	 * list only after any user-configured interceptors have run, right before the request is
-	 * sent to the model. Registration is skipped when disabled via
-	 * {@link Builder#assistantMessageSanitizerEnabled(boolean)} or when an interceptor with the
-	 * same name is already present.
+	 * The {@link AssistantMessageSanitizerInterceptor} is appended last so it sits
+	 * innermost in the interceptor chain (closest to the model call). This way it
+	 * normalizes the message list only after any user-configured interceptors have run,
+	 * right before the request is sent to the model. Registration is skipped when
+	 * disabled via {@link Builder#assistantMessageSanitizerEnabled(boolean)} or when an
+	 * interceptor with the same name is already present.
 	 */
 	protected void registerDefaultModelInterceptors() {
 		if (!this.assistantMessageSanitizerEnabled) {
@@ -205,7 +145,7 @@ public class DefaultBuilder extends Builder {
 			modelInterceptors = new ArrayList<>();
 		}
 		boolean alreadyPresent = modelInterceptors.stream()
-				.anyMatch(interceptor -> AssistantMessageSanitizerInterceptor.class.equals(interceptor.getClass()));
+			.anyMatch(interceptor -> AssistantMessageSanitizerInterceptor.class.equals(interceptor.getClass()));
 		if (!alreadyPresent) {
 			modelInterceptors.add(AssistantMessageSanitizerInterceptor.builder().build());
 		}
@@ -218,7 +158,7 @@ public class DefaultBuilder extends Builder {
 		if (CollectionUtils.isNotEmpty(interceptors)) {
 			modelInterceptors = new ArrayList<>();
 			toolInterceptors = new ArrayList<>();
-			
+
 			for (Interceptor interceptor : interceptors) {
 				if (interceptor instanceof ModelInterceptor) {
 					modelInterceptors.add((ModelInterceptor) interceptor);
@@ -231,316 +171,26 @@ public class DefaultBuilder extends Builder {
 	}
 
 	/**
-	 * Collect all tools from various sources.
-	 * <p>
-	 * This method gathers tools from multiple sources in the following order:
-	 * <ol>
-	 *   <li>Direct tools provided via {@code tools}</li>
-	 *   <li>Tools from {@code toolCallbackProviders}</li>
-	 *   <li>Tools resolved by name via {@code toolNames}</li>
-	 *   <li>Tools extracted from {@code resolver} (if no regular tools collected yet)</li>
-	 *   <li>Tools from interceptors ({@code modelInterceptors})</li>
-	 *   <li>Tools from hooks ({@code hooks})</li>
-	 * </ol>
-	 * <p>
-	 * The final combined list prioritizes hook tools first, then interceptor tools, followed by regular tools.
-	 *
-	 * @return a combined list of all tools from hooks, interceptors and user-provided sources
+	 * Collect neutral tool bindings in hook, interceptor, then application order. The
+	 * first binding for a name wins, matching the runtime's existing precedence.
+	 * @return immutable tool bindings
 	 */
-	protected List<ToolCallback> gatherLocalTools() {
-		// Collect tools from interceptors
-		// - regularTools: user-provided tools
-		// - interceptorTools: tools from interceptors
-		List<ToolCallback> regularTools = new ArrayList<>();
-		
-		// Extract regular tools from user-provided tools
-		if (CollectionUtils.isNotEmpty(tools)) {
-			regularTools.addAll(tools);
-		}
-		
-		if (CollectionUtils.isNotEmpty(toolCallbackProviders)) {
-			for (var provider : toolCallbackProviders) {
-				regularTools.addAll(List.of(provider.getToolCallbacks()));
+	protected List<Tool> gatherLocalTools() {
+		var bindings = new LinkedHashMap<String, Tool>();
+		for (Hook hook : hooks) {
+			for (Tool tool : hook.getTools()) {
+				bindings.putIfAbsent(tool.definition().name(), tool);
 			}
 		}
-		
-		if (CollectionUtils.isNotEmpty(toolNames)) {
-			for (String toolName : toolNames) {
-				// Skip the tool if it is already present in the request toolCallbacks.
-				// That might happen if a tool is defined in the options
-				// both as a ToolCallback and as a tool name.
-				if (regularTools.stream().anyMatch(tool -> tool.getToolDefinition().name().equals(toolName))) {
-					continue;
-				}
-				
-				if (this.resolver == null) {
-					throw new IllegalStateException(
-							"ToolCallbackResolver is null; cannot resolve tool name: " + toolName);
-				}
-				ToolCallback toolCallback = this.resolver.resolve(toolName);
-				if (toolCallback == null) {
-					logger.warn(POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING, toolName);
-					throw new IllegalStateException("No ToolCallback found for tool name: " + toolName);
-				}
-				regularTools.add(toolCallback);
+		for (ModelInterceptor interceptor : modelInterceptors) {
+			for (Tool tool : interceptor.getTools()) {
+				bindings.putIfAbsent(tool.definition().name(), tool);
 			}
 		}
-		
-		// If regularTools is empty and resolver is provided, try to extract tools from resolver
-		if (regularTools.isEmpty() && this.resolver != null) {
-			// Check if resolver also implements ToolCallbackProvider
-			if (this.resolver instanceof ToolCallbackProvider provider) {
-				ToolCallback[] resolverTools = provider.getToolCallbacks();
-				if (resolverTools != null && resolverTools.length > 0) {
-					regularTools.addAll(List.of(resolverTools));
-					if (logger.isDebugEnabled()) {
-						logger.debug("Extracted {} tools from ToolCallbackResolver (ToolCallbackProvider)",
-								resolverTools.length);
-					}
-				}
-			} else {
-				// This is a fallback for resolvers that don't implement ToolCallbackProvider
-				try {
-					Field toolsField = this.resolver.getClass().getDeclaredField("tools");
-					toolsField.setAccessible(true);
-					Object toolsObj = toolsField.get(this.resolver);
-					if (toolsObj instanceof java.util.Map) {
-						@SuppressWarnings("unchecked") java.util.Map<String, ToolCallback> toolsMap =
-								(java.util.Map<String, ToolCallback>) toolsObj;
-						if (!toolsMap.isEmpty()) {
-							regularTools.addAll(toolsMap.values());
-							if (logger.isDebugEnabled()) {
-								logger.debug("Extracted {} tools from ToolCallbackResolver via reflection",
-										toolsMap.size());
-							}
-						}
-					}
-				} catch (NoSuchFieldException | IllegalAccessException | ClassCastException e) {
-					// Reflection failed, resolver doesn't have accessible tools field
-					// This is expected for some resolver implementations
-					if (logger.isTraceEnabled()) {
-						logger.trace("Could not extract tools from resolver via reflection: {}", e.getMessage());
-					}
-				}
-			}
+		for (var definition : toolRegistry.definitions()) {
+			bindings.putIfAbsent(definition.name(), toolRegistry.find(definition.name()).orElseThrow());
 		}
-		
-		// Extract interceptor tools
-		List<ToolCallback> interceptorTools = new ArrayList<>();
-		if (CollectionUtils.isNotEmpty(modelInterceptors)) {
-			interceptorTools = modelInterceptors.stream().flatMap(interceptor -> interceptor.getTools().stream())
-					.toList();
-		}
-
-		// Extract tools from hooks
-		List<ToolCallback> hookTools = new ArrayList<>();
-		if (CollectionUtils.isNotEmpty(hooks)) {
-			for (Hook hook : hooks) {
-				List<ToolCallback> toolsFromHook = hook.getTools();
-				if (CollectionUtils.isNotEmpty(toolsFromHook)) {
-					hookTools.addAll(toolsFromHook);
-					if (logger.isDebugEnabled()) {
-						logger.debug("Collected {} tools from hook '{}'", toolsFromHook.size(), hook.getName());
-					}
-				}
-			}
-		}
-
-		// Combine all tools: hookTools + interceptorTools + regularTools
-		List<ToolCallback> allTools = new ArrayList<>();
-		allTools.addAll(hookTools);
-		allTools.addAll(interceptorTools);
-		allTools.addAll(regularTools);
-
-		return ToolCallbackUtils.deduplicateByName(allTools);
-	}
-
-	/**
-	 * Merge source options (from ChatModel or ChatClient) with agent-level chatOptions.
-	 * Agent-level options take precedence.
-	 */
-	private static ChatOptions mergeSourceOptionsWithAgentOptions(ChatOptions sourceOptions,
-			ChatOptions agentOptions) {
-		if (sourceOptions == null) {
-			return agentOptions;
-		}
-		if (agentOptions == null) {
-			return sourceOptions;
-		}
-		Class<?> sourceOptionsClass = sourceOptions.getClass();
-		Class<?> agentOptionsClass = agentOptions.getClass();
-		if (sourceOptionsClass != agentOptionsClass && !sourceOptionsClass.isAssignableFrom(agentOptionsClass)) {
-			logger.warn(
-					"chatOptions type ({}) should be consistent with the default options type ({}) from ChatModel/ChatClient for proper merging.",
-					agentOptions.getClass().getName(), sourceOptionsClass.getName());
-		}
-		if (isObservationMetadataAware(agentOptions)) {
-			ChatOptions.Builder<?> agentOptionsBuilder = agentOptions.mutate();
-			agentOptionsBuilder.combineWith(sourceOptions.mutate());
-			agentOptionsBuilder.combineWith(agentOptions.mutate());
-			return agentOptionsBuilder.build();
-		}
-		return sourceOptions.mutate().combineWith(agentOptions.mutate()).build();
-	}
-
-	/**
-	 * Get the default ChatOptions from a ChatModel.
-	 * @param model the ChatModel instance (may be null)
-	 * @return the model's default options, or null if not set or reflection fails
-	 */
-	private static ChatOptions getChatModelDefaultOptions(ChatModel model) {
-		if (model == null) {
-			return null;
-		}
-		return model.getOptions();
-	}
-
-	/**
-	 * Get the default ChatOptions from a ChatClient via reflection (ChatClient does not expose
-	 * them publicly). Spring AI applies the request options customizer on top of the backing
-	 * ChatModel options; mirror that behavior here so a partial customizer does not replace model
-	 * defaults.
-	 * @param chatClient the ChatClient instance
-	 * @return the client's default options, or null if not set or reflection fails
-	 */
-	private static ChatOptions getChatClientDefaultOptions(ChatClient chatClient) {
-		try {
-			Field defaultRequestField = chatClient.getClass().getDeclaredField("defaultChatClientRequest");
-			defaultRequestField.setAccessible(true);
-			Object defaultChatClientRequest = defaultRequestField.get(chatClient);
-			if (defaultChatClientRequest == null) {
-				return null;
-			}
-			Field chatModelField = defaultChatClientRequest.getClass().getDeclaredField("chatModel");
-			chatModelField.setAccessible(true);
-			Object chatModel = chatModelField.get(defaultChatClientRequest);
-			ChatOptions modelOptions = chatModel instanceof ChatModel model ? model.getOptions() : null;
-
-			Field optionsCustomizerField = defaultChatClientRequest.getClass().getDeclaredField("optionsCustomizer");
-			optionsCustomizerField.setAccessible(true);
-			Object optionsCustomizer = optionsCustomizerField.get(defaultChatClientRequest);
-			if (!(optionsCustomizer instanceof ChatOptions.Builder<?> builder)) {
-				return modelOptions;
-			}
-			if (modelOptions == null) {
-				return builder.clone().build();
-			}
-			return mergeSourceOptionsWithAgentOptionsBuilder(modelOptions, builder.clone());
-		}
-		catch (NoSuchFieldException | IllegalAccessException e) {
-			if (logger.isDebugEnabled()) {
-				logger.debug("Could not read default options from ChatClient via reflection: {}", e.getMessage());
-			}
-			return null;
-		}
-	}
-
-	private static ChatOptions mergeSourceOptionsWithAgentOptionsBuilder(ChatOptions sourceOptions,
-			ChatOptions.Builder<?> agentOptionsBuilder) {
-		if (isObservationMetadataAwareBuilder(agentOptionsBuilder)) {
-			ChatOptions.Builder<?> metadataBuilder = agentOptionsBuilder.clone();
-			metadataBuilder.combineWith(sourceOptions.mutate());
-			metadataBuilder.combineWith(agentOptionsBuilder.clone());
-			return metadataBuilder.build();
-		}
-		return sourceOptions.mutate().combineWith(agentOptionsBuilder.clone()).build();
-	}
-
-	private static ChatModel withDefaultOptions(ChatModel chatModel, ChatOptions effectiveOptions) {
-		if (chatModel == null || effectiveOptions == null || !isObservationMetadataAware(effectiveOptions)) {
-			return chatModel;
-		}
-		if (chatModel.getOptions() == effectiveOptions) {
-			return chatModel;
-		}
-		return new OptionsOverrideChatModel(chatModel, effectiveOptions);
-	}
-
-	private static boolean replaceChatClientBuilderModelOptions(ChatClient.Builder chatClientBuilder,
-			ChatOptions effectiveOptions) {
-		if (effectiveOptions == null || !isObservationMetadataAware(effectiveOptions)) {
-			return false;
-		}
-		try {
-			Field defaultRequestField = chatClientBuilder.getClass().getDeclaredField("defaultRequest");
-			defaultRequestField.setAccessible(true);
-			Object defaultChatClientRequest = defaultRequestField.get(chatClientBuilder);
-			if (defaultChatClientRequest == null) {
-				return false;
-			}
-			Field chatModelField = defaultChatClientRequest.getClass().getDeclaredField("chatModel");
-			chatModelField.setAccessible(true);
-			Object chatModel = chatModelField.get(defaultChatClientRequest);
-			if (chatModel instanceof ChatModel model) {
-				chatModelField.set(defaultChatClientRequest, withDefaultOptions(model, effectiveOptions));
-				Field optionsCustomizerField = defaultChatClientRequest.getClass().getDeclaredField("optionsCustomizer");
-				optionsCustomizerField.setAccessible(true);
-				optionsCustomizerField.set(defaultChatClientRequest, null);
-				return true;
-			}
-		}
-		catch (NoSuchFieldException | IllegalAccessException | RuntimeException e) {
-			if (logger.isDebugEnabled()) {
-				logger.debug("Could not override default ChatClient model options via reflection: {}", e.getMessage());
-			}
-		}
-		return false;
-	}
-
-	private static boolean isObservationMetadataAware(ChatOptions chatOptions) {
-		if (chatOptions == null) {
-			return false;
-		}
-		try {
-			chatOptions.getClass().getMethod("getObservationMetadata");
-			chatOptions.getClass().getMethod("setObservationMetadata", java.util.Map.class);
-			return true;
-		}
-		catch (NoSuchMethodException e) {
-			return false;
-		}
-	}
-
-	private static boolean isObservationMetadataAwareBuilder(ChatOptions.Builder<?> builder) {
-		Class<?> builderClass = builder.getClass();
-		while (builderClass != null) {
-			try {
-				builderClass.getDeclaredField("observationMetadata");
-				return true;
-			}
-			catch (NoSuchFieldException e) {
-				builderClass = builderClass.getSuperclass();
-			}
-		}
-		return false;
-	}
-
-	private static final class OptionsOverrideChatModel implements ChatModel {
-
-		private final ChatModel delegate;
-
-		private final ChatOptions options;
-
-		private OptionsOverrideChatModel(ChatModel delegate, ChatOptions options) {
-			this.delegate = delegate;
-			this.options = options;
-		}
-
-		@Override
-		public ChatOptions getOptions() {
-			return this.options;
-		}
-
-		@Override
-		public ChatResponse call(Prompt prompt) {
-			return this.delegate.call(prompt);
-		}
-
-		@Override
-		public Flux<ChatResponse> stream(Prompt prompt) {
-			return this.delegate.stream(prompt);
-		}
-
+		return List.copyOf(bindings.values());
 	}
 
 }

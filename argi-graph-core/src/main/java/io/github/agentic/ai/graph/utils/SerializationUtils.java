@@ -15,13 +15,15 @@
  */
 package io.github.agentic.ai.graph.utils;
 
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.chat.ToolCall;
+import io.github.agentic.ai.api.chat.Usage;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.module.SimpleModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -30,6 +32,7 @@ import java.util.Map;
  * Utility class for object serialization and deep copying operations.
  */
 public class SerializationUtils {
+
 	private static final Logger log = LoggerFactory.getLogger(SerializationUtils.class);
 
 	// Jackson ObjectMapper for serialization
@@ -37,9 +40,6 @@ public class SerializationUtils {
 
 	private static ObjectMapper createObjectMapper() {
 		ObjectMapper mapper = new ObjectMapper();
-		SimpleModule module = new SimpleModule();
-		SpringAIJacksonStateSerializer.registerMessageHandlers(module);
-		mapper.registerModule(module);
 		return mapper;
 	}
 
@@ -49,7 +49,6 @@ public class SerializationUtils {
 
 	/**
 	 * Deep copy a Map, recursively handling all nested collections and Maps
-	 *
 	 * @param original the original Map object
 	 * @return the deep copied Map object, returns null if the original object is null
 	 */
@@ -65,20 +64,22 @@ public class SerializationUtils {
 		try {
 			// Try to create an instance of the same class
 			var constructor = original.getClass().getDeclaredConstructor();
-			constructor.setAccessible(true);  // Handle non-public constructors
+			constructor.setAccessible(true); // Handle non-public constructors
 			Object instance = constructor.newInstance();
 			if (!(instance instanceof Map)) {
-				throw new IllegalStateException("Constructor did not produce a Map instance: " + original.getClass().getName());
+				throw new IllegalStateException(
+						"Constructor did not produce a Map instance: " + original.getClass().getName());
 			}
 			copy = (Map<String, Object>) instance;
 			log.debug("Successfully preserved Map type: {}", original.getClass().getName());
-		} catch (Exception e) {
+		}
+		catch (Exception e) {
 			// If instantiation fails, fall back to HashMap
-			log.debug("Could not preserve Map type {}, falling back to HashMap: {}", 
-				original.getClass().getName(), e.getMessage());
+			log.debug("Could not preserve Map type {}, falling back to HashMap: {}", original.getClass().getName(),
+					e.getMessage());
 			copy = new HashMap<>();
 		}
-		
+
 		for (Map.Entry<String, Object> entry : original.entrySet()) {
 			copy.put(entry.getKey(), deepCopyValue(entry.getValue()));
 		}
@@ -87,7 +88,6 @@ public class SerializationUtils {
 
 	/**
 	 * Recursively deep copy values of any type
-	 *
 	 * @param value the value that needs to be deep copied
 	 * @return the deep copied value
 	 */
@@ -98,21 +98,31 @@ public class SerializationUtils {
 		}
 
 		// Handle primitive types and immutable objects
-		if (value instanceof String || value instanceof Number ||
-			value instanceof Boolean || value instanceof Character) {
+		if (value instanceof String || value instanceof Number || value instanceof Boolean || value instanceof Character
+				|| value instanceof Enum<?> || value instanceof ToolCall || value instanceof Usage) {
 			return value;
 		}
 
-		// Handle UserMessage
-		if (value instanceof UserMessage userMessage) {
-			return userMessage.copy();
+		// Preserve typed records in arbitrary metadata; untyped JSON erases nested
+		// records.
+		if (value instanceof ChatMessage message) {
+			return new ChatMessage(message.role(),
+					message.content().stream().map(part -> (ContentPart) deepCopyValue(part)).toList(),
+					message.toolCalls(), message.toolCallId(), message.toolName(), deepCopyMap(message.metadata()));
 		}
-
-		// Handle SystemMessage
-		if (value instanceof SystemMessage systemMessage) {
-			return systemMessage.copy();
+		if (value instanceof ContentPart part) {
+			return new ContentPart(part.type(), part.text(), part.mimeType(), part.data(),
+					deepCopyMap(part.metadata()));
 		}
-
+		if (value instanceof ChatResponse response) {
+			return new ChatResponse(response.id(), response.model(),
+					response.messages().stream().map(message -> (ChatMessage) deepCopyValue(message)).toList(),
+					response.toolCalls(), response.finishReason(), response.usage(), deepCopyMap(response.metadata()));
+		}
+		if (value instanceof ChatEvent event) {
+			return new ChatEvent(event.type(), event.text(), event.toolCall(),
+					(ChatResponse) deepCopyValue(event.response()), event.usage(), deepCopyMap(event.metadata()));
+		}
 		// Handle Map
 		if (value instanceof Map) {
 			return deepCopyMap((Map<String, Object>) value);
@@ -138,18 +148,19 @@ public class SerializationUtils {
 			return copySet;
 		}
 
-        // Handle arrays (both object arrays like String[] and primitive arrays like
-        // int[], float[], double[], byte[], ...). Using java.lang.reflect.Array preserves
-        // the original component type and avoids casting a primitive array to Object[],
-        // which throws ClassCastException (e.g. [F cannot be cast to [Ljava.lang.Object;).
-        // Primitive elements are immutable and returned as-is by the recursive call, so a
-        // single element-wise loop is a correct deep copy for both array kinds.
-        if (value.getClass().isArray()) {
-            int length = java.lang.reflect.Array.getLength(value);
-            Object copyArray = java.lang.reflect.Array.newInstance(value.getClass().getComponentType(), length);
-            for (int i = 0; i < length; i++) {
-                java.lang.reflect.Array.set(copyArray, i, deepCopyValue(java.lang.reflect.Array.get(value, i)));
-            }
+		// Handle arrays (both object arrays like String[] and primitive arrays like
+		// int[], float[], double[], byte[], ...). Using java.lang.reflect.Array preserves
+		// the original component type and avoids casting a primitive array to Object[],
+		// which throws ClassCastException (e.g. [F cannot be cast to
+		// [Ljava.lang.Object;).
+		// Primitive elements are immutable and returned as-is by the recursive call, so a
+		// single element-wise loop is a correct deep copy for both array kinds.
+		if (value.getClass().isArray()) {
+			int length = java.lang.reflect.Array.getLength(value);
+			Object copyArray = java.lang.reflect.Array.newInstance(value.getClass().getComponentType(), length);
+			for (int i = 0; i < length; i++) {
+				java.lang.reflect.Array.set(copyArray, i, deepCopyValue(java.lang.reflect.Array.get(value, i)));
+			}
 			return copyArray;
 		}
 
@@ -158,11 +169,14 @@ public class SerializationUtils {
 		try {
 			String json = objectMapper.writeValueAsString(value);
 			return objectMapper.readValue(json, value.getClass());
-		} catch (Exception e) {
-			// If serialization fails, log a warning and return the original object (shallow copy)
-			log.debug("Could not deep copy object of type " +
-				value.getClass().getName() + ", using shallow copy instead: " + e.getMessage());
+		}
+		catch (Exception e) {
+			// If serialization fails, log a warning and return the original object
+			// (shallow copy)
+			log.debug("Could not deep copy object of type " + value.getClass().getName()
+					+ ", using shallow copy instead: " + e.getMessage());
 			return value;
 		}
 	}
+
 }

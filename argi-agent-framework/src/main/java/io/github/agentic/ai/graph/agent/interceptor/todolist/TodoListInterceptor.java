@@ -21,8 +21,8 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.graph.agent.tools.WriteTodosTool;
 
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.tool.Tool;
 
 import java.util.Collections;
 import java.util.List;
@@ -38,46 +38,43 @@ import static io.github.agentic.ai.graph.agent.tools.WriteTodosTool.DEFAULT_TOOL
 /**
  * Model interceptor that provides todo list management capabilities to agents.
  *
- * This interceptor enhances the system prompt to guide agents on using todo lists
- * for complex multi-step operations. It helps agents:
- * - Track progress on complex tasks
- * - Organize work into manageable steps
- * - Provide users with visibility into task completion
+ * This interceptor enhances the system prompt to guide agents on using todo lists for
+ * complex multi-step operations. It helps agents: - Track progress on complex tasks -
+ * Organize work into manageable steps - Provide users with visibility into task
+ * completion
  *
- * The interceptor automatically injects system prompts that guide the agent on when
- * and how to use the todo functionality effectively.
+ * The interceptor automatically injects system prompts that guide the agent on when and
+ * how to use the todo functionality effectively.
  *
- * Example:
- * TodoListInterceptor interceptor = TodoListInterceptor.builder()
- *     .systemPrompt("Custom guidance for using todos...")
- *     .build();
+ * Example: TodoListInterceptor interceptor = TodoListInterceptor.builder()
+ * .systemPrompt("Custom guidance for using todos...") .build();
  */
 public class TodoListInterceptor extends ModelInterceptor {
 
 	private static final String DEFAULT_SYSTEM_PROMPT = """
 			## `write_todos`
-			
+
 			You have access to the `write_todos` tool to help you manage and plan complex objectives.
 			Use this tool for complex objectives to ensure that you are tracking each necessary step and giving the user visibility into your progress.
 			This tool is very helpful for planning complex objectives, and for breaking down these larger complex objectives into smaller steps.
-			
+
 			It is critical that you mark todos as completed as soon as you are done with a step. Do not batch up multiple steps before marking them as completed.
 			For simple objectives that only require a few steps, it is better to just complete the objective directly and NOT use this tool.
 			Writing todos takes time and tokens, use it when it is helpful for managing complex many-step problems! But not for simple few-step requests.
-			
+
 			## Important To-Do List Usage Notes to Remember
 			- The `write_todos` tool should never be called multiple times in parallel.
 			- Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant.
 			""";
 
-	private final List<ToolCallback> tools;
+	private final List<Tool> tools;
+
 	private final String systemPrompt;
+
 	private final String toolDescription;
 
 	private TodoListInterceptor(Builder builder) {
-		var toolBuilder = WriteTodosTool.builder()
-				.withName("write_todos")
-				.withDescription(builder.toolDescription);
+		var toolBuilder = WriteTodosTool.builder().withName("write_todos").withDescription(builder.toolDescription);
 		if (builder.todoEventHandler != null) {
 			toolBuilder.todoEventHandler(builder.todoEventHandler);
 		}
@@ -91,8 +88,8 @@ public class TodoListInterceptor extends ModelInterceptor {
 	}
 
 	@Override
-	public List<ToolCallback> getTools() {
-		return tools;
+	public List<io.github.agentic.ai.api.tool.Tool> getTools() {
+		return List.copyOf(tools);
 	}
 
 	@Override
@@ -102,18 +99,17 @@ public class TodoListInterceptor extends ModelInterceptor {
 
 	@Override
 	public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
-		SystemMessage enhancedSystemMessage;
+		ChatMessage enhancedSystemMessage;
 
 		if (request.getSystemMessage() == null) {
-			enhancedSystemMessage = new SystemMessage(this.systemPrompt);
-		} else {
-			enhancedSystemMessage = new SystemMessage(request.getSystemMessage().getText() + "\n\n" + systemPrompt);
+			enhancedSystemMessage = ChatMessage.system(this.systemPrompt);
+		}
+		else {
+			enhancedSystemMessage = request.getSystemMessage().appendText("\n\n" + systemPrompt);
 		}
 
 		// Create enhanced request
-		ModelRequest enhancedRequest = ModelRequest.builder(request)
-				.systemMessage(enhancedSystemMessage)
-				.build();
+		ModelRequest enhancedRequest = ModelRequest.builder(request).systemMessage(enhancedSystemMessage).build();
 
 		// Call the handler with enhanced request
 		return handler.call(enhancedRequest);
@@ -124,9 +120,8 @@ public class TodoListInterceptor extends ModelInterceptor {
 	 */
 	@JsonFormat(shape = JsonFormat.Shape.STRING)
 	public enum TodoStatus {
-		PENDING("pending"),
-		IN_PROGRESS("in_progress"),
-		COMPLETED("completed");
+
+		PENDING("pending"), IN_PROGRESS("in_progress"), COMPLETED("completed");
 
 		private final String value;
 
@@ -162,6 +157,7 @@ public class TodoListInterceptor extends ModelInterceptor {
 		public String getValue() {
 			return value;
 		}
+
 	}
 
 	/**
@@ -169,12 +165,15 @@ public class TodoListInterceptor extends ModelInterceptor {
 	 * <p>
 	 * Task descriptions must have two forms:
 	 * <ul>
-	 * <li><b>content</b>: The imperative form describing what needs to be done (e.g., "Run tests", "Build the project")</li>
-	 * <li><b>activeForm</b>: The present continuous form shown during execution (e.g., "Running tests", "Building the project").
-	 * When null or blank, content is used as fallback for backward compatibility.</li>
+	 * <li><b>content</b>: The imperative form describing what needs to be done (e.g.,
+	 * "Run tests", "Build the project")</li>
+	 * <li><b>activeForm</b>: The present continuous form shown during execution (e.g.,
+	 * "Running tests", "Building the project"). When null or blank, content is used as
+	 * fallback for backward compatibility.</li>
 	 * </ul>
 	 */
 	public static class Todo {
+
 		@JsonProperty(value = "content", required = true)
 		@JsonPropertyDescription("Imperative form describing what needs to be done (e.g., 'Run tests', 'Build the project')")
 		private String content;
@@ -232,11 +231,15 @@ public class TodoListInterceptor extends ModelInterceptor {
 		public String toString() {
 			return String.format("Todo{content='%s', status=%s, activeForm='%s'}", content, status, getActiveForm());
 		}
+
 	}
 
 	public static class Builder {
+
 		private String systemPrompt = DEFAULT_SYSTEM_PROMPT;
+
 		private String toolDescription = DEFAULT_TOOL_DESCRIPTION;
+
 		private WriteTodosTool.TodoEventHandler todoEventHandler;
 
 		/**
@@ -267,6 +270,7 @@ public class TodoListInterceptor extends ModelInterceptor {
 		public TodoListInterceptor build() {
 			return new TodoListInterceptor(this);
 		}
-	}
-}
 
+	}
+
+}

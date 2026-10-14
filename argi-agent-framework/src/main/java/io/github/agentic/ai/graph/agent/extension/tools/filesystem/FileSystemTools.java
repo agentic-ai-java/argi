@@ -20,23 +20,19 @@ import io.github.agentic.ai.graph.agent.extension.file.FileInfo;
 import io.github.agentic.ai.graph.agent.extension.file.LocalFilesystemBackend;
 import io.github.agentic.ai.graph.agent.extension.file.WriteResult;
 
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
+import io.github.agentic.ai.api.tool.ToolContext;
 
 import java.util.List;
 
 /**
- * File system tools using Spring AI Tool annotations.
- * 
- * This class provides file system operations as Spring AI tools:
- * - read_file: Read file content with pagination
- * - write_file: Write content to a file
- * - edit_file: Edit file by replacing string occurrences
- * - list_files: List files and directories
- * 
- * This implementation is based on LocalFilesystemBackend but uses
- * Spring AI Tool annotations for better integration with the framework.
+ * Provider-neutral filesystem tools.
+ *
+ * This class provides file system operations as typed tools: - read_file: Read file
+ * content with pagination - write_file: Write content to a file - edit_file: Edit file by
+ * replacing string occurrences - list_files: List files and directories
+ *
+ * This implementation is based on LocalFilesystemBackend with explicit executable
+ * declarations.
  */
 public class FileSystemTools {
 
@@ -53,9 +49,9 @@ public class FileSystemTools {
 
 	/**
 	 * Constructor with custom root directory.
-	 * 
 	 * @param rootDir Optional root directory for file operations
-	 * @param virtualMode When true, treat incoming paths as virtual absolute paths under cwd
+	 * @param virtualMode When true, treat incoming paths as virtual absolute paths under
+	 * cwd
 	 * @param maxFileSizeMb Maximum file size in MB for reading operations
 	 */
 	public FileSystemTools(String rootDir, boolean virtualMode, int maxFileSizeMb) {
@@ -63,28 +59,10 @@ public class FileSystemTools {
 	}
 
 	// @formatter:off
-	@Tool(name = "read_file", description = """
-		Reads a file from the filesystem. You can access any file directly by using this tool.
-		Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
-
-		Usage:
-		- The file_path parameter must be an absolute path, not a relative path
-		- By default, it reads up to 500 lines starting from the beginning of the file
-		- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
-		  - First scan: read_file(path, limit=100) to see file structure
-		  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
-		  - Only omit limit (read full file) when necessary for editing
-		- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
-		- Any lines longer than 10000 characters will be truncated
-		- Results are returned using cat -n format, with line numbers starting at 1
-		- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-		- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-		- You should almost ALWAYS use the list_files tool before using this tool to verify the file path.
-		""")
 	public String readFile(
-		@ToolParam(description = "The absolute path of the file to read") String filePath,
-		@ToolParam(description = "Line offset to start reading from (default: 0)", required = false) Integer offset,
-		@ToolParam(description = "Maximum number of lines to read (default: 500)", required = false) Integer limit,
+		String filePath,
+		Integer offset,
+		Integer limit,
 		ToolContext toolContext) { // @formatter:on
 
 		try {
@@ -96,18 +74,9 @@ public class FileSystemTools {
 	}
 
 	// @formatter:off
-	@Tool(name = "write_file", description = """
-		Writes content to a new file in the filesystem.
-
-		Usage:
-		- The file_path parameter must be an absolute path, not a relative path
-		- This tool will create a new file. If the file already exists, an error will be returned.
-		- To modify an existing file, use the edit_file tool instead.
-		- Parent directories will be created automatically if they don't exist.
-		""")
 	public String writeFile(
-		@ToolParam(description = "The absolute path of the file to write") String filePath,
-		@ToolParam(description = "The content to write to the file") String content,
+		String filePath,
+		String content,
 		ToolContext toolContext) { // @formatter:on
 
 		try {
@@ -123,21 +92,11 @@ public class FileSystemTools {
 	}
 
 	// @formatter:off
-	@Tool(name = "edit_file", description = """
-		Edits a file by replacing string occurrences.
-
-		Usage:
-		- The file_path parameter must be an absolute path, not a relative path
-		- You must use the read_file tool at least once before editing to read the file's contents
-		- When editing text, ensure you preserve the exact indentation (tabs/spaces) as it appears in the file
-		- The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all=true to change every instance
-		- Use replace_all=true for replacing and renaming strings across the file
-		""")
 	public String editFile(
-		@ToolParam(description = "The absolute path of the file to modify") String filePath,
-		@ToolParam(description = "The text to replace") String oldString,
-		@ToolParam(description = "The text to replace it with (must be different from old_string)") String newString,
-		@ToolParam(description = "Replace all occurrences of old_string (default false)", required = false) Boolean replaceAll,
+		String filePath,
+		String oldString,
+		String newString,
+		Boolean replaceAll,
 		ToolContext toolContext) { // @formatter:on
 
 		try {
@@ -155,18 +114,8 @@ public class FileSystemTools {
 	}
 
 	// @formatter:off
-	@Tool(name = "list_files", description = """
-		Lists all files and directories in the specified directory.
-
-		Usage:
-		- The path parameter must be an absolute path, not a relative path
-		- The list_files tool will return a list of all files and directories in the specified directory (non-recursive)
-		- Directories are indicated with a trailing / in their path
-		- This is very useful for exploring the file system and finding the right file to read or edit
-		- You should almost ALWAYS use this tool before using the read_file or edit_file tools
-		""")
 	public String listFiles(
-		@ToolParam(description = "The directory path to list files from") String path,
+		String path,
 		ToolContext toolContext) { // @formatter:on
 
 		try {
@@ -195,6 +144,46 @@ public class FileSystemTools {
 		}
 	}
 
+	/** Register all filesystem operations against this instance's configured backend. */
+	public List<io.github.agentic.ai.api.tool.Tool> tools() {
+		return List.of(
+				io.github.agentic.ai.graph.agent.tool.TypedTool
+					.builder("read_file",
+							(ReadRequest r, ToolContext c) -> readFile(r.filePath(), r.offset(), r.limit(), c))
+					.description("Read a file with line pagination")
+					.inputType(ReadRequest.class)
+					.build(),
+				io.github.agentic.ai.graph.agent.tool.TypedTool
+					.builder("write_file", (WriteRequest r, ToolContext c) -> writeFile(r.filePath(), r.content(), c))
+					.description("Create a new file")
+					.inputType(WriteRequest.class)
+					.build(),
+				io.github.agentic.ai.graph.agent.tool.TypedTool
+					.builder("edit_file",
+							(EditRequest r, ToolContext c) -> editFile(r.filePath(), r.oldString(), r.newString(),
+									r.replaceAll(), c))
+					.description("Replace text in a file")
+					.inputType(EditRequest.class)
+					.build(),
+				io.github.agentic.ai.graph.agent.tool.TypedTool
+					.builder("list_files", (ListRequest r, ToolContext c) -> listFiles(r.path(), c))
+					.description("List files and directories")
+					.inputType(ListRequest.class)
+					.build());
+	}
+
+	public record ReadRequest(String filePath, Integer offset, Integer limit) {
+	}
+
+	public record WriteRequest(String filePath, String content) {
+	}
+
+	public record EditRequest(String filePath, String oldString, String newString, Boolean replaceAll) {
+	}
+
+	public record ListRequest(String path) {
+	}
+
 	// Helper methods
 
 	public static Builder builder() {
@@ -202,8 +191,11 @@ public class FileSystemTools {
 	}
 
 	public static class Builder {
+
 		private String rootDir;
+
 		private boolean virtualMode = false;
+
 		private int maxFileSizeMb = DEFAULT_MAX_FILE_SIZE_MB;
 
 		public Builder rootDir(String rootDir) {
@@ -224,5 +216,7 @@ public class FileSystemTools {
 		public FileSystemTools build() {
 			return new FileSystemTools(rootDir, virtualMode, maxFileSizeMb);
 		}
+
 	}
+
 }

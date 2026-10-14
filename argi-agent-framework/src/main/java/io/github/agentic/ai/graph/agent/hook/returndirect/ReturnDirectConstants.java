@@ -17,12 +17,16 @@ package io.github.agentic.ai.graph.agent.hook.returndirect;
 
 public final class ReturnDirectConstants {
 
+	public static final String FINISH_REASON = "returnDirect";
+
 	/**
 	 * Metadata key used in ToolResponseMessage to indicate that returnDirect is enabled.
-	 * When all tools have returnDirect=true, this key is set in ToolResponseMessage metadata
-	 * with value {@link org.springframework.ai.model.tool.ToolExecutionResult#FINISH_REASON}.
+	 * When all tools have returnDirect=true, this key is set in ToolResponseMessage
+	 * metadata with the provider-neutral tool execution finish reason.
 	 */
 	public static final String FINISH_REASON_METADATA_KEY = "finishReason";
 
-	private ReturnDirectConstants() {}
+	private ReturnDirectConstants() {
+	}
+
 }

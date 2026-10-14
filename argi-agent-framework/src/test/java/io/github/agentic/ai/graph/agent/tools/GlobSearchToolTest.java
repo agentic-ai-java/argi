@@ -18,7 +18,7 @@ package io.github.agentic.ai.graph.agent.tools;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.ai.chat.model.ToolContext;
+import io.github.agentic.ai.api.tool.ToolContext;
 
 import java.io.IOException;
 import java.nio.file.FileSystems;
@@ -34,7 +34,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 
 class GlobSearchToolTest {
 

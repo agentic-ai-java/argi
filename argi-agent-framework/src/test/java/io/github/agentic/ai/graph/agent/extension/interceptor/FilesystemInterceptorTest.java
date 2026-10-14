@@ -21,8 +21,9 @@ import io.github.agentic.ai.graph.agent.extension.file.LocalFilesystemBackend;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.chat.ToolCall;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,8 +43,7 @@ class FilesystemInterceptorTest {
 	void defaultBackendDoesNotExposeHostAbsolutePaths() {
 		FilesystemInterceptor interceptor = FilesystemInterceptor.builder().readOnly(true).build();
 
-		String result = tool(interceptor, "read_file").call(
-				"{\"file_path\":\"/etc/passwd\",\"offset\":0,\"limit\":10}",
+		String result = execute(interceptor, "read_file", "{\"file_path\":\"/etc/passwd\",\"offset\":0,\"limit\":10}",
 				new ToolContext(Collections.emptyMap()));
 
 		assertFalse(result.contains("root:"));
@@ -59,10 +59,9 @@ class FilesystemInterceptorTest {
 			.readOnly(true)
 			.build();
 
-		String inside = tool(interceptor, "read_file").call(
-				"{\"file_path\":\"/allowed.txt\",\"offset\":0,\"limit\":10}",
+		String inside = execute(interceptor, "read_file", "{\"file_path\":\"/allowed.txt\",\"offset\":0,\"limit\":10}",
 				new ToolContext(Collections.emptyMap()));
-		String traversal = tool(interceptor, "read_file").call(
+		String traversal = execute(interceptor, "read_file",
 				"{\"file_path\":\"../allowed.txt\",\"offset\":0,\"limit\":10}",
 				new ToolContext(Collections.emptyMap()));
 
@@ -79,12 +78,10 @@ class FilesystemInterceptorTest {
 			.backend(new LocalFilesystemBackend(this.root.toString(), true, 10))
 			.build();
 
-		String created = tool(interceptor, "write_file").call(
-				"{\"file_path\":\"/sub/new.txt\",\"content\":\"inside\"}",
+		String created = execute(interceptor, "write_file", "{\"file_path\":\"/sub/new.txt\",\"content\":\"inside\"}",
 				new ToolContext(Collections.emptyMap()));
-		String traversal = tool(interceptor, "write_file").call(
-				"{\"file_path\":\"../escape.txt\",\"content\":\"outside\"}",
-				new ToolContext(Collections.emptyMap()));
+		String traversal = execute(interceptor, "write_file",
+				"{\"file_path\":\"../escape.txt\",\"content\":\"outside\"}", new ToolContext(Collections.emptyMap()));
 
 		assertTrue(created.contains("Successfully created file"));
 		assertTrue(Files.readString(this.root.resolve("sub/new.txt")).contains("inside"));
@@ -102,9 +99,10 @@ class FilesystemInterceptorTest {
 			.readOnly(true)
 			.build();
 
-		String listed = tool(interceptor, "ls").call("{\"path\":\"/\"}", new ToolContext(Collections.emptyMap()));
-		String globbed = tool(interceptor, "glob").call("{\"pattern\":\"**/*.txt\"}", new ToolContext(Collections.emptyMap()));
-		String grep = tool(interceptor, "grep").call(
+		String listed = execute(interceptor, "ls", "{\"path\":\"/\"}", new ToolContext(Collections.emptyMap()));
+		String globbed = execute(interceptor, "glob", "{\"pattern\":\"**/*.txt\"}",
+				new ToolContext(Collections.emptyMap()));
+		String grep = execute(interceptor, "grep",
 				"{\"pattern\":\"needle\",\"path\":\"/\",\"glob\":\"*.txt\",\"output_mode\":\"content\"}",
 				new ToolContext(Collections.emptyMap()));
 
@@ -118,8 +116,8 @@ class FilesystemInterceptorTest {
 		FilesystemInterceptor interceptor = FilesystemInterceptor.builder().readOnly(true).build();
 		ObjectMapper objectMapper = new ObjectMapper();
 
-		JsonNode lsSchema = objectMapper.readTree(tool(interceptor, "ls").getToolDefinition().inputSchema());
-		JsonNode globSchema = objectMapper.readTree(tool(interceptor, "glob").getToolDefinition().inputSchema());
+		JsonNode lsSchema = objectMapper.readTree(tool(interceptor, "ls").definition().inputSchema());
+		JsonNode globSchema = objectMapper.readTree(tool(interceptor, "glob").definition().inputSchema());
 
 		assertEquals("object", lsSchema.path("type").asText());
 		assertTrue(lsSchema.path("properties").has("path"));
@@ -136,9 +134,9 @@ class FilesystemInterceptorTest {
 			.readOnly(true)
 			.build();
 
-		String missing = tool(interceptor, "ls").call("{\"path\":\"/missing\"}", new ToolContext(Collections.emptyMap()));
-		String file = tool(interceptor, "ls").call("{\"path\":\"/plain.txt\"}", new ToolContext(Collections.emptyMap()));
-		String empty = tool(interceptor, "ls").call("{\"path\":\"/empty\"}", new ToolContext(Collections.emptyMap()));
+		String missing = execute(interceptor, "ls", "{\"path\":\"/missing\"}", new ToolContext(Collections.emptyMap()));
+		String file = execute(interceptor, "ls", "{\"path\":\"/plain.txt\"}", new ToolContext(Collections.emptyMap()));
+		String empty = execute(interceptor, "ls", "{\"path\":\"/empty\"}", new ToolContext(Collections.emptyMap()));
 
 		assertThat(missing).contains("Error: Directory not found: /missing").doesNotContain("Directory is empty");
 		assertThat(file).contains("Error: Directory not found: /plain.txt").doesNotContain("Directory is empty");
@@ -153,10 +151,10 @@ class FilesystemInterceptorTest {
 			.backend(new LocalFilesystemBackend(this.root.toString(), true, 10))
 			.build();
 
-		String edited = tool(interceptor, "edit_file").call(
+		String edited = execute(interceptor, "edit_file",
 				"{\"file_path\":\"/inside.txt\",\"old_string\":\"before\",\"new_string\":\"after\",\"replace_all\":false}",
 				new ToolContext(Collections.emptyMap()));
-		String traversal = tool(interceptor, "edit_file").call(
+		String traversal = execute(interceptor, "edit_file",
 				"{\"file_path\":\"../inside.txt\",\"old_string\":\"before\",\"new_string\":\"after\",\"replace_all\":false}",
 				new ToolContext(Collections.emptyMap()));
 
@@ -176,7 +174,7 @@ class FilesystemInterceptorTest {
 			.readOnly(true)
 			.build();
 
-		String result = tool(interceptor, "read_file").call(
+		String result = execute(interceptor, "read_file",
 				"{\"file_path\":\"/link/outside.txt\",\"offset\":0,\"limit\":10}",
 				new ToolContext(Collections.emptyMap()));
 
@@ -193,7 +191,7 @@ class FilesystemInterceptorTest {
 			.backend(new LocalFilesystemBackend(this.root.toString(), true, 10))
 			.build();
 
-		String result = tool(interceptor, "write_file").call(
+		String result = execute(interceptor, "write_file",
 				"{\"file_path\":\"/link/created.txt\",\"content\":\"escaped\"}",
 				new ToolContext(Collections.emptyMap()));
 
@@ -212,7 +210,7 @@ class FilesystemInterceptorTest {
 			.backend(new LocalFilesystemBackend(this.root.toString(), true, 10))
 			.build();
 
-		String result = tool(interceptor, "edit_file").call(
+		String result = execute(interceptor, "edit_file",
 				"{\"file_path\":\"/link/outside.txt\",\"old_string\":\"before\",\"new_string\":\"after\",\"replace_all\":false}",
 				new ToolContext(Collections.emptyMap()));
 
@@ -229,10 +227,9 @@ class FilesystemInterceptorTest {
 			.backend(new LocalFilesystemBackend(this.root.toString(), true, 0))
 			.build();
 
-		String read = tool(interceptor, "read_file").call(
-				"{\"file_path\":\"/large.txt\",\"offset\":0,\"limit\":10}",
+		String read = execute(interceptor, "read_file", "{\"file_path\":\"/large.txt\",\"offset\":0,\"limit\":10}",
 				new ToolContext(Collections.emptyMap()));
-		String edit = tool(interceptor, "edit_file").call(
+		String edit = execute(interceptor, "edit_file",
 				"{\"file_path\":\"/large.txt\",\"old_string\":\"too\",\"new_string\":\"not\",\"replace_all\":false}",
 				new ToolContext(Collections.emptyMap()));
 
@@ -241,12 +238,18 @@ class FilesystemInterceptorTest {
 		assertThat(Files.readString(file)).isEqualTo("too large\n");
 	}
 
-	private static ToolCallback tool(FilesystemInterceptor interceptor, String name) {
+	private static Tool tool(FilesystemInterceptor interceptor, String name) {
 		return interceptor.getTools()
 			.stream()
-			.filter(tool -> name.equals(tool.getToolDefinition().name()))
+			.filter(tool -> name.equals(tool.definition().name()))
 			.findFirst()
 			.orElseThrow();
+	}
+
+	private static String execute(FilesystemInterceptor interceptor, String name, String arguments,
+			ToolContext context) {
+		var call = new ToolCall("test-call", name, arguments);
+		return tool(interceptor, name).execute(call, context).toCompletableFuture().join().toMessage(call).text();
 	}
 
 }

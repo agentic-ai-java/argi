@@ -15,15 +15,19 @@
  */
 package io.github.agentic.ai.agent.studio.controller;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.agent.studio.dto.AgentResumeRequest;
 import io.github.agentic.ai.agent.studio.dto.AgentRunRequest;
 import io.github.agentic.ai.agent.studio.dto.messages.UserMessageDTO;
+import io.github.agentic.ai.agent.studio.dto.messages.ToolRequestConfirmMessageDTO;
 import io.github.agentic.ai.agent.studio.loader.AgentLoader;
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.KeyStrategy;
 import io.github.agentic.ai.graph.KeyStrategyFactoryBuilder;
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.StateGraph;
+import io.github.agentic.ai.graph.action.InterruptionMetadata;
 import io.github.agentic.ai.graph.agent.Agent;
 import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
@@ -31,7 +35,6 @@ import io.github.agentic.ai.graph.exception.GraphStateException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
-import org.springframework.ai.chat.messages.UserMessage;
 
 import java.time.Duration;
 import java.util.HashMap;
@@ -91,7 +94,8 @@ class StudioStateDeltaTest {
 	void resumeWithoutCheckpointKeepsFreshStartBehaviorAndUsesDelta() {
 		StateReadingAgent agent = new StateReadingAgent(false);
 		controller(agent).agentResumeSse(resumeRequest(Map.of("marker", "fresh")), "secret")
-				.collectList().block(Duration.ofSeconds(2));
+			.collectList()
+			.block(Duration.ofSeconds(2));
 		assertEquals("fresh", agent.observed.get("marker"));
 	}
 
@@ -104,18 +108,35 @@ class StudioStateDeltaTest {
 		assertEquals("updated", agent.observed.get("marker"));
 	}
 
+	@Test
+	void resumeDoesNotAutomaticallyApproveMissingFeedbackResult() {
+		StateReadingAgent agent = new StateReadingAgent(false);
+		var feedback = new ToolRequestConfirmMessageDTO.ToolFeedback();
+		feedback.setId("pending");
+		feedback.setName("write");
+		var request = resumeRequest(null);
+		request.toolFeedbacks = List.of(feedback);
+		controller(agent).agentResumeSse(request, "secret").collectList().block(Duration.ofSeconds(2));
+
+		assertNotNull(agent.observedFeedback);
+		assertNull(agent.observedFeedback.toolFeedbacks().get(0).getResult());
+	}
+
 	private static StateReadingAgent pausedAgent() throws Exception {
 		StateReadingAgent agent = new StateReadingAgent(true);
-		agent.stream(Map.of("marker", "stored", "messages", List.of(new UserMessage("seed"))), config())
-				.collectList().block(Duration.ofSeconds(2));
+		agent.stream(Map.of("marker", "stored", "messages", List.of(ChatMessage.user("seed"))), config())
+			.collectList()
+			.block(Duration.ofSeconds(2));
 		assertNull(agent.observed);
 		return agent;
 	}
 
 	private static RunnableConfig config() {
-		return RunnableConfig.builder().threadId("thread-1")
-				.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, "assistant")
-				.addMetadata(RunnableConfig.USER_ID_METADATA_KEY, "alice").build();
+		return RunnableConfig.builder()
+			.threadId("thread-1")
+			.addMetadata(RunnableConfig.APP_NAME_METADATA_KEY, "assistant")
+			.addMetadata(RunnableConfig.USER_ID_METADATA_KEY, "alice")
+			.build();
 	}
 
 	private static AgentRunRequest runRequest(Map<String, Object> delta) {
@@ -157,10 +178,12 @@ class StudioStateDeltaTest {
 
 		private Map<String, Object> observed;
 
+		private InterruptionMetadata observedFeedback;
+
 		private StateReadingAgent(boolean pause) {
 			super("assistant", "State delta test agent");
 			CompileConfig.Builder builder = CompileConfig.builder()
-					.saverConfig(SaverConfig.builder().register(new MemorySaver()).build());
+				.saverConfig(SaverConfig.builder().register(new MemorySaver()).build());
 			if (pause) {
 				builder.interruptAfter("pause");
 			}
@@ -170,13 +193,21 @@ class StudioStateDeltaTest {
 		@Override
 		protected StateGraph initGraph() throws GraphStateException {
 			return new StateGraph(new KeyStrategyFactoryBuilder().defaultStrategy(KeyStrategy.REPLACE)
-					.addStrategy("messages").build())
-					.addNode("pause", node_async(state -> Map.of()))
-					.addNode("read", node_async(state -> {
-						observed = new HashMap<>(state.data());
-						return Map.of("seen", state.value("marker").orElse("absent"));
-					}))
-					.addEdge(StateGraph.START, "pause").addEdge("pause", "read").addEdge("read", StateGraph.END);
+				.addStrategy("messages")
+				.build()).addNode("pause", node_async(state -> Map.of()))
+				.addNode("read",
+						io.github.agentic.ai.graph.action.AsyncNodeActionWithConfig.node_async((state, config) -> {
+							observed = new HashMap<>(state.data());
+							observedFeedback = (InterruptionMetadata) config
+								.metadata(RunnableConfig.HUMAN_FEEDBACK_METADATA_KEY)
+								.orElse(null);
+							return Map.of("seen", state.value("marker").orElse("absent"));
+						}))
+				.addEdge(StateGraph.START, "pause")
+				.addEdge("pause", "read")
+				.addEdge("read", StateGraph.END);
 		}
+
 	}
+
 }

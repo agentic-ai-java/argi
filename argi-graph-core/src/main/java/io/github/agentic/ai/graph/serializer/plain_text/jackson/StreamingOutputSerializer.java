@@ -23,56 +23,64 @@ import com.fasterxml.jackson.core.type.WritableTypeId;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.jsontype.TypeSerializer;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
-import org.springframework.ai.chat.messages.Message;
 
 import java.io.IOException;
 
 /**
- * Custom serializer for StreamingOutput that skips the originData field.
- * Supports serialization of outputType and message fields.
+ * Persists streaming output snapshots, including neutral chat origin data.
+ * Provider-native runtime objects remain transient.
  */
 public class StreamingOutputSerializer extends StdSerializer<StreamingOutput> {
 
-    public StreamingOutputSerializer() {
-        super(StreamingOutput.class);
-    }
+	public StreamingOutputSerializer() {
+		super(StreamingOutput.class);
+	}
 
-    @Override
-    public void serialize(StreamingOutput value, JsonGenerator gen, SerializerProvider provider) throws IOException {
-        gen.writeStartObject();
-        serializeFields(value, gen, provider);
-        gen.writeEndObject();
-    }
+	@Override
+	public void serialize(StreamingOutput value, JsonGenerator gen, SerializerProvider provider) throws IOException {
+		gen.writeStartObject();
+		serializeFields(value, gen, provider);
+		gen.writeEndObject();
+	}
 
-    @Override
-    public void serializeWithType(StreamingOutput value, JsonGenerator gen, SerializerProvider provider, TypeSerializer typeSer) throws IOException {
-        WritableTypeId typeIdDef = typeSer.writeTypePrefix(gen, typeSer.typeId(value, JsonToken.START_OBJECT));
-        serializeFields(value, gen, provider);
-        typeSer.writeTypeSuffix(gen, typeIdDef);
-    }
+	@Override
+	public void serializeWithType(StreamingOutput value, JsonGenerator gen, SerializerProvider provider,
+			TypeSerializer typeSer) throws IOException {
+		WritableTypeId typeIdDef = typeSer.writeTypePrefix(gen, typeSer.typeId(value, JsonToken.START_OBJECT));
+		serializeFields(value, gen, provider);
+		typeSer.writeTypeSuffix(gen, typeIdDef);
+	}
 
-    private void serializeFields(StreamingOutput value, JsonGenerator gen, SerializerProvider provider) throws IOException {
-        gen.writeStringField("node", value.node());
-        gen.writeStringField("agent", value.agent());
-        gen.writeObjectField("state", value.state());
-        gen.writeBooleanField("subGraph", value.isSubGraph());
+	private void serializeFields(StreamingOutput value, JsonGenerator gen, SerializerProvider provider)
+			throws IOException {
+		gen.writeStringField(TypeMapper.TYPE_PROPERTY, "ARGI_STREAMING_OUTPUT");
+		gen.writeStringField("node", value.node());
+		gen.writeStringField("agent", value.agent());
+		gen.writeObjectField("tokenUsage", value.tokenUsage());
+		gen.writeObjectField("state", value.state() == null ? null
+				: java.util.Map.of("data", JacksonStateSerializer.normalizeValue(value.state().data())));
+		gen.writeBooleanField("subGraph", value.isSubGraph());
 
-        // Serialize message if present
-        Message message = value.message();
-        if (message != null) {
-            gen.writeObjectField("message", message);
-        }
+		// Serialize message if present
+		gen.writeObjectField("messages", JacksonStateSerializer.normalizeValue(value.messages()));
 
-        // Serialize outputType if present
-        OutputType outputType = value.getOutputType();
-        if (outputType != null) {
-            gen.writeStringField("outputType", outputType.name());
-        }
+		// Serialize outputType if present
+		OutputType outputType = value.getOutputType();
+		if (outputType != null) {
+			gen.writeStringField("outputType", outputType.name());
+		}
 
-        // Only serialize chunk field, skip originData
-        if (value.chunk() != null) {
-            gen.writeStringField("chunk", value.chunk());
-        }
-    }
+		Object origin = value.getOriginData();
+		// Native model responses and live resources are not portable checkpoint payloads.
+		if (origin instanceof io.github.agentic.ai.api.chat.ChatEvent
+				|| origin instanceof io.github.agentic.ai.api.chat.ChatMessage
+				|| origin instanceof io.github.agentic.ai.api.chat.ChatResponse
+				|| origin instanceof io.github.agentic.ai.api.chat.ContentPart
+				|| origin instanceof io.github.agentic.ai.api.chat.ToolCall
+				|| origin instanceof io.github.agentic.ai.api.chat.Usage || origin instanceof String) {
+			gen.writeObjectField("originData", JacksonStateSerializer.normalizeValue(origin));
+		}
+
+	}
+
 }
-

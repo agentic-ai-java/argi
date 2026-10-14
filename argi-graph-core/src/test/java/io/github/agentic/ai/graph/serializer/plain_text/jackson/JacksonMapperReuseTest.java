@@ -15,6 +15,8 @@
  */
 package io.github.agentic.ai.graph.serializer.plain_text.jackson;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,9 +36,6 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import io.github.agentic.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -49,11 +48,11 @@ class JacksonMapperReuseTest {
 	@Test
 	void longHistoryReusesMapperAcrossMessagesAndCalls() throws Exception {
 		CountingMapper mapper = new CountingMapper();
-		var serializer = new SpringAIJacksonStateSerializer(OverAllState::new, mapper);
-		List<Message> messages = new ArrayList<>();
+		var serializer = new ArgiJacksonStateSerializer(OverAllState::new, mapper);
+		List<ChatMessage> messages = new ArrayList<>();
 		for (int i = 0; i < 25; i++) {
-			messages.add(new UserMessage("question-" + i));
-			messages.add(new AssistantMessage("answer-" + i));
+			messages.add(ChatMessage.user("question-" + i));
+			messages.add(ChatMessage.assistant("answer-" + i));
 		}
 		byte[] bytes = serializer.dataToBytes(Map.of("messages", messages));
 		for (int i = 0; i < 3; i++) {
@@ -61,13 +60,13 @@ class JacksonMapperReuseTest {
 			assertEquals(messages, restored);
 			assertNotSame(messages.get(0), restored.get(0));
 		}
-		assertEquals(1, mapper.copies.get());
+		assertEquals(0, mapper.copies.get(), "Neutral chat records need no polymorphic mapper copy");
 	}
 
 	@Test
 	void typedListsKeepTheirElementTypesWithoutCopyingAgain() throws Exception {
 		CountingMapper mapper = new CountingMapper();
-		var serializer = new SpringAIJacksonStateSerializer(OverAllState::new, mapper);
+		var serializer = new ArgiJacksonStateSerializer(OverAllState::new, mapper);
 		Envelope input = new Envelope();
 		input.values = List.of(new Value("first"), new Value("second"));
 		Envelope restored = (Envelope) serializer.cloneObject(Map.of("envelope", input)).data().get("envelope");
@@ -80,7 +79,7 @@ class JacksonMapperReuseTest {
 	@Test
 	void incompatibleArrayElementsRetainTheGenericArrayFallback() throws Exception {
 		CountingMapper mapper = new CountingMapper();
-		var serializer = new SpringAIJacksonStateSerializer(OverAllState::new, mapper);
+		var serializer = new ArgiJacksonStateSerializer(OverAllState::new, mapper);
 		String json = "{\"array\":[\"" + Value[].class.getName() + "\",[1]]}";
 		Object restored = serializer.objectMapper().readValue(json, Map.class).get("array");
 		assertEquals(Object[].class, restored.getClass());
@@ -90,7 +89,7 @@ class JacksonMapperReuseTest {
 
 	@Test
 	void mapperCacheRefreshesAfterConfigurationChanges() {
-		var serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		var serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		ObjectMapper source = serializer.objectMapper();
 		TypeMapper types = serializer.typeMapper();
 		ObjectMapper first = types.mapperWithoutDefaultTyping(source);
@@ -111,8 +110,8 @@ class JacksonMapperReuseTest {
 
 	@Test
 	void newModulesAreReflectedWithoutLeakingAcrossSerializers() throws Exception {
-		var first = new SpringAIJacksonStateSerializer(OverAllState::new);
-		var second = new SpringAIJacksonStateSerializer(OverAllState::new);
+		var first = new ArgiJacksonStateSerializer(OverAllState::new);
+		var second = new ArgiJacksonStateSerializer(OverAllState::new);
 		ObjectMapper initial = first.typeMapper().mapperWithoutDefaultTyping(first.objectMapper());
 		first.objectMapper().registerModule(valueModule("first"));
 		second.objectMapper().registerModule(valueModule("second"));
@@ -125,8 +124,8 @@ class JacksonMapperReuseTest {
 	@Test
 	void concurrentFirstUsePublishesOneMapper() throws Exception {
 		CountingMapper mapper = new CountingMapper();
-		var serializer = new SpringAIJacksonStateSerializer(OverAllState::new, mapper);
-		byte[] input = serializer.dataToBytes(Map.of("message", new UserMessage("concurrent")));
+		var serializer = new ArgiJacksonStateSerializer(OverAllState::new, mapper);
+		byte[] input = serializer.dataToBytes(Map.of("value", new Value("concurrent")));
 		var executor = Executors.newFixedThreadPool(8);
 		CountDownLatch ready = new CountDownLatch(8);
 		CountDownLatch start = new CountDownLatch(1);
@@ -135,7 +134,7 @@ class JacksonMapperReuseTest {
 			tasks.add(() -> {
 				ready.countDown();
 				assertTrue(start.await(10, TimeUnit.SECONDS));
-				return serializer.dataFromBytes(input).get("message");
+				return serializer.dataFromBytes(input).get("value");
 			});
 		}
 		try {
@@ -143,7 +142,7 @@ class JacksonMapperReuseTest {
 			assertTrue(ready.await(10, TimeUnit.SECONDS));
 			start.countDown();
 			for (var future : futures) {
-				assertEquals("concurrent", assertInstanceOf(UserMessage.class, future.get(10, TimeUnit.SECONDS)).getText());
+				assertEquals("concurrent", assertInstanceOf(Value.class, future.get(10, TimeUnit.SECONDS)).text);
 			}
 			assertEquals(1, mapper.copies.get());
 		}
@@ -166,10 +165,13 @@ class JacksonMapperReuseTest {
 	}
 
 	static class Envelope {
+
 		public List<Value> values;
+
 	}
 
 	static class Value {
+
 		public String text;
 
 		public Value() {
@@ -178,9 +180,11 @@ class JacksonMapperReuseTest {
 		Value(String text) {
 			this.text = text;
 		}
+
 	}
 
 	static class CountingMapper extends ObjectMapper {
+
 		private final AtomicInteger copies;
 
 		CountingMapper() {
@@ -197,6 +201,7 @@ class JacksonMapperReuseTest {
 			copies.incrementAndGet();
 			return new CountingMapper(this);
 		}
+
 	}
 
 }

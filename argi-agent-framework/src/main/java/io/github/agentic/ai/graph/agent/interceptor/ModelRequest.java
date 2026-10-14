@@ -15,10 +15,11 @@
  */
 package io.github.agentic.ai.graph.agent.interceptor;
 
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.GenerationOptions;
+import io.github.agentic.ai.api.tool.ToolRegistry;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -26,32 +27,54 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Request object for model calls.
- * Contains all information needed to make a model invocation.
+ * Request object for model calls. Contains all information needed to make a model
+ * invocation.
  */
 public class ModelRequest {
-	private final SystemMessage systemMessage;
+
+	private final ChatMessage systemMessage;
+
 	private final Map<String, Object> context;
-	private final List<Message> messages;
-	private final ToolCallingChatOptions options;
-	// tools working for current request, leave it to empty if all default in options should be used.
+
+	private final Map<String, Object> attributes;
+
+	private final List<ChatMessage> messages;
+
+	private final GenerationOptions options;
+
+	private final ChatClient chatClient;
+
+	private final ToolRegistry toolRegistry;
+
+	// An explicit empty selection disables tools; an absent selection uses every binding.
 	private final List<String> tools;
-	// dynamic tool callbacks for current request.
-	private final List<ToolCallback> dynamicToolCallbacks;
+
+	private final boolean toolSelectionSpecified;
+
+	private final ToolRegistry dynamicToolRegistry;
 
 	// tool descriptions for tool selection, mapping tool name to description.
 	private final Map<String, String> toolDescriptions;
 
-	public ModelRequest(SystemMessage systemMessage, List<Message> messages, ToolCallingChatOptions options,
-			List<String> tools, List<ToolCallback> dynamicToolCallbacks, Map<String, String> toolDescriptions,
-			Map<String, Object> context) {
+	public ModelRequest(ChatMessage systemMessage, List<ChatMessage> messages, GenerationOptions options,
+			ChatClient chatClient, ToolRegistry toolRegistry, List<String> tools, boolean toolSelectionSpecified,
+			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
+			Map<String, Object> attributes) {
+		if (systemMessage != null && systemMessage.role() != ChatRole.SYSTEM) {
+			throw new IllegalArgumentException("systemMessage must have the SYSTEM role");
+		}
 		this.systemMessage = systemMessage;
-		this.messages = messages;
+		this.messages = messages == null ? new ArrayList<>() : new ArrayList<>(List.copyOf(messages));
 		this.options = options;
-		this.tools = tools;
-		this.dynamicToolCallbacks = dynamicToolCallbacks;
-		this.toolDescriptions = toolDescriptions;
-		this.context = context;
+		this.chatClient = chatClient;
+		this.toolRegistry = java.util.Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
+		this.tools = List.copyOf(tools);
+		this.toolSelectionSpecified = toolSelectionSpecified;
+		this.dynamicToolRegistry = java.util.Objects.requireNonNull(dynamicToolRegistry,
+				"dynamicToolRegistry must not be null");
+		this.toolDescriptions = java.util.Collections.unmodifiableMap(new HashMap<>(toolDescriptions));
+		this.context = new HashMap<>(context);
+		this.attributes = Map.copyOf(attributes);
 	}
 
 	public static Builder builder() {
@@ -59,34 +82,64 @@ public class ModelRequest {
 	}
 
 	public static Builder builder(ModelRequest request) {
-		return new Builder()
-				.systemMessage(request.systemMessage)
-				.messages(request.messages)
-				.options(request.options)
-				.tools(request.tools)
-				.dynamicToolCallbacks(request.dynamicToolCallbacks)
-				.toolDescriptions(request.toolDescriptions)
-				.context(request.context);
+		Builder copy = new Builder().systemMessage(request.systemMessage)
+			.messages(request.messages)
+			.options(request.options)
+			.chatClient(request.chatClient)
+			.toolRegistry(request.toolRegistry)
+			.tools(request.tools)
+			.dynamicToolRegistry(request.dynamicToolRegistry)
+			.toolDescriptions(request.toolDescriptions)
+			.context(request.context)
+			.attributes(request.attributes);
+		copy.toolSelectionSpecified = request.toolSelectionSpecified;
+		return copy;
 	}
 
-	public List<Message> getMessages() {
+	public List<ChatMessage> getMessages() {
 		return messages;
 	}
 
-	public SystemMessage getSystemMessage() {
+	public ChatMessage getSystemMessage() {
 		return systemMessage;
 	}
 
-	public ToolCallingChatOptions getOptions() {
+	public GenerationOptions getOptions() {
 		return options;
 	}
 
-	public List<String> getTools() {
-		return tools;
+	/** Optional client override, used by interceptors such as model fallback. */
+	public ChatClient getChatClient() {
+		return chatClient;
 	}
 
-	public List<ToolCallback> getDynamicToolCallbacks() {
-		return dynamicToolCallbacks;
+	/** Neutral bindings available for declaration and filtering on this invocation. */
+	public ToolRegistry getToolRegistry() {
+		return toolRegistry;
+	}
+
+	/**
+	 * Explicit selection, or all currently disclosed bindings when no selection was
+	 * supplied.
+	 */
+	public List<String> getTools() {
+		if (toolSelectionSpecified) {
+			return tools;
+		}
+		return java.util.stream.Stream
+			.concat(toolRegistry.definitions().stream(), dynamicToolRegistry.definitions().stream())
+			.map(io.github.agentic.ai.api.chat.ToolDefinition::name)
+			.distinct()
+			.toList();
+	}
+
+	public boolean hasToolSelection() {
+		return toolSelectionSpecified;
+	}
+
+	/** Invocation-local tools disclosed by skills or other interceptors. */
+	public ToolRegistry getDynamicToolRegistry() {
+		return dynamicToolRegistry;
 	}
 
 	public Map<String, String> getToolDescriptions() {
@@ -97,43 +150,74 @@ public class ModelRequest {
 		return context;
 	}
 
+	/**
+	 * Explicit native invocation attributes, separate from agent state and interceptor
+	 * context.
+	 */
+	public Map<String, Object> getAttributes() {
+		return attributes;
+	}
+
 	public static class Builder {
-		private SystemMessage systemMessage;
-		private List<Message> messages;
-		private ToolCallingChatOptions options;
+
+		private ChatMessage systemMessage;
+
+		private List<ChatMessage> messages = List.of();
+
+		private GenerationOptions options = GenerationOptions.defaults();
+
+		private ChatClient chatClient;
+
+		private ToolRegistry toolRegistry = new ToolRegistry(List.of());
+
 		private List<String> tools = List.of();
-		private List<ToolCallback> dynamicToolCallbacks = List.of();
+
+		private boolean toolSelectionSpecified;
+
+		private ToolRegistry dynamicToolRegistry = new ToolRegistry(List.of());
 
 		private Map<String, String> toolDescriptions = new HashMap<>();
 
 		private Map<String, Object> context = new HashMap<>();
 
-		public Builder systemMessage(SystemMessage systemMessage) {
+		private Map<String, Object> attributes = Map.of();
+
+		public Builder systemMessage(ChatMessage systemMessage) {
 			this.systemMessage = systemMessage;
 			return this;
 		}
 
-		public Builder messages(List<Message> messages) {
+		public Builder messages(List<ChatMessage> messages) {
 			this.messages = messages;
 			return this;
 		}
 
-		public Builder options(ToolCallingChatOptions options) {
+		public Builder options(GenerationOptions options) {
 			this.options = options;
+			return this;
+		}
+
+		public Builder chatClient(ChatClient chatClient) {
+			this.chatClient = chatClient;
+			return this;
+		}
+
+		public Builder toolRegistry(ToolRegistry toolRegistry) {
+			this.toolRegistry = java.util.Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
 			return this;
 		}
 
 		public Builder tools(List<String> tools) {
 			if (tools != null) {
 				this.tools = new ArrayList<>(tools);
+				this.toolSelectionSpecified = true;
 			}
 			return this;
 		}
 
-		public Builder dynamicToolCallbacks(List<ToolCallback> dynamicToolCallbacks) {
-			if (dynamicToolCallbacks != null) {
-				this.dynamicToolCallbacks = new ArrayList<>(dynamicToolCallbacks);
-			}
+		public Builder dynamicToolRegistry(ToolRegistry dynamicToolRegistry) {
+			this.dynamicToolRegistry = java.util.Objects.requireNonNull(dynamicToolRegistry,
+					"dynamicToolRegistry must not be null");
 			return this;
 		}
 
@@ -151,10 +235,20 @@ public class ModelRequest {
 			return this;
 		}
 
-		public ModelRequest build() {
-			return new ModelRequest(systemMessage, messages, options, tools, dynamicToolCallbacks, toolDescriptions,
-					context);
+		/**
+		 * Sets opt-in invocation attributes. Adapter support must be checked by the
+		 * caller.
+		 */
+		public Builder attributes(Map<String, Object> attributes) {
+			this.attributes = Map.copyOf(attributes);
+			return this;
 		}
-	}
-}
 
+		public ModelRequest build() {
+			return new ModelRequest(systemMessage, messages, options, chatClient, toolRegistry, tools,
+					toolSelectionSpecified, dynamicToolRegistry, toolDescriptions, context, attributes);
+		}
+
+	}
+
+}

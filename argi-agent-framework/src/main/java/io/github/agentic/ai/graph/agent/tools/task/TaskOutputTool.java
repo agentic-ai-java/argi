@@ -18,9 +18,9 @@ package io.github.agentic.ai.graph.agent.tools.task;
 import com.fasterxml.jackson.annotation.JsonClassDescription;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 import org.springframework.util.Assert;
 
 import java.util.function.BiFunction;
@@ -28,8 +28,8 @@ import java.util.function.BiFunction;
 /**
  * Tool for retrieving output from running or completed background tasks.
  * <p>
- * Use this tool when TaskTool was invoked with run_in_background=true.
- * Provides the task_id to check status and retrieve results.
+ * Use this tool when TaskTool was invoked with run_in_background=true. Provides the
+ * task_id to check status and retrieve results.
  */
 public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolContext, String> {
 
@@ -101,17 +101,14 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 	 */
 	@JsonClassDescription("Request to get output from a background task")
 	public record Request(
-			@JsonProperty(required = true, value = "task_id")
-			@JsonPropertyDescription("The task ID to get output from")
-			String taskId,
+			@JsonProperty(required = true,
+					value = "task_id") @JsonPropertyDescription("The task ID to get output from") String taskId,
 
-			@JsonProperty(value = "block")
-			@JsonPropertyDescription("Whether to wait for completion (default: true)")
-			Boolean block,
+			@JsonProperty(
+					value = "block") @JsonPropertyDescription("Whether to wait for completion (default: true)") Boolean block,
 
-			@JsonProperty(value = "timeout")
-			@JsonPropertyDescription("Max wait time in milliseconds (default: 30000)")
-			Long timeout) {
+			@JsonProperty(
+					value = "timeout") @JsonPropertyDescription("Max wait time in milliseconds (default: 30000)") Long timeout) {
 	}
 
 	public static Builder builder() {
@@ -142,13 +139,14 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 			return this;
 		}
 
-		public ToolCallback build() {
+		public Tool build() {
 			Assert.notNull(this.taskRepository, "taskRepository must be provided");
-			return FunctionToolCallback.builder(this.name, new TaskOutputTool(this.taskRepository))
-					.description(this.description)
-					.inputType(Request.class)
-					.build();
+			return TypedTool.builder(this.name, new TaskOutputTool(this.taskRepository))
+				.description(this.description)
+				.inputType(Request.class)
+				.build();
 		}
+
 	}
 
 }

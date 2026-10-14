@@ -98,7 +98,8 @@ class FlowAgentArchitectureTest {
 			.name("intelligentRouter")
 			.description("Routes tasks intelligently")
 			.subAgents(List.of(agent1, agent2))
-			.model(chatModel) // LLM-specific configuration
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel)) // LLM-specific
+																										// configuration
 			.build();
 
 		// Verify agent properties
@@ -146,7 +147,7 @@ class FlowAgentArchitectureTest {
 			LlmRoutingAgent.builder()
 				.name("router")
 				.subAgents(List.of(createMockReactAgent("agent", "output")))
-				.build(); // Missing ChatModel
+				.build(); // Missing ChatClient
 		});
 
 		assertThrows(IllegalArgumentException.class, () -> {
@@ -238,8 +239,7 @@ class FlowAgentArchitectureTest {
 			.name(name)
 			.description("Mock agent: " + name)
 			.outputKey(outputKey)
-			.chatClient(chatClient)
-			.resolver(resolver)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatClient))
 			.build();
 	}
 

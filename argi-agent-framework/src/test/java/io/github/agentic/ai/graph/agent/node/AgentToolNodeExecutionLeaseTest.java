@@ -21,18 +21,18 @@ import io.github.agentic.ai.graph.agent.interceptor.ToolCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallResponse;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
-import io.github.agentic.ai.graph.agent.tool.CancellableAsyncToolCallback;
-import io.github.agentic.ai.graph.agent.tool.CancellationToken;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ToolCall;
+import io.github.agentic.ai.api.chat.ToolDefinition;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.ToolRegistry;
+import io.github.agentic.ai.api.tool.ToolResult;
 import io.github.agentic.ai.graph.checkpoint.lease.ExecutionGuard;
 import io.github.agentic.ai.graph.checkpoint.lease.LeaseLostException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.ai.tool.execution.DefaultToolExecutionExceptionProcessor;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -41,14 +41,13 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -70,16 +69,18 @@ class AgentToolNodeExecutionLeaseTest {
 		ManualGuard guard = new ManualGuard();
 		AtomicInteger firstToolCalls = new AtomicInteger();
 		AtomicInteger secondToolCalls = new AtomicInteger();
-		ToolCallback first = tool("first", ignored -> {
+		Tool first = tool("first", ignored -> {
 			firstToolCalls.incrementAndGet();
 			guard.lose("first tool lost ownership");
 			return "late-first";
 		});
-		ToolCallback second = tool("second", ignored -> {
+		Tool second = tool("second", ignored -> {
 			secondToolCalls.incrementAndGet();
 			return "second";
 		});
-		AgentToolNode node = builder().toolCallbacks(List.of(first, second)).parallelToolExecution(false).build();
+		AgentToolNode node = builder().toolRegistry(new ToolRegistry(List.of(first, second)))
+			.parallelToolExecution(false)
+			.build();
 
 		LeaseLostException loss = assertThrows(LeaseLostException.class,
 				() -> node.apply(state(toolCall("call-1", "first"), toolCall("call-2", "second")), config(guard)));
@@ -94,17 +95,17 @@ class AgentToolNodeExecutionLeaseTest {
 		ManualGuard guard = new ManualGuard();
 		AtomicInteger firstToolCalls = new AtomicInteger();
 		AtomicInteger secondToolCalls = new AtomicInteger();
-		ToolCallback first = tool("first", ignored -> {
+		Tool first = tool("first", ignored -> {
 			firstToolCalls.incrementAndGet();
 			guard.lose("parallel first tool lost ownership");
 			return "late-first";
 		});
-		ToolCallback second = tool("second", ignored -> {
+		Tool second = tool("second", ignored -> {
 			secondToolCalls.incrementAndGet();
 			return "second";
 		});
 		ExecutorService toolExecutor = remember(Executors.newFixedThreadPool(2));
-		AgentToolNode node = builder().toolCallbacks(List.of(first, second))
+		AgentToolNode node = builder().toolRegistry(new ToolRegistry(List.of(first, second)))
 			.parallelToolExecution(true)
 			.maxParallelTools(1)
 			.build();
@@ -124,7 +125,7 @@ class AgentToolNodeExecutionLeaseTest {
 	@Test
 	void interceptorCannotMaskLeaseLossAfterLeafDispatch() {
 		ManualGuard guard = new ManualGuard();
-		ToolCallback losingTool = tool("losing", ignored -> {
+		Tool losingTool = tool("losing", ignored -> {
 			guard.lose("interceptor mask attempt");
 			return "late";
 		});
@@ -144,7 +145,7 @@ class AgentToolNodeExecutionLeaseTest {
 				}
 			}
 		};
-		AgentToolNode node = builder().toolCallbacks(List.of(losingTool)).build();
+		AgentToolNode node = builder().toolRegistry(new ToolRegistry(List.of(losingTool))).build();
 		node.setToolInterceptors(List.of(maskingInterceptor));
 
 		LeaseLostException loss = assertThrows(LeaseLostException.class,
@@ -154,7 +155,7 @@ class AgentToolNodeExecutionLeaseTest {
 	}
 
 	@Test
-	void queuedWrappedSyncToolDoesNotStartAfterLeaseLoss() throws Exception {
+	void queuedParallelToolDoesNotStartAfterLeaseLoss() throws Exception {
 		ManualGuard guard = new ManualGuard();
 		CountDownLatch blockerStarted = new CountDownLatch(1);
 		CountDownLatch releaseBlocker = new CountDownLatch(1);
@@ -170,11 +171,13 @@ class AgentToolNodeExecutionLeaseTest {
 		});
 		assertTrue(blockerStarted.await(5, TimeUnit.SECONDS), "executor should be occupied before tool queues");
 		AtomicInteger delegateCalls = new AtomicInteger();
-		ToolCallback queued = tool("queued", ignored -> {
+		Tool queued = tool("queued", ignored -> {
 			delegateCalls.incrementAndGet();
 			return "late";
 		});
-		AgentToolNode node = builder().toolCallbacks(List.of(queued)).wrapSyncToolsAsAsync(true).build();
+		AgentToolNode node = builder().toolRegistry(new ToolRegistry(List.of(queued)))
+			.parallelToolExecution(true)
+			.build();
 		ExecutorService invocationExecutor = remember(Executors.newSingleThreadExecutor());
 		CompletableFuture<Map<String, Object>> result = CompletableFuture.supplyAsync(() -> {
 			try {
@@ -189,12 +192,12 @@ class AgentToolNodeExecutionLeaseTest {
 			}
 		}, invocationExecutor);
 
-		guard.lose("queued wrapped tool lost ownership");
+		guard.lose("queued parallel tool lost ownership");
 		releaseBlocker.countDown();
 
 		ExecutionException error = assertThrows(ExecutionException.class, () -> result.get(5, TimeUnit.SECONDS));
 		LeaseLostException loss = assertRootLeaseLoss(error);
-		assertEquals("queued wrapped tool lost ownership", loss.getReason());
+		assertEquals("queued parallel tool lost ownership", loss.getReason());
 		assertEquals(0, delegateCalls.get(), "queued delegate must not start after guard loss");
 	}
 
@@ -202,35 +205,20 @@ class AgentToolNodeExecutionLeaseTest {
 	void activeCancellableToolGetsCancellationOnLeaseLossAndLateOutputIsNotMerged() throws Exception {
 		ManualGuard guard = new ManualGuard();
 		CountDownLatch toolStarted = new CountDownLatch(1);
-		AtomicReference<CancellationToken> tokenRef = new AtomicReference<>();
-		AtomicBoolean tokenCancelled = new AtomicBoolean();
-		CompletableFuture<String> uncooperativeOriginal = new CompletableFuture<>();
-		CancellableAsyncToolCallback tool = new CancellableAsyncToolCallback() {
+		CompletableFuture<ToolResult> original = new CompletableFuture<>();
+		Tool tool = new Tool() {
 			@Override
-			public ToolDefinition getToolDefinition() {
-				return ToolDefinition.builder().name("slow").description("slow").inputSchema("{}").build();
+			public ToolDefinition definition() {
+				return new ToolDefinition("slow", "slow", "{}");
 			}
 
 			@Override
-			public CompletableFuture<String> callAsync(String arguments, ToolContext context,
-					CancellationToken cancellationToken) {
-				tokenRef.set(cancellationToken);
-				cancellationToken.onCancel(() -> tokenCancelled.set(true));
+			public CompletionStage<ToolResult> execute(ToolCall call, ToolContext context) {
 				toolStarted.countDown();
-				return uncooperativeOriginal;
-			}
-
-			@Override
-			public Duration getTimeout() {
-				return Duration.ofSeconds(30);
-			}
-
-			@Override
-			public String call(String toolInput) {
-				return "sync-unused";
+				return original;
 			}
 		};
-		AgentToolNode node = builder().toolCallbacks(List.of(tool)).build();
+		AgentToolNode node = builder().toolRegistry(new ToolRegistry(List.of(tool))).build();
 		ExecutorService invocationExecutor = remember(Executors.newSingleThreadExecutor());
 
 		CompletableFuture<Map<String, Object>> result = CompletableFuture.supplyAsync(() -> {
@@ -247,48 +235,39 @@ class AgentToolNodeExecutionLeaseTest {
 		ExecutionException error = assertThrows(ExecutionException.class, () -> result.get(5, TimeUnit.SECONDS));
 		LeaseLostException loss = assertRootLeaseLoss(error);
 		assertEquals("active async tool lost ownership", loss.getReason());
-		assertTrue(tokenCancelled.get(), "lease loss must request cooperative cancellation");
-		assertTrue(tokenRef.get().isCancelled(), "cancellable tool token must be cancelled");
-		assertTrue(uncooperativeOriginal.isCancelled(), "lease loss must request original future cancellation");
+		assertTrue(original.isCancelled(), "lease loss must request original stage cancellation");
+		assertTrue(!original.complete(ToolResult.text("late")), "late output must not be published");
 	}
 
 	private static AgentToolNode.Builder builder() {
 		return AgentToolNode.builder()
 			.agentName("lease-test-agent")
 			.toolExecutionTimeout(Duration.ofSeconds(5))
-			.toolExecutionExceptionProcessor(DefaultToolExecutionExceptionProcessor.builder().alwaysThrow(false).build());
+			.throwOnToolError(false);
 	}
 
 	private static RunnableConfig config(ExecutionGuard guard) {
 		return RunnableConfig.builder().executionGuard(guard).build();
 	}
 
-	private static OverAllState state(AssistantMessage.ToolCall... toolCalls) {
-		return new OverAllState(Map.of("messages", List.of(AssistantMessage.builder()
-			.content("")
-			.toolCalls(List.of(toolCalls))
-			.build())));
+	private static OverAllState state(ToolCall... toolCalls) {
+		return new OverAllState(Map.of("messages", List.of(ChatMessage.assistant("", List.of(toolCalls)))));
 	}
 
-	private static AssistantMessage.ToolCall toolCall(String id, String name) {
-		return new AssistantMessage.ToolCall(id, "function", name, "{}");
+	private static ToolCall toolCall(String id, String name) {
+		return new ToolCall(id, name, "{}");
 	}
 
-	private static ToolCallback tool(String name, Function<String, String> call) {
-		return new ToolCallback() {
+	private static Tool tool(String name, Function<String, String> call) {
+		return new Tool() {
 			@Override
-			public ToolDefinition getToolDefinition() {
-				return ToolDefinition.builder().name(name).description(name).inputSchema("{}").build();
+			public ToolDefinition definition() {
+				return new ToolDefinition(name, name, "{}");
 			}
 
 			@Override
-			public String call(String toolInput, ToolContext toolContext) {
-				return call.apply(toolInput);
-			}
-
-			@Override
-			public String call(String toolInput) {
-				return call(toolInput, new ToolContext(Map.of()));
+			public CompletionStage<ToolResult> execute(ToolCall toolCall, ToolContext context) {
+				return CompletableFuture.completedFuture(ToolResult.text(call.apply(toolCall.arguments())));
 			}
 		};
 	}

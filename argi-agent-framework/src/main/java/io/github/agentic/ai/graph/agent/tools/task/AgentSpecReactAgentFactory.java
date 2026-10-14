@@ -22,24 +22,22 @@ import java.util.stream.Collectors;
 import io.github.agentic.ai.graph.agent.ReactAgent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolRegistry;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
-import io.micrometer.observation.ObservationRegistry;
-
 /**
  * Factory that converts {@link AgentSpec} into {@link ReactAgent} instances.
  * <p>
- * Use this when loading agent specs from files - the factory creates ReactAgents
- * with the spec's system prompt and optionally filtered tools.
+ * Use this when loading agent specs from files - the factory creates ReactAgents with the
+ * spec's system prompt and optionally filtered tools.
  *
  * <pre>{@code
  * AgentSpecReactAgentFactory factory = AgentSpecReactAgentFactory.builder()
- *     .chatModel(chatModel)
+ *     .chatClient(chatClient)
  *     .defaultTools(grepTool, globTool, readTool)
  *     .build();
  *
@@ -55,21 +53,13 @@ public final class AgentSpecReactAgentFactory {
 
 	private static final Logger logger = LoggerFactory.getLogger(AgentSpecReactAgentFactory.class);
 
-	private final ChatModel chatModel;
-
 	private final ChatClient chatClient;
 
-	private final List<ToolCallback> defaultTools;
-
-	private final ObservationRegistry observationRegistry;
+	private final List<Tool> defaultTools;
 
 	private AgentSpecReactAgentFactory(Builder builder) {
-		this.chatModel = builder.chatModel;
 		this.chatClient = builder.chatClient;
 		this.defaultTools = builder.defaultTools != null ? List.copyOf(builder.defaultTools) : List.of();
-		this.observationRegistry = builder.observationRegistry != null
-				? builder.observationRegistry
-				: ObservationRegistry.NOOP;
 	}
 
 	/**
@@ -78,20 +68,14 @@ public final class AgentSpecReactAgentFactory {
 	public ReactAgent create(AgentSpec spec) {
 		Assert.notNull(spec, "spec must not be null");
 
-		ChatClient client = this.chatClient;
-		if (client == null && this.chatModel != null) {
-			client = ChatClient.builder(this.chatModel).build();
-		}
-		Assert.notNull(client, "Either chatModel or chatClient must be provided");
-
-		List<ToolCallback> tools = resolveTools(spec);
+		List<Tool> tools = resolveTools(spec);
 
 		var agentBuilder = ReactAgent.builder()
-				.name(spec.name())
-				.description(spec.description())
-				.systemPrompt(StringUtils.hasText(spec.systemPrompt()) ? spec.systemPrompt() : "")
-				.chatClient(client)
-				.tools(tools);
+			.name(spec.name())
+			.description(spec.description())
+			.systemPrompt(StringUtils.hasText(spec.systemPrompt()) ? spec.systemPrompt() : "")
+			.chatClient(this.chatClient)
+			.toolRegistry(new ToolRegistry(tools));
 
 		ReactAgent agent = agentBuilder.build();
 
@@ -102,7 +86,7 @@ public final class AgentSpecReactAgentFactory {
 		return agent;
 	}
 
-	private List<ToolCallback> resolveTools(AgentSpec spec) {
+	private List<Tool> resolveTools(AgentSpec spec) {
 		if (CollectionUtils.isEmpty(this.defaultTools)) {
 			return List.of();
 		}
@@ -110,8 +94,8 @@ public final class AgentSpecReactAgentFactory {
 			return this.defaultTools;
 		}
 		return this.defaultTools.stream()
-				.filter(tc -> spec.toolNames().contains(tc.getToolDefinition().name()))
-				.collect(Collectors.toList());
+			.filter(tool -> spec.toolNames().contains(tool.definition().name()))
+			.collect(Collectors.toList());
 	}
 
 	public static Builder builder() {
@@ -120,47 +104,34 @@ public final class AgentSpecReactAgentFactory {
 
 	public static class Builder {
 
-		private ChatModel chatModel;
-
 		private ChatClient chatClient;
 
-		private List<ToolCallback> defaultTools = new ArrayList<>();
-
-		private ObservationRegistry observationRegistry;
-
-		public Builder chatModel(ChatModel chatModel) {
-			this.chatModel = chatModel;
-			return this;
-		}
+		private List<Tool> defaultTools = new ArrayList<>();
 
 		public Builder chatClient(ChatClient chatClient) {
 			this.chatClient = chatClient;
 			return this;
 		}
 
-		public Builder defaultTools(List<ToolCallback> tools) {
+		public Builder defaultTools(List<Tool> tools) {
 			if (tools != null) {
 				this.defaultTools = new ArrayList<>(tools);
 			}
 			return this;
 		}
 
-		public Builder defaultTools(ToolCallback... tools) {
+		public Builder defaultTools(Tool... tools) {
 			if (tools != null) {
 				this.defaultTools = new ArrayList<>(List.of(tools));
 			}
 			return this;
 		}
 
-		public Builder observationRegistry(ObservationRegistry observationRegistry) {
-			this.observationRegistry = observationRegistry;
-			return this;
-		}
-
 		public AgentSpecReactAgentFactory build() {
-			Assert.isTrue(this.chatModel != null || this.chatClient != null,
-					"Either chatModel or chatClient must be provided");
+			Assert.notNull(this.chatClient, "chatClient must be provided");
 			return new AgentSpecReactAgentFactory(this);
 		}
+
 	}
+
 }

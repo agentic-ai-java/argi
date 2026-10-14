@@ -21,9 +21,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -35,33 +35,29 @@ import static io.github.agentic.ai.graph.agent.tools.ToolContextConstants.AGENT_
 /**
  * A tool for executing shell commands.
  *
- * This tool allows for the execution of shell commands within a managed session.
- * The session's lifecycle and configuration are handled by the {@link ShellSessionManager}.
+ * This tool allows for the execution of shell commands within a managed session. The
+ * session's lifecycle and configuration are handled by the {@link ShellSessionManager}.
  *
- * Example of creating a callback for this tool:
- * <pre>
- * ToolCallback shellToolCallback = ShellTool.createShellToolCallback("/tmp/agent-workspace");
+ * Example of creating a callback for this tool: <pre>
+ * Tool shellTool = ShellTool.builder("/tmp/agent-workspace").build();
  * </pre>
  */
 public class ShellTool implements BiFunction<ShellTool.Request, ToolContext, String> {
 
 	private static final Logger log = LoggerFactory.getLogger(ShellTool.class);
 
-	public static final String DEFAULT_TOOL_DESCRIPTION =
-			"Execute a shell command inside a persistent session. Before running a command, "
-					+ "confirm the working directory is correct (e.g., inspect with `ls` or `pwd`) and ensure "
-					+ "any parent directories exist. Prefer absolute paths and quote paths containing spaces, "
-					+ "such as `cd \"/path/with spaces\"`. Chain multiple commands with `&&` or `;` instead of "
-					+ "embedding newlines. Avoid unnecessary `cd` usage unless explicitly required so the "
-					+ "session remains stable. Outputs may be truncated when they become very large, and long "
-					+ "running commands will be terminated once their configured timeout elapses.";
-
+	public static final String DEFAULT_TOOL_DESCRIPTION = "Execute a shell command inside a persistent session. Before running a command, "
+			+ "confirm the working directory is correct (e.g., inspect with `ls` or `pwd`) and ensure "
+			+ "any parent directories exist. Prefer absolute paths and quote paths containing spaces, "
+			+ "such as `cd \"/path/with spaces\"`. Chain multiple commands with `&&` or `;` instead of "
+			+ "embedding newlines. Avoid unnecessary `cd` usage unless explicitly required so the "
+			+ "session remains stable. Outputs may be truncated when they become very large, and long "
+			+ "running commands will be terminated once their configured timeout elapses.";
 
 	private final ShellSessionManager sessionManager;
 
 	/**
 	 * Constructs a new ShellTool.
-	 *
 	 * @param sessionManager The manager for the shell session. Must not be null.
 	 */
 	public ShellTool(ShellSessionManager sessionManager) {
@@ -74,23 +70,22 @@ public class ShellTool implements BiFunction<ShellTool.Request, ToolContext, Str
 	/**
 	 * Defines the parameters for a shell tool request.
 	 *
-	 * @param command The shell command to execute. Can be null if only restarting the session.
-	 * @param restart If true, the shell session will be restarted before executing any command.
+	 * @param command The shell command to execute. Can be null if only restarting the
+	 * session.
+	 * @param restart If true, the shell session will be restarted before executing any
+	 * command.
 	 */
 	public record Request(
-			@JsonProperty("command")
-			@JsonPropertyDescription("The command to execute in the shell.")
-			String command,
+			@JsonProperty("command") @JsonPropertyDescription("The command to execute in the shell.") String command,
 
-			@JsonProperty(value = "restart", defaultValue = "false")
-			@JsonPropertyDescription("Restart the shell session before executing the command.")
-			Boolean restart
-	) {}
+			@JsonProperty(value = "restart",
+					defaultValue = "false") @JsonPropertyDescription("Restart the shell session before executing the command.") Boolean restart) {
+	}
 
 	@Override
 	public String apply(Request request, ToolContext toolContext) {
 		try {
-			RunnableConfig config = (RunnableConfig) toolContext.getContext().get(AGENT_CONFIG_CONTEXT_KEY);
+			RunnableConfig config = (RunnableConfig) toolContext.attributes().get(AGENT_CONFIG_CONTEXT_KEY);
 			// Handle restart request
 			if (Boolean.TRUE.equals(request.restart())) {
 				log.info("Restarting shell session as requested.");
@@ -112,7 +107,8 @@ public class ShellTool implements BiFunction<ShellTool.Request, ToolContext, Str
 			// Format the output
 			return formatResult(result);
 
-		} catch (Exception e) {
+		}
+		catch (Exception e) {
 			log.error("Shell command execution failed unexpectedly.", e);
 			return "Error: " + e.getMessage();
 		}
@@ -221,7 +217,7 @@ public class ShellTool implements BiFunction<ShellTool.Request, ToolContext, Str
 			return this;
 		}
 
-		public ToolCallback build() {
+		public Tool build() {
 			ShellSessionManager.Builder sessionManagerBuilder = ShellSessionManager.builder()
 				.workspaceRoot(Path.of(workspaceRoot))
 				.commandTimeout(commandTimeout)
@@ -243,10 +239,7 @@ public class ShellTool implements BiFunction<ShellTool.Request, ToolContext, Str
 			ShellSessionManager sessionManager = sessionManagerBuilder.build();
 			ShellTool shellTool = new ShellTool(sessionManager);
 
-			return FunctionToolCallback.builder(name, shellTool)
-				.description(description)
-				.inputType(Request.class)
-				.build();
+			return TypedTool.builder(name, shellTool).description(description).inputType(Request.class).build();
 		}
 
 	}

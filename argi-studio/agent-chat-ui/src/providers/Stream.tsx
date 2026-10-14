@@ -19,7 +19,7 @@ import {
   getStudioExecutionAuthToken,
   setStudioExecutionAuthToken,
   ToolFeedbackDTO,
-} from "@/lib/spring-ai-api";
+} from "@/lib/argi-api";
 import { UIMessage, createUIMessage, fromMessageDTO } from "@/types/messages";
 
 interface StreamContextType {
@@ -180,7 +180,7 @@ export const StreamProvider: React.FC<StreamProviderProps> = ({ children }) => {
         const apiClient = createApiClient();
 
         // Start streaming - convert Message to UserMessage (with messageType for backend)
-        const userMessageForApi: import("@/lib/spring-ai-api").UserMessage = {
+        const userMessageForApi: import("@/lib/argi-api").UserMessage = {
           messageType: "user",
           content: content.trim(),
           metadata: {},

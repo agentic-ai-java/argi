@@ -17,8 +17,8 @@
 package io.github.agentic.ai.agent.studio.dto;
 
 import io.github.agentic.ai.agent.studio.dto.messages.MessageDTO;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.metadata.Usage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.Usage;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -26,8 +26,8 @@ import java.util.Map;
 
 /**
  * Response DTO for Graph SSE stream. Extends AgentRunResponse semantics with
- * {@code state} for workflow observation and debugging. Each event contains the
- * node name, optional message/chunk, and the current overall state after that node.
+ * {@code state} for workflow observation and debugging. Each event contains the node
+ * name, optional message/chunk, and the current overall state after that node.
  */
 public class GraphRunResponse {
 
@@ -56,11 +56,11 @@ public class GraphRunResponse {
 	public GraphRunResponse() {
 	}
 
-	public GraphRunResponse(String node, String agent, Message message, Usage tokenUsage, String chunk,
+	public GraphRunResponse(String node, String agent, ChatMessage message, Usage tokenUsage, String chunk,
 			Map<String, Object> state) {
 		this.node = node;
 		this.agent = agent;
-		this.message = message != null ? MessageDTO.MessageDTOFactory.fromMessage(message) : null;
+		this.message = MessageDTO.MessageDTOFactory.fromChatMessage(message);
 		this.tokenUsage = tokenUsage;
 		this.chunk = chunk;
 		this.state = state;
@@ -123,4 +123,5 @@ public class GraphRunResponse {
 	public void setState(Map<String, Object> state) {
 		this.state = state;
 	}
+
 }

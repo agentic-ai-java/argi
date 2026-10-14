@@ -18,7 +18,7 @@ package io.github.agentic.ai.graph.skills.registry.filesystem;
 import io.github.agentic.ai.graph.skills.SkillMetadata;
 import io.github.agentic.ai.graph.skills.registry.AbstractSkillRegistry;
 
-import org.springframework.ai.chat.prompt.SystemPromptTemplate;
+import io.github.agentic.ai.graph.utils.PromptTemplate;
 import org.springframework.core.io.Resource;
 
 import java.io.File;
@@ -37,15 +37,15 @@ import org.slf4j.LoggerFactory;
 /**
  * FileSystem-based implementation of SkillRegistry.
  *
- * This implementation loads skills from the filesystem:
- * - User-level: ~/argi/skills/ (global skills)
- * - Project-level: current working directory/skills/ (project-specific skills, higher priority)
+ * This implementation loads skills from the filesystem: - User-level: ~/argi/skills/
+ * (global skills) - Project-level: current working directory/skills/ (project-specific
+ * skills, higher priority)
  *
  * Skills are automatically loaded during initialization. The registry can be reloaded
  * manually using {@link #reload()}.
  *
- * <p><b>Example Usage:</b>
- * <pre>{@code
+ * <p>
+ * <b>Example Usage:</b> <pre>{@code
  * // Use all defaults (project directory: ./skills)
  * FileSystemSkillRegistry registry = FileSystemSkillRegistry.builder().build();
  *
@@ -64,75 +64,79 @@ import org.slf4j.LoggerFactory;
 public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 
 	/**
-	 * Default system prompt template for FileSystemSkillRegistry.
-	 * This template defines how skills are presented in the system prompt.
-	 * It supports the following variables:
-	 * - {skills_registry}: The registry type name
-	 * - {skills_list}: The formatted list of available skills
-	 * - {skills_load_instructions}: Instructions on how skills are loaded
+	 * Default system prompt template for FileSystemSkillRegistry. This template defines
+	 * how skills are presented in the system prompt. It supports the following variables:
+	 * - {skills_registry}: The registry type name - {skills_list}: The formatted list of
+	 * available skills - {skills_load_instructions}: Instructions on how skills are
+	 * loaded
 	 */
 	public static final String DEFAULT_SYSTEM_PROMPT_TEMPLATE = """
-			
+
 			## Skills System
-			
+
 			You have access to a skills library that provides specialized capabilities and domain knowledge. All skills are stored in a Skill Registry with a file system based storage.
-			
+
 			### Available Skills
-			
+
 			{skills_list}
-			
+
 			### How to Use Skills (Progressive Disclosure)
-			
+
 			Skills follow a **progressive disclosure** pattern - you know they exist (name + description above), but you only read the full instructions when needed:
-			
+
 			1. **Recognize when a skill applies**: Check if the user's task matches any skill's description
 			2. **Read the skill's full instructions**: The skill list above shows the exact skill id to use with `read_skill`
 			3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
 			4. **Access supporting files**: Skills may include Python scripts, configs, or reference docs - use absolute paths
-			
+
 			#### How to Read The Full Skill Instruction
-			
+
 			You are currently using the file system based Skill Registry. Please follow the skill loading guidelines below:
-			
+
 			{skills_load_instructions}
-			
+
 			**Important:**
-			
+
 			  - **For skill names**: Skill names are registry identifiers, not tool names. Do not call a skill name directly as a tool; call `read_skill` with the skill name or path to load the skill first.
 			  - **For SKILL.md files (skill instructions)**: Always use `read_skill` to read skill instructions. Do not attempt to access SKILL.md files through other methods.
 			  - **For other supporting files that skill uses (scripts, references, etc.)**: You may use other appropriate tools to read or access these files as needed, always use absolute paths from the skill list.
-			
+
 			#### When to Use Skills
-			
+
 			  - When the user's request matches a skill's domain (e.g., "research X" → web-research skill)
 			  - When you need specialized knowledge or structured workflows
 			  - When a skill provides proven patterns for complex tasks
-			
+
 			#### Skills are Self-Documenting
-			
+
 			  - Each SKILL.md tells you exactly what the skill does and how to use it
 			  - The skill list above shows the full path for each skill's SKILL.md file
-			
+
 			#### Executing Skill Scripts
-			
+
 			Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
-			
+
 			### Example Workflow
-			
+
 			User: "Can you research the latest developments in quantum computing?"
-			
+
 			1. Check available skills above → See "web-research" skill with its skill id
 			2. Read the skill using the id shown in the list
 			3. Follow the skill's research workflow (search → organize → synthesize)
 			4. Use any helper scripts with absolute paths
-			
+
 			Remember: Skills are tools to make you more capable and consistent. When in doubt, check if a skill exists for the task!
 			""";
+
 	private static final Logger logger = LoggerFactory.getLogger(FileSystemSkillRegistry.class);
+
 	private final String userSkillsDirectory;
+
 	private final String projectSkillsDirectory;
+
 	private final SkillScanner scanner = new SkillScanner();
-	private final SystemPromptTemplate systemPromptTemplate;
+
+	private final PromptTemplate systemPromptTemplate;
 
 	private FileSystemSkillRegistry(Builder builder) {
 		// Set default userSkillsDirectory to ~/argi/skills if not provided
@@ -156,9 +160,7 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 			this.systemPromptTemplate = builder.systemPromptTemplate;
 		}
 		else {
-			this.systemPromptTemplate = SystemPromptTemplate.builder()
-					.template(DEFAULT_SYSTEM_PROMPT_TEMPLATE)
-					.build();
+			this.systemPromptTemplate = PromptTemplate.of(DEFAULT_SYSTEM_PROMPT_TEMPLATE);
 		}
 
 		// Load skills during initialization if auto-load is enabled (default: true)
@@ -172,12 +174,13 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 	}
 
 	/**
-	 * Loads skills from configured directories into the registry.
-	 * Uses Map to merge skills, ensuring project skills override user skills with the same name.
+	 * Loads skills from configured directories into the registry. Uses Map to merge
+	 * skills, ensuring project skills override user skills with the same name.
 	 */
 	@Override
 	protected void loadSkillsToRegistry() {
-		// Use Map to merge skills, ensuring project skills override user skills with the same name
+		// Use Map to merge skills, ensuring project skills override user skills with the
+		// same name
 		Map<String, SkillMetadata> mergedSkills = new HashMap<>();
 
 		if (userSkillsDirectory != null && !userSkillsDirectory.isEmpty()) {
@@ -210,9 +213,8 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 	}
 
 	/**
-	 * Get the project skills directory path.
-	 * This is an implementation-specific method, not part of the SkillRegistry interface.
-	 *
+	 * Get the project skills directory path. This is an implementation-specific method,
+	 * not part of the SkillRegistry interface.
 	 * @return the project skills directory path
 	 */
 	public String getProjectSkillsDirectory() {
@@ -220,9 +222,8 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 	}
 
 	/**
-	 * Get the user skills directory path.
-	 * This is an implementation-specific method, not part of the SkillRegistry interface.
-	 *
+	 * Get the user skills directory path. This is an implementation-specific method, not
+	 * part of the SkillRegistry interface.
 	 * @return the user skills directory path
 	 */
 	public String getUserSkillsDirectory() {
@@ -268,7 +269,8 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 				instructions.append(String.format("- **User Skills**: `%s`\n", getUserSkillsDirectory()));
 			}
 			if (!projectSkills.isEmpty()) {
-				instructions.append(String.format("- **Project Skills**: `%s` (override user skills with same name)\n", getProjectSkillsDirectory()));
+				instructions.append(String.format("- **Project Skills**: `%s` (override user skills with same name)\n",
+						getProjectSkillsDirectory()));
 			}
 			instructions.append("\n");
 		}
@@ -287,22 +289,26 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 	}
 
 	@Override
-	public SystemPromptTemplate getSystemPromptTemplate() {
+	public PromptTemplate getSystemPromptTemplate() {
 		return systemPromptTemplate;
 	}
 
 	/**
 	 * Builder for creating FileSystemSkillRegistry instances.
 	 *
-	 * <p>All configuration parameters are optional and have sensible defaults:
+	 * <p>
+	 * All configuration parameters are optional and have sensible defaults:
 	 * <ul>
-	 *   <li><b>userSkillsDirectory</b>: defaults to <code>~/argi/skills</code> - global skills available across all projects</li>
-	 *   <li><b>projectSkillsDirectory</b>: defaults to <code>./skills</code> (current working directory) - project-specific skills</li>
-	 *   <li><b>autoLoad</b>: defaults to <code>true</code> - automatically load skills during initialization</li>
+	 * <li><b>userSkillsDirectory</b>: defaults to <code>~/argi/skills</code> - global
+	 * skills available across all projects</li>
+	 * <li><b>projectSkillsDirectory</b>: defaults to <code>./skills</code> (current
+	 * working directory) - project-specific skills</li>
+	 * <li><b>autoLoad</b>: defaults to <code>true</code> - automatically load skills
+	 * during initialization</li>
 	 * </ul>
 	 *
-	 * <p><b>Example Usage:</b>
-	 * <pre>{@code
+	 * <p>
+	 * <b>Example Usage:</b> <pre>{@code
 	 * // Use all defaults
 	 * FileSystemSkillRegistry registry = FileSystemSkillRegistry.builder().build();
 	 *
@@ -324,15 +330,19 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 	 * }</pre>
 	 */
 	public static class Builder {
+
 		private String userSkillsDirectory;
+
 		private String projectSkillsDirectory;
+
 		private boolean autoLoad = true;
-		private SystemPromptTemplate systemPromptTemplate;
+
+		private PromptTemplate systemPromptTemplate;
 
 		/**
 		 * Sets the user skills directory path.
-		 * <p><b>Optional</b>: If not set, defaults to <code>~/argi/skills</code>
-		 *
+		 * <p>
+		 * <b>Optional</b>: If not set, defaults to <code>~/argi/skills</code>
 		 * @param directory the directory path for user-level skills
 		 * @return this builder
 		 */
@@ -343,13 +353,16 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 
 		/**
 		 * Sets the user skills directory from a Spring Resource.
-		 * <p><b>Optional</b>: If not set, defaults to <code>~/argi/skills</code>
-		 * <p>The Resource will be converted to a file system path. If the resource cannot be
-		 * resolved to a file (e.g., it's inside a JAR), an IllegalArgumentException will be thrown.
-		 *
+		 * <p>
+		 * <b>Optional</b>: If not set, defaults to <code>~/argi/skills</code>
+		 * <p>
+		 * The Resource will be converted to a file system path. If the resource cannot be
+		 * resolved to a file (e.g., it's inside a JAR), an IllegalArgumentException will
+		 * be thrown.
 		 * @param resource the Resource pointing to the user-level skills directory
 		 * @return this builder
-		 * @throws IllegalArgumentException if the resource cannot be converted to a file system path
+		 * @throws IllegalArgumentException if the resource cannot be converted to a file
+		 * system path
 		 */
 		public Builder userSkillsDirectory(Resource resource) {
 			try {
@@ -366,9 +379,9 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 
 		/**
 		 * Sets the project skills directory path.
-		 * <p><b>Optional</b>: If not set, defaults to <code>./skills</code>
-		 * (current working directory with "skills" subdirectory).
-		 *
+		 * <p>
+		 * <b>Optional</b>: If not set, defaults to <code>./skills</code> (current working
+		 * directory with "skills" subdirectory).
 		 * @param directory the directory path for project-level skills
 		 * @return this builder
 		 */
@@ -379,13 +392,17 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 
 		/**
 		 * Sets the project skills directory from a Spring Resource.
-		 * <p><b>Optional</b>: If not set, defaults to <code>./skills</code> (current working directory)
-		 * <p>The Resource will be converted to a file system path. If the resource cannot be
-		 * resolved to a file (e.g., it's inside a JAR), an IllegalArgumentException will be thrown.
-		 *
+		 * <p>
+		 * <b>Optional</b>: If not set, defaults to <code>./skills</code> (current working
+		 * directory)
+		 * <p>
+		 * The Resource will be converted to a file system path. If the resource cannot be
+		 * resolved to a file (e.g., it's inside a JAR), an IllegalArgumentException will
+		 * be thrown.
 		 * @param resource the Resource pointing to the project-level skills directory
 		 * @return this builder
-		 * @throws IllegalArgumentException if the resource cannot be converted to a file system path
+		 * @throws IllegalArgumentException if the resource cannot be converted to a file
+		 * system path
 		 */
 		public Builder projectSkillsDirectory(Resource resource) {
 			try {
@@ -402,8 +419,8 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 
 		/**
 		 * Sets whether to automatically load skills during initialization.
-		 * <p><b>Optional</b>: Defaults to <code>true</code>
-		 *
+		 * <p>
+		 * <b>Optional</b>: Defaults to <code>true</code>
 		 * @param autoLoad true to auto-load skills, false to skip auto-loading
 		 * @return this builder
 		 */
@@ -414,50 +431,56 @@ public class FileSystemSkillRegistry extends AbstractSkillRegistry {
 
 		/**
 		 * Sets a custom system prompt template for skills.
-		 * <p><b>Optional</b>: If not set, uses the default template for FileSystemSkillRegistry.
-		 * <p>The template should support the following variables:
+		 * <p>
+		 * <b>Optional</b>: If not set, uses the default template for
+		 * FileSystemSkillRegistry.
+		 * <p>
+		 * The template should support the following variables:
 		 * <ul>
-		 *   <li><b>{skills_registry}</b>: The registry type name</li>
-		 *   <li><b>{skills_list}</b>: The formatted list of available skills</li>
-		 *   <li><b>{skills_load_instructions}</b>: Instructions on how skills are loaded</li>
+		 * <li><b>{skills_registry}</b>: The registry type name</li>
+		 * <li><b>{skills_list}</b>: The formatted list of available skills</li>
+		 * <li><b>{skills_load_instructions}</b>: Instructions on how skills are
+		 * loaded</li>
 		 * </ul>
-		 *
-		 * @param systemPromptTemplate the custom SystemPromptTemplate to use
+		 * @param systemPromptTemplate the custom prompt renderer to use
 		 * @return this builder
 		 */
-		public Builder systemPromptTemplate(SystemPromptTemplate systemPromptTemplate) {
+		public Builder systemPromptTemplate(PromptTemplate systemPromptTemplate) {
 			this.systemPromptTemplate = systemPromptTemplate;
 			return this;
 		}
 
 		/**
 		 * Sets a custom system prompt template from a template string.
-		 * <p><b>Optional</b>: If not set, uses the default template for FileSystemSkillRegistry.
-		 * <p>The template should support the following variables:
+		 * <p>
+		 * <b>Optional</b>: If not set, uses the default template for
+		 * FileSystemSkillRegistry.
+		 * <p>
+		 * The template should support the following variables:
 		 * <ul>
-		 *   <li><b>{skills_registry}</b>: The registry type name</li>
-		 *   <li><b>{skills_list}</b>: The formatted list of available skills</li>
-		 *   <li><b>{skills_load_instructions}</b>: Instructions on how skills are loaded</li>
+		 * <li><b>{skills_registry}</b>: The registry type name</li>
+		 * <li><b>{skills_list}</b>: The formatted list of available skills</li>
+		 * <li><b>{skills_load_instructions}</b>: Instructions on how skills are
+		 * loaded</li>
 		 * </ul>
-		 *
 		 * @param template the template string
 		 * @return this builder
 		 */
 		public Builder systemPromptTemplate(String template) {
-			this.systemPromptTemplate = SystemPromptTemplate.builder()
-					.template(template)
-					.build();
+			this.systemPromptTemplate = PromptTemplate.of(template);
 			return this;
 		}
 
 		/**
 		 * Builds the FileSystemSkillRegistry instance with the configured parameters.
-		 * <p>All parameters are optional and will use default values if not set.
-		 *
+		 * <p>
+		 * All parameters are optional and will use default values if not set.
 		 * @return a new FileSystemSkillRegistry instance
 		 */
 		public FileSystemSkillRegistry build() {
 			return new FileSystemSkillRegistry(this);
 		}
+
 	}
+
 }

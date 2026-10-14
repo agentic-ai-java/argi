@@ -27,7 +27,7 @@ import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -50,11 +50,11 @@ class ReactAgentJumpToStateTest {
 		CountingChatModel chatModel = new CountingChatModel();
 		JumpBackOnceHook hook = new JumpBackOnceHook();
 		ReactAgent agent = ReactAgent.builder()
-				.name("jump-to-state-agent")
-				.model(chatModel)
-				.hooks(List.of(hook))
-				.saver(new MemorySaver())
-				.build();
+			.name("jump-to-state-agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(List.of(hook))
+			.saver(new MemorySaver())
+			.build();
 
 		Optional<OverAllState> result = agent.invoke("start",
 				RunnableConfig.builder().threadId("jump-to-state-thread").addMetadata("_stream_", false).build());
@@ -81,7 +81,7 @@ class ReactAgentJumpToStateTest {
 		}
 
 		@Override
-		public AgentCommand afterModel(List<Message> previousMessages, RunnableConfig config) {
+		public AgentCommand afterModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 			int calls = afterModelCalls.incrementAndGet();
 			if (calls == 1) {
 				return new AgentCommand(JumpTo.model, previousMessages);
@@ -92,6 +92,7 @@ class ReactAgentJumpToStateTest {
 			fail("jump_to leaked after it was consumed and routed back to the model");
 			return new AgentCommand(previousMessages);
 		}
+
 	}
 
 	private static final class CountingChatModel implements ChatModel {
@@ -100,13 +101,15 @@ class ReactAgentJumpToStateTest {
 
 		@Override
 		public ChatResponse call(Prompt prompt) {
-			return new ChatResponse(List.of(new Generation(new AssistantMessage("response-" + calls.incrementAndGet()))));
+			return new ChatResponse(
+					List.of(new Generation(new AssistantMessage("response-" + calls.incrementAndGet()))));
 		}
 
 		@Override
 		public Flux<ChatResponse> stream(Prompt prompt) {
 			return Flux.just(call(prompt));
 		}
+
 	}
 
 }

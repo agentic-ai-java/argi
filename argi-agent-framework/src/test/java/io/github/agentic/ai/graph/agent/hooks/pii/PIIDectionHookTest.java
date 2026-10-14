@@ -26,10 +26,9 @@ import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 import org.springframework.ai.chat.model.ChatModel;
 
 import java.util.ArrayList;
@@ -39,192 +38,194 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 public class PIIDectionHookTest {
 
-    private ChatModel chatModel;
+	private ChatModel chatModel;
 
-    @BeforeEach
-    void setUp() {
+	@BeforeEach
+	void setUp() {
 		this.chatModel = OpenAiCompatibleTestModels.chatModel();
-    }
+	}
 
-    @Test
-    public void testPIIDetectionWithRedactStrategy() throws Exception {
-        PIIDetectionHook hook = PIIDetectionHook.builder()
-                .piiType(PIIType.EMAIL)
-                .strategy(RedactionStrategy.REDACT)
-                .applyToInput(true)
-                .applyToOutput(true)
-                .build();
+	@Test
+	public void testPIIDetectionWithRedactStrategy() throws Exception {
+		PIIDetectionHook hook = PIIDetectionHook.builder()
+			.piiType(PIIType.EMAIL)
+			.strategy(RedactionStrategy.REDACT)
+			.applyToInput(true)
+			.applyToOutput(true)
+			.build();
 
-        ReactAgent agent = createAgent(hook, "test-pii-redact-agent", chatModel);
+		ReactAgent agent = createAgent(hook, "test-pii-redact-agent", chatModel);
 
-        System.out.println("=== 测试PII检测（REDACT策略）===");
+		System.out.println("=== 测试PII检测（REDACT策略）===");
 
-        List<Message> messages = new ArrayList<>();
-        messages.add(new UserMessage("我的邮箱地址是 test@example.com，请记住它。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("我的邮箱地址是 test@example.com，请记住它。"));
 
-        Optional<OverAllState> result = agent.invoke(messages);
+		Optional<OverAllState> result = agent.invoke(messages);
 
-        assertTrue(result.isPresent(), "结果应该存在");
-        Object messagesObj = result.get().value("messages").get();
-        assertNotNull(messagesObj, "消息应该存在于结果中");
+		assertTrue(result.isPresent(), "结果应该存在");
+		Object messagesObj = result.get().value("messages").get();
+		assertNotNull(messagesObj, "消息应该存在于结果中");
 
-        if (messagesObj instanceof List) {
-            List<Message> resultMessages = (List<Message>) messagesObj;
-            System.out.println("返回消息数量: " + resultMessages.size());
+		if (messagesObj instanceof List) {
+			List<ChatMessage> resultMessages = (List<ChatMessage>) messagesObj;
+			System.out.println("返回消息数量: " + resultMessages.size());
 
-            for (Message message : resultMessages) {
-                if (message instanceof UserMessage) {
-                    String content = message.getText();
-                    if (content.contains("[REDACTED_EMAIL]")) {
-                        System.out.println("✓ 成功检测并替换用户消息中的邮箱地址");
-                    }
-                } else if (message instanceof AssistantMessage) {
-                    String content = message.getText();
-                    System.out.println("AI回复: " + content);
-                }
-            }
-        }
-    }
+			for (ChatMessage message : resultMessages) {
+				if (message.role() == ChatRole.USER) {
+					String content = message.text();
+					if (content.contains("[REDACTED_EMAIL]")) {
+						System.out.println("✓ 成功检测并替换用户消息中的邮箱地址");
+					}
+				}
+				else if (message.role() == ChatRole.ASSISTANT) {
+					String content = message.text();
+					System.out.println("AI回复: " + content);
+				}
+			}
+		}
+	}
 
-    @Test
-    public void testPIIDetectionWithMaskStrategy() throws Exception {
-        PIIDetectionHook hook = PIIDetectionHook.builder()
-                .piiType(PIIType.CREDIT_CARD)
-                .strategy(RedactionStrategy.MASK)
-                .applyToInput(true)
-                .applyToOutput(true)
-                .build();
+	@Test
+	public void testPIIDetectionWithMaskStrategy() throws Exception {
+		PIIDetectionHook hook = PIIDetectionHook.builder()
+			.piiType(PIIType.CREDIT_CARD)
+			.strategy(RedactionStrategy.MASK)
+			.applyToInput(true)
+			.applyToOutput(true)
+			.build();
 
-        ReactAgent agent = createAgent(hook, "test-pii-mask-agent", chatModel);
+		ReactAgent agent = createAgent(hook, "test-pii-mask-agent", chatModel);
 
-        System.out.println("\n=== 测试PII检测（MASK策略）===");
+		System.out.println("\n=== 测试PII检测（MASK策略）===");
 
-        List<Message> messages = new ArrayList<>();
-        messages.add(new UserMessage("我的信用卡号是 1234 5678 9012 3456，请帮我检查一下。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("我的信用卡号是 1234 5678 9012 3456，请帮我检查一下。"));
 
-        Optional<OverAllState> result = agent.invoke(messages);
+		Optional<OverAllState> result = agent.invoke(messages);
 
-        assertTrue(result.isPresent(), "结果应该存在");
-        Object messagesObj = result.get().value("messages").get();
-        assertNotNull(messagesObj, "消息应该存在于结果中");
+		assertTrue(result.isPresent(), "结果应该存在");
+		Object messagesObj = result.get().value("messages").get();
+		assertNotNull(messagesObj, "消息应该存在于结果中");
 
-        if (messagesObj instanceof List) {
-            List<Message> resultMessages = (List<Message>) messagesObj;
-            System.out.println("返回消息数量: " + resultMessages.size());
-            for (Message message : resultMessages) {
-                if (message instanceof UserMessage) {
-                    String content = message.getText();
-                    if (content.contains("****") && content.contains("3456")) {
-                        System.out.println("成功检测并部分掩码用户消息中的信用卡号");
-                    }
-                    System.out.println("处理后的用户消息: " + content);
-                }
-            }
-        }
-    }
+		if (messagesObj instanceof List) {
+			List<ChatMessage> resultMessages = (List<ChatMessage>) messagesObj;
+			System.out.println("返回消息数量: " + resultMessages.size());
+			for (ChatMessage message : resultMessages) {
+				if (message.role() == ChatRole.USER) {
+					String content = message.text();
+					if (content.contains("****") && content.contains("3456")) {
+						System.out.println("成功检测并部分掩码用户消息中的信用卡号");
+					}
+					System.out.println("处理后的用户消息: " + content);
+				}
+			}
+		}
+	}
 
-    @Test
-    public void testPIIDetectionWithBlockStrategy() throws Exception {
-        PIIDetectionHook hook = PIIDetectionHook.builder()
-                .piiType(PIIType.IP)
-                .strategy(RedactionStrategy.BLOCK)
-                .applyToInput(true)
-                .build();
+	@Test
+	public void testPIIDetectionWithBlockStrategy() throws Exception {
+		PIIDetectionHook hook = PIIDetectionHook.builder()
+			.piiType(PIIType.IP)
+			.strategy(RedactionStrategy.BLOCK)
+			.applyToInput(true)
+			.build();
 
-        ReactAgent agent = createAgent(hook, "test-pii-block-agent", chatModel);
+		ReactAgent agent = createAgent(hook, "test-pii-block-agent", chatModel);
 
-        System.out.println("\n=== 测试PII检测（BLOCK策略）===");
+		System.out.println("\n=== 测试PII检测（BLOCK策略）===");
 
-        List<Message> messages = new ArrayList<>();
-        messages.add(new UserMessage("我的服务器IP地址是 192.168.1.100，请不要泄露。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("我的服务器IP地址是 192.168.1.100，请不要泄露。"));
 
-        try {
-            Optional<OverAllState> result = agent.invoke(messages);
-            System.out.println("未抛出异常，可能IP未被正确检测");
-        } catch (Exception e) {
-            if (e.getCause() instanceof io.github.agentic.ai.graph.agent.hook.pii.PIIDetectionException) {
-                System.out.println("✓ 成功检测到IP地址并阻止处理: " + e.getCause().getMessage());
-            } else {
-                System.out.println("抛出其他异常: " + e.getMessage());
-            }
-        }
-    }
+		try {
+			Optional<OverAllState> result = agent.invoke(messages);
+			System.out.println("未抛出异常，可能IP未被正确检测");
+		}
+		catch (Exception e) {
+			if (e.getCause() instanceof io.github.agentic.ai.graph.agent.hook.pii.PIIDetectionException) {
+				System.out.println("✓ 成功检测到IP地址并阻止处理: " + e.getCause().getMessage());
+			}
+			else {
+				System.out.println("抛出其他异常: " + e.getMessage());
+			}
+		}
+	}
 
-    @Test
-    public void testWithoutPIIDetection() throws Exception {
-        ReactAgent agent = ReactAgent.builder()
-                .name("test-no-pii-agent")
-                .model(chatModel)
-                .saver(new MemorySaver())
-                .build();
+	@Test
+	public void testWithoutPIIDetection() throws Exception {
+		ReactAgent agent = ReactAgent.builder()
+			.name("test-no-pii-agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.build();
 
-        System.out.println("\n=== 测试不带PII检测的对话 ===");
+		System.out.println("\n=== 测试不带PII检测的对话 ===");
 
-        List<Message> messages = new ArrayList<>();
-        messages.add(new UserMessage("你好，有什么可以帮助你的吗？"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("你好，有什么可以帮助你的吗？"));
 
-        Optional<OverAllState> result = agent.invoke(messages);
+		Optional<OverAllState> result = agent.invoke(messages);
 
-        assertTrue(result.isPresent(), "结果应该存在");
-        Object messagesObj = result.get().value("messages").get();
-        assertNotNull(messagesObj, "消息应该存在于结果中");
+		assertTrue(result.isPresent(), "结果应该存在");
+		Object messagesObj = result.get().value("messages").get();
+		assertNotNull(messagesObj, "消息应该存在于结果中");
 
-        if (messagesObj instanceof List) {
-            List<Message> resultMessages = (List<Message>) messagesObj;
-            System.out.println("返回消息数量: " + resultMessages.size());
-            System.out.println("✓ 正常对话流程，未触发PII检测");
-        }
-    }
+		if (messagesObj instanceof List) {
+			List<ChatMessage> resultMessages = (List<ChatMessage>) messagesObj;
+			System.out.println("返回消息数量: " + resultMessages.size());
+			System.out.println("✓ 正常对话流程，未触发PII检测");
+		}
+	}
 
-    @Test
-    public void testCustomPIIDetector() throws Exception {
-        PIIDetectionHook hook = PIIDetectionHook.builder()
-                .piiType(PIIType.CUSTOM)
-                .strategy(RedactionStrategy.REDACT)
-                .detector(PIIDetectors.regexDetector("PHONE", "\\b1[3-9]\\d{9}\\b"))
-                .applyToInput(true)
-                .build();
+	@Test
+	public void testCustomPIIDetector() throws Exception {
+		PIIDetectionHook hook = PIIDetectionHook.builder()
+			.piiType(PIIType.CUSTOM)
+			.strategy(RedactionStrategy.REDACT)
+			.detector(PIIDetectors.regexDetector("PHONE", "\\b1[3-9]\\d{9}\\b"))
+			.applyToInput(true)
+			.build();
 
-        ReactAgent agent = createAgent(hook, "test-custom-pii-agent", chatModel);
+		ReactAgent agent = createAgent(hook, "test-custom-pii-agent", chatModel);
 
-        System.out.println("\n=== 测试自定义PII检测器 ===");
+		System.out.println("\n=== 测试自定义PII检测器 ===");
 
-        List<Message> messages = new ArrayList<>();
-        messages.add(new UserMessage("我的手机号码是 13812345678，请保存。"));
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.add(ChatMessage.user("我的手机号码是 13812345678，请保存。"));
 
-        Optional<OverAllState> result = agent.invoke(messages);
+		Optional<OverAllState> result = agent.invoke(messages);
 
-        assertTrue(result.isPresent(), "结果应该存在");
-        Object messagesObj = result.get().value("messages").get();
-        assertNotNull(messagesObj, "消息应该存在于结果中");
+		assertTrue(result.isPresent(), "结果应该存在");
+		Object messagesObj = result.get().value("messages").get();
+		assertNotNull(messagesObj, "消息应该存在于结果中");
 
-        if (messagesObj instanceof List) {
-            List<Message> resultMessages = (List<Message>) messagesObj;
-            System.out.println("返回消息数量: " + resultMessages.size());
+		if (messagesObj instanceof List) {
+			List<ChatMessage> resultMessages = (List<ChatMessage>) messagesObj;
+			System.out.println("返回消息数量: " + resultMessages.size());
 
-            for (Message message : resultMessages) {
-                if (message instanceof UserMessage) {
-                    String content = message.getText();
-                    if (content.contains("[REDACTED_PHONE]")) {
-                        System.out.println("成功检测并替换用户消息中的手机号码");
-                    }
-                    System.out.println("处理后的用户消息: " + content);
-                }
-            }
-        }
-    }
+			for (ChatMessage message : resultMessages) {
+				if (message.role() == ChatRole.USER) {
+					String content = message.text();
+					if (content.contains("[REDACTED_PHONE]")) {
+						System.out.println("成功检测并替换用户消息中的手机号码");
+					}
+					System.out.println("处理后的用户消息: " + content);
+				}
+			}
+		}
+	}
 
-    public ReactAgent createAgent(PIIDetectionHook hook, String name, ChatModel model) throws Exception {
-        return ReactAgent.builder()
-                .name(name)
-                .model(model)
-                .hooks(List.of(hook))
-                .saver(new MemorySaver())
-                .build();
-    }
+	public ReactAgent createAgent(PIIDetectionHook hook, String name, ChatModel model) throws Exception {
+		return ReactAgent.builder()
+			.name(name)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.hooks(List.of(hook))
+			.saver(new MemorySaver())
+			.build();
+	}
 
-    
 }

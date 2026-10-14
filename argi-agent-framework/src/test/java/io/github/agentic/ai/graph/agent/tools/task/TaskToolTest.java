@@ -20,8 +20,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ToolContext;
+import io.github.agentic.ai.api.tool.ToolContext;
 
 import java.util.Map;
 
@@ -52,29 +51,28 @@ class TaskToolTest {
 		@DisplayName("Should fail when subAgents is empty")
 		void shouldFailWhenSubAgentsIsEmpty() {
 			assertThatThrownBy(() -> TaskTool.builder().taskRepository(taskRepository).build())
-					.isInstanceOf(IllegalArgumentException.class)
-					.hasMessageContaining("At least one sub-agent must be configured");
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("At least one sub-agent must be configured");
 		}
 
 		@Test
 		@DisplayName("Should fail when taskRepository is null")
 		void shouldFailWhenTaskRepositoryIsNull() {
-			assertThatThrownBy(() -> TaskTool.builder()
-					.subAgent("Explore", mockSubAgent)
-					.taskRepository(null)
-					.build()).isInstanceOf(IllegalArgumentException.class)
-					.hasMessageContaining("taskRepository must not be null");
+			assertThatThrownBy(() -> TaskTool.builder().subAgent("Explore", mockSubAgent).taskRepository(null).build())
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("taskRepository must not be null");
 		}
 
 		@Test
 		@DisplayName("Should build successfully with valid config")
 		void shouldBuildSuccessfullyWithValidConfig() {
 			TaskTool.Builder builder = TaskTool.builder()
-					.subAgent("Explore", mockSubAgent)
-					.taskRepository(taskRepository);
+				.subAgent("Explore", mockSubAgent)
+				.taskRepository(taskRepository);
 			assertThat(builder).isNotNull();
 			assertThat(builder.build()).isNotNull();
 		}
+
 	}
 
 	@Nested
@@ -84,11 +82,12 @@ class TaskToolTest {
 		@Test
 		@DisplayName("Should execute sub-agent synchronously and return result")
 		void shouldExecuteSubAgentSynchronouslyAndReturnResult() throws Exception {
-			when(mockSubAgent.call(anyString())).thenReturn(new AssistantMessage("Exploration result"));
+			when(mockSubAgent.call(anyString()))
+				.thenReturn(io.github.agentic.ai.api.chat.ChatMessage.assistant("Exploration result"));
 
 			TaskTool taskTool = new TaskTool(Map.of("Explore", mockSubAgent), taskRepository);
-			TaskTool.Request request = new TaskTool.Request("Explore codebase", "Find all REST controllers",
-					"Explore", false);
+			TaskTool.Request request = new TaskTool.Request("Explore codebase", "Find all REST controllers", "Explore",
+					false);
 
 			String result = taskTool.apply(request, new ToolContext(Map.of()));
 
@@ -142,6 +141,7 @@ class TaskToolTest {
 			assertThat(result).contains("Error executing sub-agent");
 			assertThat(result).contains("Sub-agent failed");
 		}
+
 	}
 
 	@Nested
@@ -164,7 +164,8 @@ class TaskToolTest {
 		@Test
 		@DisplayName("Should store task in repository for background execution")
 		void shouldStoreTaskInRepositoryForBackgroundExecution() throws Exception {
-			when(mockSubAgent.call(anyString())).thenReturn(new AssistantMessage("Done"));
+			when(mockSubAgent.call(anyString()))
+				.thenReturn(io.github.agentic.ai.api.chat.ChatMessage.assistant("Done"));
 
 			TaskTool taskTool = new TaskTool(Map.of("Explore", mockSubAgent), taskRepository);
 			TaskTool.Request request = new TaskTool.Request("Explore", "Find files", "Explore", true);
@@ -181,6 +182,7 @@ class TaskToolTest {
 			assertThat(completed).isTrue();
 			assertThat(bgTask.getResult()).isEqualTo("Done");
 		}
+
 	}
 
 }

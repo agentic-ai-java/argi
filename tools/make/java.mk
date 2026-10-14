@@ -45,23 +45,7 @@ checkstyle-check: ## Checkstyle Check the code and output to target/checkstyle-r
 	@$(LOG_TARGET)
 	./mvnw -Dcheckstyle.skip=false -Dcheckstyle.output.file=checkstyle-report.xml checkstyle:check
 
-.PHONY: compatibility-wiring-check
-compatibility-wiring-check:
+.PHONY: api-contract-check
+api-contract-check: ## Compile current public API consumers without provider SDKs
 	@$(LOG_TARGET)
-	tools/scripts/verify-compatibility-wiring.sh
-
-.PHONY: binary-compatibility-check
-binary-compatibility-check: ## Compare public and protected APIs against the ARGI baseline
-	@$(LOG_TARGET)
-	tools/scripts/verify-core-binary-compatibility.sh
-
-.PHONY: source-compatibility-check
-source-compatibility-check:
-	@$(LOG_TARGET)
-	tools/scripts/verify-core-source-compatibility.sh
-
-.PHONY: compatibility-check
-compatibility-check:
-	$(MAKE) compatibility-wiring-check
-	$(MAKE) binary-compatibility-check
-	$(MAKE) source-compatibility-check
+	tools/scripts/verify-api-contract.sh

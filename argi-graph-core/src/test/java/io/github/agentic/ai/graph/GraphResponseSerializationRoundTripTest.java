@@ -15,7 +15,7 @@
  */
 package io.github.agentic.ai.graph;
 
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.junit.jupiter.api.Test;
 
@@ -28,8 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests that GraphResponse and CompletableFuture can be serialized and deserialized
- * while preserving their type and data.
+ * Tests that GraphResponse and CompletableFuture can be serialized and deserialized while
+ * preserving their type and data.
  */
 public class GraphResponseSerializationRoundTripTest {
 
@@ -46,14 +46,14 @@ public class GraphResponseSerializationRoundTripTest {
 		assertTrue(runtimeValue instanceof GraphResponse, "Runtime value should be GraphResponse");
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Verify type is preserved
 		Object restoredValue = restoredState.value("error_result").orElse(null);
 		assertNotNull(restoredValue, "Restored value should not be null");
-		assertTrue(restoredValue instanceof GraphResponse, 
-			"Restored value should still be GraphResponse, but was: " + restoredValue.getClass().getName());
+		assertTrue(restoredValue instanceof GraphResponse,
+				"Restored value should still be GraphResponse, but was: " + restoredValue.getClass().getName());
 
 		// Verify data is preserved
 		@SuppressWarnings("unchecked")
@@ -70,14 +70,13 @@ public class GraphResponseSerializationRoundTripTest {
 		originalState.updateState(Map.of("success_result", successResponse));
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Verify type is preserved
 		Object restoredValue = restoredState.value("success_result").orElse(null);
 		assertNotNull(restoredValue, "Restored value should not be null");
-		assertTrue(restoredValue instanceof GraphResponse,
-			"Restored value should still be GraphResponse");
+		assertTrue(restoredValue instanceof GraphResponse, "Restored value should still be GraphResponse");
 
 		// Verify data is preserved
 		@SuppressWarnings("unchecked")
@@ -95,14 +94,13 @@ public class GraphResponseSerializationRoundTripTest {
 		originalState.updateState(Map.of("async_result", future));
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Verify type is preserved
 		Object restoredValue = restoredState.value("async_result").orElse(null);
 		assertNotNull(restoredValue, "Restored value should not be null");
-		assertTrue(restoredValue instanceof CompletableFuture,
-			"Restored value should still be CompletableFuture");
+		assertTrue(restoredValue instanceof CompletableFuture, "Restored value should still be CompletableFuture");
 
 		// Verify data is preserved
 		@SuppressWarnings("unchecked")
@@ -120,31 +118,28 @@ public class GraphResponseSerializationRoundTripTest {
 		originalState.updateState(Map.of("container", container));
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Verify nested GraphResponse type is preserved
 		@SuppressWarnings("unchecked")
 		Map<String, Object> restoredContainer = (Map<String, Object>) restoredState.value("container").orElse(null);
 		assertNotNull(restoredContainer, "Container should be restored");
-		
+
 		Object nestedValue = restoredContainer.get("nested");
-		assertTrue(nestedValue instanceof GraphResponse,
-			"Nested GraphResponse should preserve type");
-		
+		assertTrue(nestedValue instanceof GraphResponse, "Nested GraphResponse should preserve type");
+
 		assertEquals("data", restoredContainer.get("other"), "Other values should be preserved");
 	}
 
 	@Test
 	void graphResponseMetadataShouldPreserveBusinessTypeMarkers() throws Exception {
 		OverAllState originalState = new OverAllState();
-		GraphResponse<?> response = GraphResponse.done("x", Map.of(
-				"@type", "invoice",
-				"nested", Map.of("@class", "external")
-		));
+		GraphResponse<?> response = GraphResponse.done("x",
+				Map.of("@type", "invoice", "nested", Map.of("@class", "external")));
 		originalState.updateState(Map.of("response", response));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		Object restoredValue = restoredState.value("response").orElse(null);
@@ -156,7 +151,7 @@ public class GraphResponseSerializationRoundTripTest {
 		Map<String, Object> restoredMetadata = restoredResponse.getAllMetadata();
 
 		assertEquals("invoice", restoredMetadata.get("@type"));
-		assertTrue(restoredMetadata.get("nested") instanceof Map<?,?>);
+		assertTrue(restoredMetadata.get("nested") instanceof Map<?, ?>);
 		@SuppressWarnings("unchecked")
 		Map<String, Object> nested = (Map<String, Object>) restoredMetadata.get("nested");
 		assertEquals("external", nested.get("@class"));
@@ -164,22 +159,14 @@ public class GraphResponseSerializationRoundTripTest {
 
 	@Test
 	void legacyRawGraphResponseMetadataMarkersShouldNotLeak() throws Exception {
-		String json = "{" +
-				"\"response\": {" +
-				"\"@type\": \"GraphResponse\"," +
-				"\"error\": false," +
-				"\"status\": \"done\"," +
-				"\"result\": \"x\"," +
-				"\"metadata\": {" +
-				"\"@class\": \"java.util.LinkedHashMap\"," +
-				"\"@typeHint\": \"java.util.Map\"," +
-				"\"key\": \"value\"" +
-				"}" +
-				"}" +
-				"}";
+		String json = "{" + "\"response\": {" + "\"@type\": \"GraphResponse\"," + "\"error\": false,"
+				+ "\"status\": \"done\"," + "\"result\": \"x\"," + "\"metadata\": {"
+				+ "\"@class\": \"java.util.LinkedHashMap\"," + "\"@typeHint\": \"java.util.Map\","
+				+ "\"key\": \"value\"" + "}" + "}" + "}";
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		Map<String, Object> data = serializer.objectMapper().readValue(json, new TypeReference<Map<String, Object>>() {});
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
+		Map<String, Object> data = serializer.objectMapper().readValue(json, new TypeReference<Map<String, Object>>() {
+		});
 
 		Object restoredValue = data.get("response");
 		assertTrue(restoredValue instanceof GraphResponse, "Should restore legacy GraphResponse");
@@ -195,15 +182,11 @@ public class GraphResponseSerializationRoundTripTest {
 	@Test
 	void multipleSerializationRoundTripsShouldNotCauseDuplicateClassFields() throws Exception {
 		OverAllState originalState = new OverAllState();
-		Map<String, Object> metadata = Map.of(
-			"key1", "value1",
-			"key2", 42,
-			"nested", Map.of("innerKey", "innerValue")
-		);
+		Map<String, Object> metadata = Map.of("key1", "value1", "key2", 42, "nested", Map.of("innerKey", "innerValue"));
 		GraphResponse<?> response = GraphResponse.of("Test result", metadata);
 		originalState.updateState(Map.of("response", response));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 		OverAllState currentState = originalState;
 		for (int i = 0; i < 5; i++) {
@@ -211,26 +194,25 @@ public class GraphResponseSerializationRoundTripTest {
 
 			Object value = currentState.value("response").orElse(null);
 			assertNotNull(value, "Round " + (i + 1) + ": Value should not be null");
-			assertTrue(value instanceof GraphResponse,
-				"Round " + (i + 1) + ": Should still be GraphResponse");
+			assertTrue(value instanceof GraphResponse, "Round " + (i + 1) + ": Should still be GraphResponse");
 
 			@SuppressWarnings("unchecked")
 			GraphResponse<Object> restoredResponse = (GraphResponse<Object>) value;
 			Map<String, Object> restoredMetadata = restoredResponse.getAllMetadata();
 
 			assertEquals("value1", restoredMetadata.get("key1"),
-				"Round " + (i + 1) + ": metadata key1 should be preserved");
-			assertEquals(42, restoredMetadata.get("key2"),
-				"Round " + (i + 1) + ": metadata key2 should be preserved");
+					"Round " + (i + 1) + ": metadata key1 should be preserved");
+			assertEquals(42, restoredMetadata.get("key2"), "Round " + (i + 1) + ": metadata key2 should be preserved");
 			assertFalse(restoredMetadata.containsKey("@class"),
-				"Round " + (i + 1) + ": metadata should NOT contain @class field (Bug #3895)");
+					"Round " + (i + 1) + ": metadata should NOT contain @class field (Bug #3895)");
 			assertFalse(restoredMetadata.containsKey("@type"),
-				"Round " + (i + 1) + ": metadata should NOT contain @type field");
+					"Round " + (i + 1) + ": metadata should NOT contain @type field");
 			assertFalse(restoredMetadata.containsKey("@typeHint"),
-				"Round " + (i + 1) + ": metadata should NOT contain @typeHint field");
+					"Round " + (i + 1) + ": metadata should NOT contain @typeHint field");
 
 			assertEquals(3, restoredMetadata.size(),
-				"Round " + (i + 1) + ": metadata size should remain 3 (no accumulated fields)");
+					"Round " + (i + 1) + ": metadata size should remain 3 (no accumulated fields)");
 		}
 	}
+
 }

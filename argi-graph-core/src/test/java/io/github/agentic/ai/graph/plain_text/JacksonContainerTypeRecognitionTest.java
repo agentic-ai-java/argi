@@ -15,15 +15,15 @@
  */
 package io.github.agentic.ai.graph.plain_text;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.graph.OverAllState;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import io.github.agentic.ai.graph.state.AgentStateFactory;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -38,228 +38,174 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Focused tests for Jackson generic container deserialization to verify
- * recognition of both "@type" and "@class" markers when restoring nested elements.
+ * Focused tests for Jackson generic container deserialization to verify recognition of
+ * both "@type" and "@class" markers when restoring nested elements.
  */
 class JacksonContainerTypeRecognitionTest {
 
-    private SpringAIJacksonStateSerializer serializer;
+	private ArgiJacksonStateSerializer serializer;
 
-    @BeforeEach
-    void setUp() {
-        AgentStateFactory<OverAllState> stateFactory = OverAllState::new;
-        serializer = new SpringAIJacksonStateSerializer(stateFactory);
-}
+	@BeforeEach
+	void setUp() {
+		AgentStateFactory<OverAllState> stateFactory = OverAllState::new;
+		serializer = new ArgiJacksonStateSerializer(stateFactory);
+	}
 
+	// EOF
 
+	@Test
+	void deserializeNeutralMessageInMap() throws Exception {
+		ChatMessage message = ChatMessage.system("hello").withMetadata(Map.of("k", "v"));
+		Map<String, Object> restored = serializer.dataFromBytes(serializer.dataToBytes(Map.of("msg", message)));
+		assertEquals(message, restored.get("msg"));
+	}
 
-// EOF
+	@Test
+	void deserializeNeutralMessageInList() throws Exception {
+		List<ChatMessage> messages = List.of(ChatMessage.user("hi").withMetadata(Map.of("foo", "bar")));
+		Map<String, Object> restored = serializer.dataFromBytes(serializer.dataToBytes(Map.of("messages", messages)));
+		assertEquals(messages, restored.get("messages"));
+	}
 
+	@Test
+	void defaultTypingPreservesCustomPojo() throws Exception {
+		// Insert a custom POJO into state; default typing should preserve type via @class
+		SamplePojo pojo = new SamplePojo();
+		pojo.name = "neo";
+		pojo.age = 42;
 
-    @Test
-    void deserializeFromTypePropertyInMap() throws Exception {
-        // JSON value uses explicit @type mapping (SYSTEM -> SystemMessage)
-        String json = "{" +
-                "\"msg\": {" +
-                "\"@type\": \"SYSTEM\"," +
-                "\"text\": \"hello type mapping\"," +
-                "\"metadata\": { \"k\": \"v\" }" +
-                "}" +
-                "}";
+		Map<String, Object> data = new HashMap<>();
+		data.put("pojo", pojo);
 
-        ObjectMapper mapper = serializer.objectMapper();
-        Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+		// Round-trip through serializer writeData/readData
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+			serializer.writeData(data, oos);
+			oos.flush();
+		}
 
-        assertNotNull(data);
-        assertTrue(data.get("msg") instanceof SystemMessage);
-        SystemMessage sm = (SystemMessage) data.get("msg");
-        assertEquals("hello type mapping", sm.getText());
-        assertEquals("v", sm.getMetadata().get("k"));
-    }
+		Map<String, Object> restored;
+		try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(baos.toByteArray()))) {
+			restored = serializer.readData(ois);
+		}
 
-    @Test
-    void deserializeFromClassPropertyInList() throws Exception {
-        // JSON value uses Jackson default typing marker @class for list elements
-        String json = "{" +
-                "\"messages\": [" +
-                "{" +
-                "\"@class\": \"org.springframework.ai.chat.messages.UserMessage\"," +
-                "\"text\": \"hi class typing\"," +
-                "\"metadata\": { \"foo\": \"bar\" }" +
-                "}" +
-                "]" +
-                "}";
+		assertNotNull(restored);
+		assertTrue(restored.get("pojo") instanceof SamplePojo);
+		SamplePojo r = (SamplePojo) restored.get("pojo");
+		assertEquals("neo", r.name);
+		assertEquals(42, r.age);
+	}
 
-        ObjectMapper mapper = serializer.objectMapper();
-        Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+	@Test
+	void fallbackToGenericObjectWhenTypeAbsent() throws Exception {
+		// No @type or @class -> should degrade to generic Map structure
+		String json = "{" + "\"unknown\": { \"field\": \"value\" }" + "}";
 
-        assertNotNull(data);
-        assertTrue(data.get("messages") instanceof List<?>);
-        List<?> list = (List<?>) data.get("messages");
-        assertEquals(1, list.size());
-        assertTrue(list.get(0) instanceof UserMessage);
-        UserMessage um = (UserMessage) list.get(0);
-        assertEquals("hi class typing", um.getText());
-        assertEquals("bar", um.getMetadata().get("foo"));
-    }
+		ObjectMapper mapper = serializer.objectMapper();
+		Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {
+		});
 
-    @Test
-    void defaultTypingPreservesCustomPojo() throws Exception {
-        // Insert a custom POJO into state; default typing should preserve type via @class
-        SamplePojo pojo = new SamplePojo();
-        pojo.name = "neo";
-        pojo.age = 42;
+		assertNotNull(data);
+		assertTrue(data.get("unknown") instanceof Map<?, ?>);
+		@SuppressWarnings("unchecked")
+		Map<String, Object> inner = (Map<String, Object>) data.get("unknown");
+		assertEquals("value", inner.get("field"));
+	}
 
-        Map<String, Object> data = new HashMap<>();
-        data.put("pojo", pojo);
+	@Test
+	void fallbackToGenericObjectWhenUnknownTypeMarkerIsBusinessData() throws Exception {
+		String json = "{" + "\"payload\": {" + "\"@type\": \"invoice\"," + "\"@class\": \"customer-facing\","
+				+ "\"@typeHint\": \"external-system\"," + "\"id\": \"123\"" + "}" + "}";
 
-        // Round-trip through serializer writeData/readData
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
-            serializer.writeData(data, oos);
-            oos.flush();
-        }
+		ObjectMapper mapper = serializer.objectMapper();
+		Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {
+		});
 
-        Map<String, Object> restored;
-        try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(baos.toByteArray()))) {
-            restored = serializer.readData(ois);
-        }
+		assertNotNull(data);
+		assertTrue(data.get("payload") instanceof Map<?, ?>);
+		@SuppressWarnings("unchecked")
+		Map<String, Object> payload = (Map<String, Object>) data.get("payload");
+		assertEquals("invoice", payload.get("@type"));
+		assertEquals("customer-facing", payload.get("@class"));
+		assertEquals("external-system", payload.get("@typeHint"));
+		assertEquals("123", payload.get("id"));
+	}
 
-        assertNotNull(restored);
-        assertTrue(restored.get("pojo") instanceof SamplePojo);
-        SamplePojo r = (SamplePojo) restored.get("pojo");
-        assertEquals("neo", r.name);
-        assertEquals(42, r.age);
-    }
+	@Test
+	void fallbackToGenericObjectWhenTopLevelArgiMapMarkerIsBusinessData() throws Exception {
+		String json = "{" + "\"@type\": \"ARGI_MAP\"," + "\"id\": \"legacy-business-map\","
+				+ "\"entries\": \"not-an-envelope\"" + "}";
 
-    @Test
-    void fallbackToGenericObjectWhenTypeAbsent() throws Exception {
-        // No @type or @class -> should degrade to generic Map structure
-        String json = "{" +
-                "\"unknown\": { \"field\": \"value\" }" +
-                "}";
+		ObjectMapper mapper = serializer.objectMapper();
+		Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {
+		});
 
-        ObjectMapper mapper = serializer.objectMapper();
-        Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+		assertEquals("ARGI_MAP", data.get("@type"));
+		assertEquals("legacy-business-map", data.get("id"));
+		assertEquals("not-an-envelope", data.get("entries"));
+	}
 
-        assertNotNull(data);
-        assertTrue(data.get("unknown") instanceof Map<?,?>);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> inner = (Map<String, Object>) data.get("unknown");
-        assertEquals("value", inner.get("field"));
-    }
+	@Test
+	void fallbackToGenericObjectWhenNestedArgiMapMarkerIsBusinessData() throws Exception {
+		String json = "{" + "\"payload\": {" + "\"@type\": \"ARGI_MAP\"," + "\"id\": \"legacy-business-map\","
+				+ "\"entries\": \"not-an-envelope\"" + "}" + "}";
 
-    @Test
-    void fallbackToGenericObjectWhenUnknownTypeMarkerIsBusinessData() throws Exception {
-        String json = "{" +
-                "\"payload\": {" +
-                "\"@type\": \"invoice\"," +
-                "\"@class\": \"customer-facing\"," +
-                "\"@typeHint\": \"external-system\"," +
-                "\"id\": \"123\"" +
-                "}" +
-                "}";
+		ObjectMapper mapper = serializer.objectMapper();
+		Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {
+		});
 
-        ObjectMapper mapper = serializer.objectMapper();
-        Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+		assertTrue(data.get("payload") instanceof Map<?, ?>);
+		@SuppressWarnings("unchecked")
+		Map<String, Object> payload = (Map<String, Object>) data.get("payload");
+		assertEquals("ARGI_MAP", payload.get("@type"));
+		assertEquals("legacy-business-map", payload.get("id"));
+		assertEquals("not-an-envelope", payload.get("entries"));
+	}
 
-        assertNotNull(data);
-        assertTrue(data.get("payload") instanceof Map<?,?>);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> payload = (Map<String, Object>) data.get("payload");
-        assertEquals("invoice", payload.get("@type"));
-        assertEquals("customer-facing", payload.get("@class"));
-        assertEquals("external-system", payload.get("@typeHint"));
-        assertEquals("123", payload.get("id"));
-    }
+	@Test
+	void fallbackToGenericObjectWhenArgiMapMarkerHasBusinessFieldsBesideTypedEntries() throws Exception {
+		String json = "{" + "\"payload\": {" + "\"@class\": \"java.util.LinkedHashMap\"," + "\"@type\": \"ARGI_MAP\","
+				+ "\"mapClass\": \"java.util.LinkedHashMap\","
+				+ "\"entries\": [\"[Ljava.lang.Object;\", [[\"[Ljava.lang.Object;\", [\"id\", \"from-entries\"]]]],"
+				+ "\"id\": \"legacy-business-map\"" + "}" + "}";
 
-    @Test
-    void fallbackToGenericObjectWhenTopLevelArgiMapMarkerIsBusinessData() throws Exception {
-        String json = "{" +
-                "\"@type\": \"ARGI_MAP\"," +
-                "\"id\": \"legacy-business-map\"," +
-                "\"entries\": \"not-an-envelope\"" +
-                "}";
+		ObjectMapper mapper = serializer.objectMapper();
+		Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {
+		});
 
-        ObjectMapper mapper = serializer.objectMapper();
-        Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+		assertTrue(data.get("payload") instanceof Map<?, ?>);
+		@SuppressWarnings("unchecked")
+		Map<String, Object> payload = (Map<String, Object>) data.get("payload");
+		assertEquals("java.util.LinkedHashMap", payload.get("@class"));
+		assertEquals("ARGI_MAP", payload.get("@type"));
+		assertEquals("java.util.LinkedHashMap", payload.get("mapClass"));
+		assertEquals("legacy-business-map", payload.get("id"));
+		assertTrue(payload.containsKey("entries"));
+	}
 
-        assertEquals("ARGI_MAP", data.get("@type"));
-        assertEquals("legacy-business-map", data.get("id"));
-        assertEquals("not-an-envelope", data.get("entries"));
-    }
+	@Test
+	void deserializeGeneratedMapEnvelopeWhenShapeIsValid() throws Exception {
+		String json = "{" + "\"payload\": {" + "\"@class\": \"java.util.LinkedHashMap\"," + "\"@type\": \"ARGI_MAP\","
+				+ "\"mapClass\": \"java.util.LinkedHashMap\"," + "\"entries\": [\"[Ljava.lang.Object;\", ["
+				+ "[\"[Ljava.lang.Object;\", [\"@type\", \"invoice\"]],"
+				+ "[\"[Ljava.lang.Object;\", [\"id\", \"123\"]]" + "]]" + "}" + "}";
 
-    @Test
-    void fallbackToGenericObjectWhenNestedArgiMapMarkerIsBusinessData() throws Exception {
-        String json = "{" +
-                "\"payload\": {" +
-                "\"@type\": \"ARGI_MAP\"," +
-                "\"id\": \"legacy-business-map\"," +
-                "\"entries\": \"not-an-envelope\"" +
-                "}" +
-                "}";
+		ObjectMapper mapper = serializer.objectMapper();
+		Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {
+		});
 
-        ObjectMapper mapper = serializer.objectMapper();
-        Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+		assertEquals(Map.of("@type", "invoice", "id", "123"), data.get("payload"));
+	}
 
-        assertTrue(data.get("payload") instanceof Map<?,?>);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> payload = (Map<String, Object>) data.get("payload");
-        assertEquals("ARGI_MAP", payload.get("@type"));
-        assertEquals("legacy-business-map", payload.get("id"));
-        assertEquals("not-an-envelope", payload.get("entries"));
-    }
+	/**
+	 * Simple non-final POJO with public fields to let Jackson bind without setters.
+	 */
+	static class SamplePojo {
 
-    @Test
-    void fallbackToGenericObjectWhenArgiMapMarkerHasBusinessFieldsBesideTypedEntries() throws Exception {
-        String json = "{" +
-                "\"payload\": {" +
-                "\"@class\": \"java.util.LinkedHashMap\"," +
-                "\"@type\": \"ARGI_MAP\"," +
-                "\"mapClass\": \"java.util.LinkedHashMap\"," +
-                "\"entries\": [\"[Ljava.lang.Object;\", [[\"[Ljava.lang.Object;\", [\"id\", \"from-entries\"]]]]," +
-                "\"id\": \"legacy-business-map\"" +
-                "}" +
-                "}";
+		public String name;
 
-        ObjectMapper mapper = serializer.objectMapper();
-        Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+		public int age;
 
-        assertTrue(data.get("payload") instanceof Map<?,?>);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> payload = (Map<String, Object>) data.get("payload");
-        assertEquals("java.util.LinkedHashMap", payload.get("@class"));
-        assertEquals("ARGI_MAP", payload.get("@type"));
-        assertEquals("java.util.LinkedHashMap", payload.get("mapClass"));
-        assertEquals("legacy-business-map", payload.get("id"));
-        assertTrue(payload.containsKey("entries"));
-    }
+	}
 
-    @Test
-    void deserializeGeneratedMapEnvelopeWhenShapeIsValid() throws Exception {
-        String json = "{" +
-                "\"payload\": {" +
-                "\"@class\": \"java.util.LinkedHashMap\"," +
-                "\"@type\": \"ARGI_MAP\"," +
-                "\"mapClass\": \"java.util.LinkedHashMap\"," +
-                "\"entries\": [\"[Ljava.lang.Object;\", [" +
-                "[\"[Ljava.lang.Object;\", [\"@type\", \"invoice\"]]," +
-                "[\"[Ljava.lang.Object;\", [\"id\", \"123\"]]" +
-                "]]" +
-                "}" +
-                "}";
-
-        ObjectMapper mapper = serializer.objectMapper();
-        Map<String, Object> data = mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
-
-        assertEquals(Map.of("@type", "invoice", "id", "123"), data.get("payload"));
-    }
-
-    /**
-     * Simple non-final POJO with public fields to let Jackson bind without setters.
-     */
-    static class SamplePojo {
-        public String name;
-        public int age;
-    }
 }

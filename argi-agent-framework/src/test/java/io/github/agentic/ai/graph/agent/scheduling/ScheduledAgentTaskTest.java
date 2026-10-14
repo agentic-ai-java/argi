@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /**
  * Test for ScheduledAgentTask using external TaskScheduler
  */
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 public class ScheduledAgentTaskTest {
 
 	private ChatModel chatModel;
@@ -109,7 +109,7 @@ public class ScheduledAgentTaskTest {
 			// Create ReactAgent
 			ReactAgent agent = ReactAgent.builder()
 				.name("cron_scheduled_agent")
-				.model(chatModel)
+				.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 				.instruction("You are a cron test agent. respond briefly.")
 				.outputKey("output")
 				.build();

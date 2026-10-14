@@ -32,7 +32,7 @@ import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -61,9 +61,9 @@ class AgentLlmNodeErrorHandlingTest {
 		ChatModel model = mockModel();
 		when(model.call(any(Prompt.class))).thenThrow(failure());
 		AgentLlmNode node = nodeBuilder(ChatClient.create(model), throwOnModelError).build();
-		AssistantMessage message = assertInstanceOf(AssistantMessage.class, apply(node, false));
+		ChatMessage message = assertInstanceOf(ChatMessage.class, apply(node, false));
 
-		assertEquals("Exception: model unavailable", message.getText());
+		assertEquals("Exception: model unavailable", message.text());
 		verify(model, times(1)).call(any(Prompt.class));
 	}
 
@@ -84,24 +84,25 @@ class AgentLlmNodeErrorHandlingTest {
 	@ParameterizedTest
 	@NullSource
 	@ValueSource(booleans = false)
-	void streamingSetupErrorsRemainMessagesByDefault(Boolean throwOnModelError) throws Exception {
+	void adaptedStreamingSetupErrorsAreDeferredUntilSubscription(Boolean throwOnModelError) throws Exception {
 		ChatClient client = mock(ChatClient.class);
-		when(client.prompt()).thenThrow(failure());
+		ResourceAccessException failure = failure();
+		when(client.prompt()).thenThrow(failure);
 		AgentLlmNode node = nodeBuilder(client, throwOnModelError).build();
 
-		AssistantMessage message = assertInstanceOf(AssistantMessage.class, apply(node, true));
-
-		assertEquals("Exception: model unavailable", message.getText());
+		Flux<?> output = assertInstanceOf(Flux.class, apply(node, true));
+		assertSame(failure, assertThrows(ResourceAccessException.class, () -> output.blockLast(Duration.ofSeconds(2))));
 	}
 
 	@Test
-	void streamingSetupErrorsPropagateWhenEnabled() {
+	void adaptedStreamingSetupErrorsPropagateWhenEnabled() throws Exception {
 		ChatClient client = mock(ChatClient.class);
 		ResourceAccessException failure = failure();
 		when(client.prompt()).thenThrow(failure);
 		AgentLlmNode node = nodeBuilder(client, true).build();
 
-		assertSame(failure, assertThrows(ResourceAccessException.class, () -> apply(node, true)));
+		Flux<?> output = assertInstanceOf(Flux.class, apply(node, true));
+		assertSame(failure, assertThrows(ResourceAccessException.class, () -> output.blockLast(Duration.ofSeconds(2))));
 	}
 
 	@ParameterizedTest
@@ -111,15 +112,15 @@ class AgentLlmNodeErrorHandlingTest {
 		ChatModel model = mockModel();
 		ResourceAccessException failure = failure();
 		when(model.stream(any(Prompt.class)))
-				.thenReturn(Flux.concat(Flux.just(response("partial")), Flux.error(failure)));
+			.thenReturn(Flux.concat(Flux.just(response("partial")), Flux.error(failure)));
 		AgentLlmNode node = nodeBuilder(ChatClient.create(model), throwOnModelError).build();
 		List<String> received = new ArrayList<>();
 
 		Flux<?> output = assertInstanceOf(Flux.class, apply(node, true));
 		ResourceAccessException thrown = assertThrows(ResourceAccessException.class,
-				() -> output.cast(ChatResponse.class)
-						.doOnNext(chunk -> received.add(chunk.getResult().getOutput().getText()))
-						.blockLast(Duration.ofSeconds(2)));
+				() -> output.cast(io.github.agentic.ai.api.chat.ChatResponse.class)
+					.doOnNext(chunk -> received.add(chunk.messages().get(0).text()))
+					.blockLast(Duration.ofSeconds(2)));
 
 		assertSame(failure, thrown);
 		assertEquals(List.of("partial"), received);
@@ -137,8 +138,7 @@ class AgentLlmNodeErrorHandlingTest {
 
 		Flux<?> output = assertInstanceOf(Flux.class, apply(node, true));
 
-		assertSame(failure, assertThrows(ResourceAccessException.class,
-				() -> output.blockLast(Duration.ofSeconds(2))));
+		assertSame(failure, assertThrows(ResourceAccessException.class, () -> output.blockLast(Duration.ofSeconds(2))));
 		verify(model, times(1)).stream(any(Prompt.class));
 	}
 
@@ -150,12 +150,16 @@ class AgentLlmNodeErrorHandlingTest {
 		AgentLlmNode node = nodeBuilder(ChatClient.create(model), throwOnModelError).build();
 
 		Flux<?> output = assertInstanceOf(Flux.class, apply(node, true));
-		List<String> text = output.cast(ChatResponse.class)
-				.map(chunk -> chunk.getResult().getOutput().getText())
-				.collectList()
-				.block(Duration.ofSeconds(2));
+		List<io.github.agentic.ai.api.chat.ChatResponse> responses = output
+			.cast(io.github.agentic.ai.api.chat.ChatResponse.class)
+			.collectList()
+			.block(Duration.ofSeconds(2));
 
-		assertEquals(List.of("success"), text);
+		assertEquals(2, responses.size());
+		assertEquals("success", responses.get(0).messages().get(0).text());
+		assertEquals("success", responses.get(1).messages().get(0).text());
+		assertEquals(true, responses.get(1).metadata().get("argiFinalResponse"));
+		assertEquals("", responses.get(1).metadata().get("argiTextDelta"));
 		verify(model, times(1)).stream(any(Prompt.class));
 	}
 
@@ -166,9 +170,9 @@ class AgentLlmNodeErrorHandlingTest {
 		when(model.call(any(Prompt.class))).thenReturn(response("Exception: is a prefix, not a failure"));
 		AgentLlmNode node = nodeBuilder(ChatClient.create(model), throwOnModelError).build();
 
-		AssistantMessage message = assertInstanceOf(AssistantMessage.class, apply(node, false));
+		ChatMessage message = assertInstanceOf(ChatMessage.class, apply(node, false));
 
-		assertEquals("Exception: is a prefix, not a failure", message.getText());
+		assertEquals("Exception: is a prefix, not a failure", message.text());
 	}
 
 	@Test
@@ -178,20 +182,18 @@ class AgentLlmNodeErrorHandlingTest {
 		when(model.call(any(Prompt.class))).thenThrow(failure).thenReturn(response("recovered"));
 		List<Exception> classified = new ArrayList<>();
 		ModelRetryInterceptor retry = ModelRetryInterceptor.builder()
-				.maxAttempts(2)
-				.initialDelay(0)
-				.retryableExceptionPredicate(error -> {
-					classified.add(error);
-					return error instanceof ResourceAccessException;
-				})
-				.build();
-		AgentLlmNode node = nodeBuilder(ChatClient.create(model), true)
-				.modelInterceptors(List.of(retry))
-				.build();
+			.maxAttempts(2)
+			.initialDelay(0)
+			.retryableExceptionPredicate(error -> {
+				classified.add(error);
+				return error instanceof ResourceAccessException;
+			})
+			.build();
+		AgentLlmNode node = nodeBuilder(ChatClient.create(model), true).modelInterceptors(List.of(retry)).build();
 
-		AssistantMessage message = assertInstanceOf(AssistantMessage.class, apply(node, false));
+		ChatMessage message = assertInstanceOf(ChatMessage.class, apply(node, false));
 
-		assertEquals("recovered", message.getText());
+		assertEquals("recovered", message.text());
 		assertEquals(1, classified.size());
 		assertSame(failure, classified.get(0));
 		verify(model, times(2)).call(any(Prompt.class));
@@ -203,8 +205,8 @@ class AgentLlmNodeErrorHandlingTest {
 		ResourceAccessException failure = failure();
 		when(model.call(any(Prompt.class))).thenThrow(failure);
 		AgentLlmNode node = nodeBuilder(ChatClient.create(model), true)
-				.modelInterceptors(List.of(ModelRetryInterceptor.builder().maxAttempts(1).build()))
-				.build();
+			.modelInterceptors(List.of(ModelRetryInterceptor.builder().maxAttempts(1).build()))
+			.build();
 
 		RuntimeException thrown = assertThrows(RuntimeException.class, () -> apply(node, false));
 
@@ -219,7 +221,9 @@ class AgentLlmNodeErrorHandlingTest {
 		ChatModel model = mockModel();
 		ResourceAccessException failure = failure();
 		when(model.call(any(Prompt.class))).thenThrow(failure);
-		var builder = ReactAgent.builder().name("error-policy-test").model(model);
+		var builder = ReactAgent.builder()
+			.name("error-policy-test")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model));
 		if (throwOnModelError != null) {
 			builder.throwOnModelError(throwOnModelError);
 		}
@@ -234,7 +238,7 @@ class AgentLlmNodeErrorHandlingTest {
 			assertSame(failure, cause, "Graph execution must retain the model exception in its cause chain");
 		}
 		else {
-			assertEquals("Exception: model unavailable", agent.call("test").getText());
+			assertEquals("Exception: model unavailable", agent.call("test").text());
 		}
 		verify(model, times(1)).call(any(Prompt.class));
 	}
@@ -246,7 +250,9 @@ class AgentLlmNodeErrorHandlingTest {
 	}
 
 	private static AgentLlmNode.Builder nodeBuilder(ChatClient client, Boolean throwOnModelError) {
-		AgentLlmNode.Builder builder = AgentLlmNode.builder().agentName("test").chatClient(client);
+		AgentLlmNode.Builder builder = AgentLlmNode.builder()
+			.agentName("test")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(client));
 		if (throwOnModelError != null) {
 			builder.throwOnModelError(throwOnModelError);
 		}
@@ -254,7 +260,7 @@ class AgentLlmNodeErrorHandlingTest {
 	}
 
 	private static Object apply(AgentLlmNode node, boolean stream) throws Exception {
-		OverAllState state = new OverAllState(Map.of("messages", new ArrayList<>(List.of(new UserMessage("test")))));
+		OverAllState state = new OverAllState(Map.of("messages", new ArrayList<>(List.of(ChatMessage.user("test")))));
 		RunnableConfig config = RunnableConfig.builder().addMetadata("_stream_", stream).build();
 		return node.apply(state, config).get("messages");
 	}

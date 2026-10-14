@@ -15,24 +15,25 @@
  */
 package io.github.agentic.ai.graph.agent.node;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ToolCall;
+import io.github.agentic.ai.api.chat.ToolDefinition;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.ToolRegistry;
+import io.github.agentic.ai.api.tool.ToolResult;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallResponse;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
-import io.github.agentic.ai.graph.agent.tool.AsyncToolCallback;
 import io.github.agentic.ai.graph.agent.tool.ToolCancelledException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.ai.tool.execution.DefaultToolExecutionExceptionProcessor;
-import org.springframework.ai.tool.execution.ToolExecutionException;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -51,10 +52,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Verifies that every error exit of {@link AgentToolNode} records a structured
- * {@link ToolCallResponse#FAILURE_KIND_METADATA_KEY failure kind} and, where an
- * exception is available, its {@link ToolCallResponse#EXCEPTION_TYPE_METADATA_KEY class
- * name}, so that interceptors can distinguish a timeout from a validation error without
- * parsing messages.
+ * {@link ToolCallResponse#FAILURE_KIND_METADATA_KEY failure kind} and, where an exception
+ * is available, its {@link ToolCallResponse#EXCEPTION_TYPE_METADATA_KEY class name}, so
+ * that interceptors can distinguish a timeout from a validation error without parsing
+ * messages.
  */
 @DisplayName("AgentToolNode structured failure metadata")
 class AgentToolNodeFailureMetadataTest {
@@ -67,11 +68,10 @@ class AgentToolNodeFailureMetadataTest {
 	void asyncTimeoutCarriesTimeoutKind() throws Exception {
 		ExecutorService executor = Executors.newSingleThreadExecutor();
 		try {
-			AsyncToolCallback slow = asyncTool("slowTool", Duration.ofMillis(50),
-					() -> CompletableFuture.supplyAsync(() -> {
-						sleepQuietly(2000);
-						return "late";
-					}, executor));
+			Tool slow = asyncTool("slowTool", Duration.ofMillis(50), () -> CompletableFuture.supplyAsync(() -> {
+				sleepQuietly(2000);
+				return "late";
+			}, executor));
 
 			ToolCallResponse response = runSingleTool(slow, "slowTool", false);
 
@@ -89,7 +89,7 @@ class AgentToolNodeFailureMetadataTest {
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
 	@DisplayName("cancelled async tool is reported as failureKind=cancelled")
 	void asyncCancellationCarriesCancelledKind() throws Exception {
-		AsyncToolCallback cancelled = asyncTool("cancelTool", Duration.ofSeconds(5), () -> {
+		Tool cancelled = asyncTool("cancelTool", Duration.ofSeconds(5), () -> {
 			CompletableFuture<String> future = new CompletableFuture<>();
 			future.cancel(true);
 			return future;
@@ -106,7 +106,7 @@ class AgentToolNodeFailureMetadataTest {
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
 	@DisplayName("async tool failing with ToolCancelledException is reported as cancelled")
 	void asyncToolCancelledExceptionCarriesCancelledKind() throws Exception {
-		AsyncToolCallback cancelling = asyncTool("selfCancelTool", Duration.ofSeconds(5),
+		Tool cancelling = asyncTool("selfCancelTool", Duration.ofSeconds(5),
 				() -> CompletableFuture.failedFuture(new ToolCancelledException("stop")));
 
 		ToolCallResponse response = runSingleTool(cancelling, "selfCancelTool", false);
@@ -120,7 +120,7 @@ class AgentToolNodeFailureMetadataTest {
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
 	@DisplayName("sync tool throwing a plain exception is reported as execution with its class name")
 	void syncExceptionCarriesExecutionKindAndType() throws Exception {
-		ToolCallback failing = syncTool("failingTool", () -> {
+		Tool failing = syncTool("failingTool", () -> {
 			throw new IllegalStateException("backend rejected the request");
 		});
 
@@ -134,33 +134,30 @@ class AgentToolNodeFailureMetadataTest {
 
 	@Test
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
-	@DisplayName("ToolExecutionException is reported as an error and carries the wrapped exception type")
-	void toolExecutionExceptionIsReportedAsErrorAndCarriesWrappedType() throws Exception {
+	@DisplayName("CompletionException is marked as an error and reports the wrapped exception type")
+	void toolExecutionExceptionReportsErrorAndWrappedType() throws Exception {
 		ToolDefinition definition = definition("wrappedTool");
-		ToolCallback wrapped = syncTool(definition, () -> {
-			throw new ToolExecutionException(definition, new IllegalArgumentException("bad argument"));
+		Tool wrapped = syncTool(definition, () -> {
+			throw new CompletionException(new IllegalArgumentException("bad argument"));
 		});
 
 		ToolCallResponse response = runSingleTool(wrapped, "wrappedTool", false);
 
-		// The processed message is still delivered as the result content, but the
-		// response is now explicitly an error instead of shipping without a status.
 		assertThat(response.getStatus()).isEqualTo(ToolCallResponse.ERROR_STATUS);
 		assertThat(response.isError()).isTrue();
 		assertThat(response.getResult()).contains("bad argument");
-		// Structured metadata points at the exception thrown by the tool itself.
+		// Metadata identifies the exception thrown by the tool, not its wrapper.
 		assertThat(response.getFailureKind()).contains(ToolCallResponse.FAILURE_KIND_EXECUTION);
 		assertThat(response.getExceptionType()).contains(IllegalArgumentException.class.getName());
 	}
 
 	@Test
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
-	@DisplayName("async ToolExecutionException is reported as an error with the same status contract")
-	void asyncToolExecutionExceptionIsReportedAsError() throws Exception {
-		ToolDefinition definition = definition("asyncWrappedTool");
-		ToolCallback wrapped = asyncTool("asyncWrappedTool", Duration.ofSeconds(5),
+	@DisplayName("async failed future is marked as an error with the same status contract as the sync path")
+	void asyncFailedFutureReportsErrorAndWrappedType() throws Exception {
+		Tool wrapped = asyncTool("asyncWrappedTool", Duration.ofSeconds(5),
 				() -> CompletableFuture.failedFuture(
-						new ToolExecutionException(definition, new IllegalArgumentException("bad async argument"))));
+						new CompletionException(new IllegalArgumentException("bad async argument"))));
 
 		ToolCallResponse response = runSingleTool(wrapped, "asyncWrappedTool", false);
 
@@ -175,7 +172,7 @@ class AgentToolNodeFailureMetadataTest {
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
 	@DisplayName("unresolved tool name is reported as failureKind=unresolved without exception type")
 	void unresolvedToolCarriesUnresolvedKind() throws Exception {
-		ToolCallback other = syncTool("otherTool", () -> "ok");
+		Tool other = syncTool("otherTool", () -> "ok");
 
 		ToolCallResponse response = runSingleTool(other, "missingTool", false);
 
@@ -189,7 +186,7 @@ class AgentToolNodeFailureMetadataTest {
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
 	@DisplayName("successful tool call carries no failure metadata")
 	void successCarriesNoFailureMetadata() throws Exception {
-		ToolCallback ok = syncTool("okTool", () -> "fine");
+		Tool ok = syncTool("okTool", () -> "fine");
 
 		ToolCallResponse response = runSingleTool(ok, "okTool", false);
 
@@ -202,7 +199,7 @@ class AgentToolNodeFailureMetadataTest {
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
 	@DisplayName("parallel mode: sync tool exception is reported as execution with its class name")
 	void parallelSyncExceptionCarriesExecutionKind() throws Exception {
-		ToolCallback failing = syncTool("parallelFailingTool", () -> {
+		Tool failing = syncTool("parallelFailingTool", () -> {
 			throw new IllegalStateException("boom");
 		});
 
@@ -214,7 +211,7 @@ class AgentToolNodeFailureMetadataTest {
 	}
 
 	@Test
-	@DisplayName("failureMetadata maps throwable types to kinds and unwraps ToolExecutionException")
+	@DisplayName("failureMetadata maps throwable types to kinds and unwraps CompletionException")
 	void failureMetadataMapping() {
 		assertThat(AgentToolNode.failureMetadata(new TimeoutException()))
 			.containsEntry(ToolCallResponse.FAILURE_KIND_METADATA_KEY, ToolCallResponse.FAILURE_KIND_TIMEOUT)
@@ -227,8 +224,7 @@ class AgentToolNodeFailureMetadataTest {
 			.containsEntry(ToolCallResponse.FAILURE_KIND_METADATA_KEY, ToolCallResponse.FAILURE_KIND_EXECUTION)
 			.containsEntry(ToolCallResponse.EXCEPTION_TYPE_METADATA_KEY, RuntimeException.class.getName());
 
-		ToolExecutionException wrapped = new ToolExecutionException(definition("t"),
-				new IllegalArgumentException("inner"));
+		CompletionException wrapped = new CompletionException(new IllegalArgumentException("inner"));
 		assertThat(AgentToolNode.failureMetadata(wrapped))
 			.containsEntry(ToolCallResponse.FAILURE_KIND_METADATA_KEY, ToolCallResponse.FAILURE_KIND_EXECUTION)
 			.containsEntry(ToolCallResponse.EXCEPTION_TYPE_METADATA_KEY, IllegalArgumentException.class.getName());
@@ -239,12 +235,11 @@ class AgentToolNodeFailureMetadataTest {
 	// ---------------------------------------------------------------------
 
 	/**
-	 * Runs a single tool call through the node and captures the
-	 * {@link ToolCallResponse} as seen by a tool interceptor, which is the only place the
-	 * response metadata is observable from.
+	 * Runs a single tool call through the node and captures the {@link ToolCallResponse}
+	 * as seen by a tool interceptor, which is the only place the response metadata is
+	 * observable from.
 	 */
-	private ToolCallResponse runSingleTool(ToolCallback callback, String requestedToolName, boolean parallel)
-			throws Exception {
+	private ToolCallResponse runSingleTool(Tool callback, String requestedToolName, boolean parallel) throws Exception {
 		AtomicReference<ToolCallResponse> captured = new AtomicReference<>();
 		ToolInterceptor capture = new ToolInterceptor() {
 			@Override
@@ -262,17 +257,15 @@ class AgentToolNodeFailureMetadataTest {
 
 		AgentToolNode node = AgentToolNode.builder()
 			.agentName("test-agent")
-			.toolCallbacks(List.of(callback))
+			.toolRegistry(new ToolRegistry(List.of(callback)))
 			.parallelToolExecution(parallel)
-			.toolExecutionTimeout(Duration.ofSeconds(5))
-			.toolExecutionExceptionProcessor(DefaultToolExecutionExceptionProcessor.builder().alwaysThrow(false).build())
+			.toolExecutionTimeout(Duration.ofMillis(150))
+			.throwOnToolError(false)
 			.build();
 		node.setToolInterceptors(List.of(capture));
 
-		AssistantMessage assistantMessage = AssistantMessage.builder()
-			.content("")
-			.toolCalls(List.of(new AssistantMessage.ToolCall(CALL_ID, "function", requestedToolName, "{}")))
-			.build();
+		ChatMessage assistantMessage = ChatMessage.assistant("",
+				List.of(new ToolCall(CALL_ID, requestedToolName, "{}")));
 		OverAllState state = stateWithMessages(assistantMessage);
 
 		ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -293,59 +286,62 @@ class AgentToolNodeFailureMetadataTest {
 		return response;
 	}
 
-	private static OverAllState stateWithMessages(Message... messages) {
+	private static OverAllState stateWithMessages(ChatMessage... messages) {
 		Map<String, Object> data = new HashMap<>();
 		data.put("messages", new ArrayList<>(List.of(messages)));
 		return new OverAllState(data);
 	}
 
 	private static ToolDefinition definition(String name) {
-		return ToolDefinition.builder().name(name).description(name).inputSchema("{}").build();
+		return new ToolDefinition(name, name, "{}");
 	}
 
-	private static ToolCallback syncTool(String name, ThrowingSupplier body) {
+	private static Tool syncTool(String name, ThrowingSupplier body) {
 		return syncTool(definition(name), body);
 	}
 
-	private static ToolCallback syncTool(ToolDefinition definition, ThrowingSupplier body) {
-		return new ToolCallback() {
+	private static Tool syncTool(ToolDefinition definition, ThrowingSupplier body) {
+		return new Tool() {
 			@Override
-			public ToolDefinition getToolDefinition() {
+			public ToolDefinition definition() {
 				return definition;
 			}
 
 			@Override
-			public String call(String toolInput) {
-				return body.get();
-			}
-
-			@Override
-			public String call(String toolInput, ToolContext toolContext) {
-				return body.get();
+			public CompletionStage<ToolResult> execute(ToolCall call, ToolContext context) {
+				return CompletableFuture.completedFuture(ToolResult.text(body.get()));
 			}
 		};
 	}
 
-	private static AsyncToolCallback asyncTool(String name, Duration timeout, FutureSupplier body) {
-		return new AsyncToolCallback() {
+	private static Tool asyncTool(String name, Duration ignoredTimeout, FutureSupplier body) {
+		return new Tool() {
 			@Override
-			public ToolDefinition getToolDefinition() {
-				return definition(name);
+			public ToolDefinition definition() {
+				return AgentToolNodeFailureMetadataTest.definition(name);
 			}
 
 			@Override
-			public CompletableFuture<String> callAsync(String arguments, ToolContext context) {
-				return body.get();
-			}
-
-			@Override
-			public Duration getTimeout() {
-				return timeout;
-			}
-
-			@Override
-			public String call(String toolInput) {
-				return callAsync(toolInput, new ToolContext(Map.of())).join();
+			public CompletionStage<ToolResult> execute(ToolCall call, ToolContext context) {
+				CompletableFuture<String> source = body.get();
+				CompletableFuture<ToolResult> output = new CompletableFuture<>();
+				source.whenComplete((value, error) -> {
+					if (source.isCancelled()) {
+						output.cancel(true);
+					}
+					else if (error != null) {
+						output.completeExceptionally(error);
+					}
+					else {
+						output.complete(ToolResult.text(value));
+					}
+				});
+				output.whenComplete((value, error) -> {
+					if (output.isCancelled()) {
+						source.cancel(true);
+					}
+				});
+				return output;
 			}
 		};
 	}

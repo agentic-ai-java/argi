@@ -27,7 +27,6 @@ import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -44,9 +43,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the reasoning-phase marker for streamed model chunks (issue #34): during
- * {@code AGENT_MODEL_STREAMING}, thinking chunks (blank content carrying reasoningContent)
- * are stamped {@code isReasoning=true} and answer chunks {@code isReasoning=false}, so
- * consumers can route the two phases without guessing.
+ * {@code AGENT_MODEL_STREAMING}, thinking chunks (blank content carrying
+ * reasoningContent) are stamped {@code isReasoning=true} and answer chunks
+ * {@code isReasoning=false}, so consumers can route the two phases without guessing.
  */
 class Issue34ReasoningMarkerTest {
 
@@ -77,14 +76,14 @@ class Issue34ReasoningMarkerTest {
 	@Test
 	void reasoningAndAnswerChunksAreStampedExplicitly() throws Exception {
 		ReactAgent agent = ReactAgent.builder()
-				.name("issue34_agent")
-				.model(new ReasoningThenAnswerChatModel())
-				.build();
+			.name("issue34_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(
+					new ReasoningThenAnswerChatModel()))
+			.build();
 
-		List<NodeOutput> outputs = agent
-				.stream("please answer", RunnableConfig.builder().threadId("issue34").build())
-				.collectList()
-				.block(Duration.ofSeconds(10));
+		List<NodeOutput> outputs = agent.stream("please answer", RunnableConfig.builder().threadId("issue34").build())
+			.collectList()
+			.block(Duration.ofSeconds(10));
 
 		assertNotNull(outputs);
 		assertTrue(outputs.size() >= 2, "the model stream should emit at least a reasoning and an answer chunk");
@@ -100,17 +99,17 @@ class Issue34ReasoningMarkerTest {
 				continue;
 			}
 			agentModelChunks++;
-			Message message = chunk.message();
+			var message = chunk.messages().get(0);
 			assertNotNull(message);
-			Object marker = message.getMetadata().get(GraphRunnerContext.IS_REASONING_METADATA_KEY);
+			Object marker = message.metadata().get(GraphRunnerContext.IS_REASONING_METADATA_KEY);
 			assertInstanceOf(Boolean.class, marker,
 					"every AGENT_MODEL_STREAMING chunk must carry an explicit isReasoning marker, got metadata="
-							+ message.getMetadata());
+							+ message.metadata());
 			if (Boolean.TRUE.equals(marker)) {
 				sawReasoningChunk = true;
-				assertEquals("", message.getText(), "a reasoning chunk carries no visible answer text");
+				assertEquals("", message.text(), "a reasoning chunk carries no visible answer text");
 				assertEquals("thinking hard about the query",
-						message.getMetadata().get(GraphRunnerContext.REASONING_CONTENT_METADATA_KEY),
+						message.metadata().get(GraphRunnerContext.REASONING_CONTENT_METADATA_KEY),
 						"the reasoning text must be preserved as metadata");
 			}
 			else {

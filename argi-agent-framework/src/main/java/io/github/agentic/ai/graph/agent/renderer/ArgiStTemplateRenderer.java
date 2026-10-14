@@ -15,8 +15,7 @@
  */
 package io.github.agentic.ai.graph.agent.renderer;
 
-import org.springframework.ai.template.TemplateRenderer;
-import org.springframework.ai.template.ValidationMode;
+import java.util.function.BiFunction;
 
 import org.springframework.util.Assert;
 
@@ -33,7 +32,18 @@ import org.stringtemplate.v4.STGroup;
 import org.stringtemplate.v4.compiler.Compiler;
 import org.stringtemplate.v4.compiler.STLexer;
 
-public class ArgiStTemplateRenderer implements TemplateRenderer {
+public class ArgiStTemplateRenderer implements BiFunction<String, Map<String, Object>, String> {
+
+	public enum ValidationMode {
+
+		THROW, WARN, NONE
+
+	}
+
+	@Override
+	public String apply(String template, Map<String, Object> variables) {
+		return render(template, variables);
+	}
 
 	private static final Logger logger = LoggerFactory.getLogger(ArgiStTemplateRenderer.class);
 
@@ -51,7 +61,8 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 
 	private static final boolean DEFAULT_VALIDATE_ST_FUNCTIONS = false;
 
-	// Use uncommon characters as temporary delimiters for string-based delimiter conversion
+	// Use uncommon characters as temporary delimiters for string-based delimiter
+	// conversion
 	private static final char TEMP_START_DELIMITER = '\u0001';
 
 	private static final char TEMP_END_DELIMITER = '\u0002';
@@ -71,8 +82,8 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 	private final boolean validateStFunctions;
 
 	/**
-	 * Constructs a new {@code ArgiStTemplateRenderer} with the specified delimiter tokens,
-	 * validation mode, and function validation flag.
+	 * Constructs a new {@code ArgiStTemplateRenderer} with the specified delimiter
+	 * tokens, validation mode, and function validation flag.
 	 * @param startDelimiterToken the character used to denote the start of a template
 	 * variable (e.g., '{')
 	 * @param endDelimiterToken the character used to denote the end of a template
@@ -95,16 +106,16 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 	}
 
 	/**
-	 * Constructs a new {@code ArgiStTemplateRenderer} with the specified string delimiter tokens,
-	 * validation mode, and function validation flag.
+	 * Constructs a new {@code ArgiStTemplateRenderer} with the specified string delimiter
+	 * tokens, validation mode, and function validation flag.
 	 * <p>
-	 * This constructor supports multi-character delimiters (e.g., "{{" and "}}"), which is
-	 * useful for avoiding conflicts with JSON content or other text that uses single-character
-	 * delimiters.
+	 * This constructor supports multi-character delimiters (e.g., "{{" and "}}"), which
+	 * is useful for avoiding conflicts with JSON content or other text that uses
+	 * single-character delimiters.
 	 * @param startDelimiterString the string used to denote the start of a template
 	 * variable (e.g., "{{")
-	 * @param endDelimiterString the string used to denote the end of a template
-	 * variable (e.g., "}}")
+	 * @param endDelimiterString the string used to denote the end of a template variable
+	 * (e.g., "}}")
 	 * @param validationMode the mode to use for template variable validation; must not be
 	 * null
 	 * @param validateStFunctions whether to validate StringTemplate functions in the
@@ -125,8 +136,7 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 		this.validateStFunctions = validateStFunctions;
 	}
 
-	@Override
-	public String apply(String template, Map<String, ? extends Object> variables) {
+	public String render(String template, Map<String, ? extends Object> variables) {
 		Assert.hasText(template, "template cannot be null or empty");
 		Assert.notNull(variables, "variables cannot be null");
 		Assert.noNullElements(variables.keySet(), "variables keys cannot be null");
@@ -168,11 +178,12 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 
 	// Temporary placeholders for JSON braces
 	private static final String JSON_OPEN_PLACEHOLDER = "\uE000";
+
 	private static final String JSON_CLOSE_PLACEHOLDER = "\uE001";
 
 	/**
-	 * Protects JSON content in templates when using single-character delimiters.
-	 * This method identifies JSON objects/arrays and replaces their braces with placeholders
+	 * Protects JSON content in templates when using single-character delimiters. This
+	 * method identifies JSON objects/arrays and replaces their braces with placeholders
 	 * to prevent StringTemplate from treating them as template variables.
 	 * @param template the original template
 	 * @return template with JSON braces protected
@@ -197,11 +208,13 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 			int afterBrace = braceIdx + 1;
 			if (afterBrace < len) {
 				char nextChar = template.charAt(afterBrace);
-				// If followed by a valid identifier start (letter, underscore, $), it's a template variable
+				// If followed by a valid identifier start (letter, underscore, $), it's a
+				// template variable
 				boolean isTemplateVar = (Character.isLetter(nextChar) || nextChar == '_' || nextChar == '$');
 
 				if (!isTemplateVar) {
-					// Check if it looks like JSON: { followed by quote, whitespace+quote, or other JSON chars
+					// Check if it looks like JSON: { followed by quote, whitespace+quote,
+					// or other JSON chars
 					boolean looksLikeJson = false;
 					if (nextChar == '"' || nextChar == '\'' || nextChar == '[' || nextChar == '{') {
 						looksLikeJson = true;
@@ -244,7 +257,8 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 	}
 
 	/**
-	 * Finds the matching closing brace for a JSON object/array, handling nested structures.
+	 * Finds the matching closing brace for a JSON object/array, handling nested
+	 * structures.
 	 * @param template the template string
 	 * @param startPos the position after the opening brace
 	 * @return the index of the matching closing brace, or -1 if not found
@@ -291,29 +305,30 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 	}
 
 	/**
-	 * Restores protected JSON content in the rendered result by replacing placeholders back to braces.
+	 * Restores protected JSON content in the rendered result by replacing placeholders
+	 * back to braces.
 	 * @param result the rendered result string
 	 * @return result with JSON braces restored
 	 */
 	private String restoreJsonContentInResult(String result) {
 		return result.replace(JSON_OPEN_PLACEHOLDER, String.valueOf(this.startDelimiterToken))
-				.replace(JSON_CLOSE_PLACEHOLDER, String.valueOf(this.endDelimiterToken));
+			.replace(JSON_CLOSE_PLACEHOLDER, String.valueOf(this.endDelimiterToken));
 	}
 
 	/**
-	 * Converts string-based delimiters (e.g., "{{" and "}}") to single-character delimiters
-	 * for StringTemplate processing. This allows support for multi-character delimiters while
-	 * working with StringTemplate V4's char-based API.
+	 * Converts string-based delimiters (e.g., "{{" and "}}") to single-character
+	 * delimiters for StringTemplate processing. This allows support for multi-character
+	 * delimiters while working with StringTemplate V4's char-based API.
 	 * <p>
-	 * The conversion uses a pattern matching approach to identify template variables while
-	 * avoiding conflicts with literal text that might contain the delimiter strings.
-	 * This method handles StringTemplate expressions including:
+	 * The conversion uses a pattern matching approach to identify template variables
+	 * while avoiding conflicts with literal text that might contain the delimiter
+	 * strings. This method handles StringTemplate expressions including:
 	 * <ul>
-	 *   <li>Simple variables: {{name}}</li>
-	 *   <li>Property access: {{user.name}}</li>
-	 *   <li>Function calls: {{first(items)}}</li>
-	 *   <li>Conditional expressions: {{name ?: "default"}}</li>
-	 *   <li>List operations: {{items; separator=", "}}</li>
+	 * <li>Simple variables: {{name}}</li>
+	 * <li>Property access: {{user.name}}</li>
+	 * <li>Function calls: {{first(items)}}</li>
+	 * <li>Conditional expressions: {{name ?: "default"}}</li>
+	 * <li>List operations: {{items; separator=", "}}</li>
 	 * </ul>
 	 * @param template the original template with string delimiters
 	 * @return the template with converted single-character delimiters
@@ -338,15 +353,18 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 			result.append(template.substring(i, startIdx));
 
 			// Check if this is a valid template variable start
-			// A valid start should be followed by an identifier or StringTemplate expression
+			// A valid start should be followed by an identifier or StringTemplate
+			// expression
 			int afterStart = startIdx + startLen;
 			if (afterStart < len) {
 				char nextChar = template.charAt(afterStart);
-				// Check if next character is a valid identifier start (letter, underscore, $, or whitespace for expressions)
+				// Check if next character is a valid identifier start (letter,
+				// underscore, $, or whitespace for expressions)
 				// Also allow whitespace after delimiter for expressions like "{{ name }}"
 				if (Character.isLetter(nextChar) || nextChar == '_' || nextChar == '$'
 						|| Character.isWhitespace(nextChar)) {
-					// This looks like a template variable, find the matching end delimiter
+					// This looks like a template variable, find the matching end
+					// delimiter
 					// We need to handle nested delimiters and balanced matching
 					int endIdx = findMatchingEndDelimiter(template, afterStart, startLen, endLen);
 					if (endIdx != -1) {
@@ -374,8 +392,8 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 	}
 
 	/**
-	 * Finds the matching end delimiter for a template expression, handling nested delimiters
-	 * and balanced matching.
+	 * Finds the matching end delimiter for a template expression, handling nested
+	 * delimiters and balanced matching.
 	 * @param template the template string
 	 * @param startPos the position after the start delimiter
 	 * @param startLen the length of the start delimiter string
@@ -565,9 +583,9 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 		}
 
 		/**
-		 * Sets the string used as the start delimiter for template expressions.
-		 * This allows using multi-character delimiters (e.g., "{{") which is useful
-		 * for avoiding conflicts with JSON content or other text that uses single-character
+		 * Sets the string used as the start delimiter for template expressions. This
+		 * allows using multi-character delimiters (e.g., "{{") which is useful for
+		 * avoiding conflicts with JSON content or other text that uses single-character
 		 * delimiters.
 		 * <p>
 		 * When string delimiters are set, they take precedence over character delimiters.
@@ -582,9 +600,9 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 		}
 
 		/**
-		 * Sets the string used as the end delimiter for template expressions.
-		 * This allows using multi-character delimiters (e.g., "}}") which is useful
-		 * for avoiding conflicts with JSON content or other text that uses single-character
+		 * Sets the string used as the end delimiter for template expressions. This allows
+		 * using multi-character delimiters (e.g., "}}") which is useful for avoiding
+		 * conflicts with JSON content or other text that uses single-character
 		 * delimiters.
 		 * <p>
 		 * When string delimiters are set, they take precedence over character delimiters.
@@ -635,8 +653,8 @@ public class ArgiStTemplateRenderer implements TemplateRenderer {
 		 */
 		public ArgiStTemplateRenderer build() {
 			if (this.useStringDelimiters) {
-				return new ArgiStTemplateRenderer(this.startDelimiterString, this.endDelimiterString, this.validationMode,
-						this.validateStFunctions);
+				return new ArgiStTemplateRenderer(this.startDelimiterString, this.endDelimiterString,
+						this.validationMode, this.validateStFunctions);
 			}
 			else {
 				return new ArgiStTemplateRenderer(this.startDelimiterToken, this.endDelimiterToken, this.validationMode,

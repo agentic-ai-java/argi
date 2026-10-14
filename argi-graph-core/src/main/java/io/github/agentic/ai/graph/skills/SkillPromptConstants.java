@@ -17,7 +17,7 @@ package io.github.agentic.ai.graph.skills;
 
 import io.github.agentic.ai.graph.skills.registry.SkillRegistry;
 
-import org.springframework.ai.chat.prompt.SystemPromptTemplate;
+import io.github.agentic.ai.graph.utils.PromptTemplate;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -30,15 +30,16 @@ public class SkillPromptConstants {
 	 * Builds the skills prompt string from the list of skills.
 	 *
 	 * This method processes the skills list, separates user skills from project skills,
-	 * formats them into a skills list, and renders the system prompt template with
-	 * the appropriate context variables.
-	 *
+	 * formats them into a skills list, and renders the system prompt template with the
+	 * appropriate context variables.
 	 * @param skills the list of skills to include in the prompt
-	 * @param skillRegistry the SkillRegistry instance to get registry type and load instructions
-	 * @param systemPromptTemplate the SystemPromptTemplate to render the prompt
+	 * @param skillRegistry the SkillRegistry instance to get registry type and load
+	 * instructions
+	 * @param systemPromptTemplate the framework-neutral prompt renderer
 	 * @return the formatted skills prompt string
 	 */
-	public static String buildSkillsPrompt(List<SkillMetadata> skills, SkillRegistry skillRegistry, SystemPromptTemplate systemPromptTemplate) {
+	public static String buildSkillsPrompt(List<SkillMetadata> skills, SkillRegistry skillRegistry,
+			PromptTemplate systemPromptTemplate) {
 		List<SkillMetadata> userSkills = new ArrayList<>();
 		List<SkillMetadata> projectSkills = new ArrayList<>();
 		for (SkillMetadata skill : skills) {
@@ -55,7 +56,9 @@ public class SkillPromptConstants {
 			skillList.append("**User Skills:**\n");
 			for (SkillMetadata skill : userSkills) {
 				skillList.append(String.format("- **%s**: %s", skill.getName(), skill.getDescription()));
-				skillList.append(String.format("  → Supporting files that skill uses (scripts, references, etc.) are located at directory `%s`, use this path to form the absolute path when reading supporting files. \n", skill.getSkillPath()));
+				skillList.append(String.format(
+						"  → Supporting files that skill uses (scripts, references, etc.) are located at directory `%s`, use this path to form the absolute path when reading supporting files. \n",
+						skill.getSkillPath()));
 			}
 			skillList.append("\n");
 		}
@@ -64,14 +67,18 @@ public class SkillPromptConstants {
 			skillList.append("**Project Skills:**\n");
 			for (SkillMetadata skill : projectSkills) {
 				skillList.append(String.format("- **%s**: %s", skill.getName(), skill.getDescription()));
-				skillList.append(String.format("  → Supporting files that skill uses (scripts, references, etc.) are located at directory `%s`, use this path to form the absolute path when reading supporting files.\n", skill.getSkillPath()));
+				skillList.append(String.format(
+						"  → Supporting files that skill uses (scripts, references, etc.) are located at directory `%s`, use this path to form the absolute path when reading supporting files.\n",
+						skill.getSkillPath()));
 			}
 			skillList.append("\n");
 		}
 
 		Map<String, Object> context = new HashMap<>();
+		context.put("skills_registry", skillRegistry.getRegistryType());
 		context.put("skills_list", skillList.toString());
 		context.put("skills_load_instructions", skillRegistry.getSkillLoadInstructions());
 		return systemPromptTemplate.render(context);
 	}
+
 }

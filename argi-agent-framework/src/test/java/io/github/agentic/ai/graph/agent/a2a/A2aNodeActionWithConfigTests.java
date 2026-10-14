@@ -23,8 +23,8 @@ import io.github.agentic.ai.graph.async.AsyncGenerator;
 import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.metadata.EmptyUsage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.Usage;
 
 import io.a2a.spec.AgentCard;
 import org.junit.jupiter.api.Test;
@@ -43,7 +43,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -72,8 +75,8 @@ class A2aNodeActionWithConfigTests {
 				int step = index.getAndIncrement();
 				if (step == 0) {
 					// Use completedFuture to avoid timing issues with async execution
-					return Data.of(
-							CompletableFuture.completedFuture(NodeOutput.of("node-1", "", new OverAllState(), new EmptyUsage())));
+					return Data.of(CompletableFuture
+						.completedFuture(NodeOutput.of("node-1", "", new OverAllState(), Usage.unknown())));
 				}
 				if (step == 1) {
 					return Data.done(Map.of("result", "ok"));
@@ -111,7 +114,7 @@ class A2aNodeActionWithConfigTests {
 			public Data<NodeOutput> next() {
 				int step = index.getAndIncrement();
 				if (step < count) {
-					return Data.of(NodeOutput.of("node-" + step, "", new OverAllState(), new EmptyUsage()));
+					return Data.of(NodeOutput.of("node-" + step, "", new OverAllState(), Usage.unknown()));
 				}
 				return Data.done(Map.of("result", "ok"));
 			}
@@ -172,8 +175,8 @@ class A2aNodeActionWithConfigTests {
 		ByteArrayOutputStream stdout = new ByteArrayOutputStream();
 		try {
 			System.setOut(new PrintStream(stdout, true, StandardCharsets.UTF_8));
-			A2aNodeActionWithConfig nonStreamingAction = new A2aNodeActionWithConfig(
-					createAgentCardWrapper(baseUrl), "remote-agent", false, "reply", "secret instruction", false);
+			A2aNodeActionWithConfig nonStreamingAction = new A2aNodeActionWithConfig(createAgentCardWrapper(baseUrl),
+					"remote-agent", false, "reply", "secret instruction", false);
 
 			Map<String, Object> result = nonStreamingAction.apply(new OverAllState(),
 					RunnableConfig.builder().threadId("thread-1").build());
@@ -183,12 +186,65 @@ class A2aNodeActionWithConfigTests {
 					RunnableConfig.builder().threadId("thread-1").build());
 
 			assertEquals("remote ok", result.get("reply"));
-			AssistantMessage message = assertInstanceOf(AssistantMessage.class, messagesResult.get("messages"));
-			assertEquals("remote ok", message.getText());
+			ChatMessage message = assertInstanceOf(ChatMessage.class, messagesResult.get("messages"));
+			assertEquals("remote ok", message.text());
 			assertEquals("", stdout.toString(StandardCharsets.UTF_8));
 		}
 		finally {
 			System.setOut(originalOut);
+			server.stop(0);
+		}
+	}
+
+	@SuppressWarnings("unchecked")
+	@ParameterizedTest
+	@ValueSource(booleans = { false, true })
+	void rendersInstructionBeforeSendingAndRejectsMissingVariablesBeforeTransport(boolean streaming) throws Exception {
+		ObjectMapper json = new ObjectMapper();
+		AtomicInteger requests = new AtomicInteger();
+		AtomicReference<JsonNode> captured = new AtomicReference<>();
+		HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/", exchange -> {
+			try {
+				requests.incrementAndGet();
+				captured.set(json.readTree(exchange.getRequestBody()));
+				byte[] bytes = """
+						{"jsonrpc":"2.0","id":"response-1","result":{"kind":"artifact-update","artifact":{"parts":[{"text":"remote ok"}]}}}
+						"""
+					.getBytes(StandardCharsets.UTF_8);
+				exchange.getResponseHeaders().add("Content-Type", "application/json");
+				exchange.sendResponseHeaders(200, bytes.length);
+				exchange.getResponseBody().write(bytes);
+			}
+			finally {
+				exchange.close();
+			}
+		});
+		server.start();
+		try {
+			String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+			A2aNodeActionWithConfig node = new A2aNodeActionWithConfig(createAgentCardWrapper(baseUrl), "remote-agent",
+					false, "reply", "Inspect {topic}", streaming);
+			RunnableConfig config = RunnableConfig.builder().threadId("template-test").build();
+			assertThrows(IllegalArgumentException.class, () -> node.apply(new OverAllState(), config));
+			assertEquals(0, requests.get());
+			Map<String, Object> result = node.apply(new OverAllState(Map.of("topic", "literal {braces}")), config);
+			if (streaming) {
+				Flux<GraphResponse<NodeOutput>> flux = (Flux<GraphResponse<NodeOutput>>) result.get("reply");
+				List<GraphResponse<NodeOutput>> outputs = flux.collectList().block(Duration.ofSeconds(5));
+				assertNotNull(outputs);
+				GraphResponse<NodeOutput> terminal = outputs.get(outputs.size() - 1);
+				assertTrue(terminal.isDone());
+				assertEquals("remote ok", ((Map<?, ?>) terminal.resultValue().orElseThrow()).get("reply"));
+			}
+			else {
+				assertEquals("remote ok", result.get("reply"));
+			}
+			assertEquals(1, requests.get());
+			assertEquals(streaming ? "message/stream" : "message/send", captured.get().path("method").asText());
+			assertEquals("Inspect literal {braces}", captured.get().at("/params/message/parts/0/text").asText());
+		}
+		finally {
 			server.stop(0);
 		}
 	}
@@ -227,8 +283,8 @@ class A2aNodeActionWithConfigTests {
 	private static final Method AUTO_DETECT_AND_PARSE_RESPONSE = initAutoDetectAndParseResponseMethod();
 
 	/**
-	 * Test that extractResponseText returns empty string for "submitted" state.
-	 * This is a fix for Issue #3608 - "Agent State: submitted" should not be returned.
+	 * Test that extractResponseText returns empty string for "submitted" state. This is a
+	 * fix for Issue #3608 - "Agent State: submitted" should not be returned.
 	 */
 	@Test
 	void extractResponseText_withSubmittedState_returnsEmptyString() throws Exception {
@@ -261,7 +317,7 @@ class A2aNodeActionWithConfigTests {
 	 * Test that extractResponseText returns empty string for known ignorable states.
 	 */
 	@ParameterizedTest
-	@ValueSource(strings = {"completed", "processing", "failed", "submitted", "canceled"})
+	@ValueSource(strings = { "completed", "processing", "failed", "submitted", "canceled" })
 	void extractResponseText_withIgnorableStates_returnsEmptyString(String state) throws Exception {
 		Map<String, Object> result = new HashMap<>();
 		result.put("kind", "status-update");
@@ -386,46 +442,40 @@ class A2aNodeActionWithConfigTests {
 		}
 	}
 
-	// ==================== Tests for gh-4760: A2A streaming output metadata ====================
+	// ==================== Tests for gh-4760: A2A streaming output metadata
+	// ====================
 
 	private static final Method BUILD_STREAMING_OUTPUT = initBuildStreamingOutputMethod();
 
 	private static final Method BUILD_FINAL_RESULT = initBuildFinalResultMethod();
 
 	/**
-	 * The studio chat UI renders streaming text from the {@code chunk} / {@code message} fields of
-	 * {@link StreamingOutput}. Before gh-4760, A2A streaming events were built with the plain
-	 * {@code (text, node, agentName, state)} constructor, leaving {@code message}, {@code chunk} and
-	 * {@code outputType} unset, so the SSE payload serialized to {@code {}} and the remote agent's
-	 * reply was never displayed. The streaming output must now carry the text in both {@code chunk}
-	 * and {@code message} and be tagged {@link OutputType#AGENT_MODEL_STREAMING}.
+	 * Studio receives neutral assistant messages and the model-delta output type.
 	 */
 	@Test
-	void buildStreamingOutput_populatesMessageChunkAndOutputType() throws Exception {
+	void buildStreamingOutput_populatesNeutralMessageAndOutputType() throws Exception {
 		OverAllState state = new OverAllState();
 
 		StreamingOutput<?> output = (StreamingOutput<?>) BUILD_STREAMING_OUTPUT.invoke(this.action, "hello world",
 				state);
 
-		// chunk + message are the fields the studio chat UI reads to render streaming text
-		assertEquals("hello world", output.chunk(), "chunk must carry the streamed text");
-		assertInstanceOf(AssistantMessage.class, output.message(), "message must be an assistant message");
-		assertEquals("hello world", ((AssistantMessage) output.message()).getText());
+		assertEquals("hello world", output.text());
+		assertEquals(List.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("hello world")), output.messages());
 		// outputType restores metadata for downstream consumers of getOutputType()
 		assertEquals(OutputType.AGENT_MODEL_STREAMING, output.getOutputType());
 	}
 
 	/**
-	 * Regression test for ARGI #47. A2A responses targeting
-	 * the shared messages key must be appended as Message instances, otherwise the next routing
-	 * decision encounters a String in List&lt;Message&gt; and fails with ClassCastException.
+	 * Regression test for ARGI #47. A2A responses targeting the shared messages key must
+	 * be appended as Message instances, otherwise the next routing decision encounters a
+	 * String in List&lt;Message&gt; and fails with ClassCastException.
 	 */
 	@Test
 	void buildFinalResult_wrapsMessagesOutputInAssistantMessage() throws Exception {
 		Map<String, Object> result = invokeBuildFinalResult("messages", "remote reply");
 
-		AssistantMessage message = assertInstanceOf(AssistantMessage.class, result.get("messages"));
-		assertEquals("remote reply", message.getText());
+		ChatMessage message = assertInstanceOf(ChatMessage.class, result.get("messages"));
+		assertEquals("remote reply", message.text());
 	}
 
 	@Test

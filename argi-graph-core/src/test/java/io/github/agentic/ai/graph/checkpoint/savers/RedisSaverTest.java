@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.graph.checkpoint.savers;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.CompiledGraph;
 import io.github.agentic.ai.graph.KeyStrategyFactory;
@@ -27,7 +30,7 @@ import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 import io.github.agentic.ai.graph.checkpoint.savers.redis.RedisSaver;
 import io.github.agentic.ai.graph.serializer.AgentInstructionMessage;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import io.github.agentic.ai.graph.state.strategy.ReplaceStrategy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -51,12 +54,6 @@ import org.junit.jupiter.api.condition.EnabledIf;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.document.Document;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.EnabledIfDockerAvailable;
@@ -89,10 +86,10 @@ class RedisSaverTest {
 	@Container
 	private static final GenericContainer<?> redisContainer = new GenericContainer<>(
 			DockerImageName.parse("valkey/valkey:8.1.2"))
-			.withExposedPorts(6379); // #gitleaks:allow
+		.withExposedPorts(6379); // #gitleaks:allow
 	static RedissonClient redisson;
 	static RedisSaver redisSaver;
-	static StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+	static StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 	@BeforeAll
 	static void setup() {
@@ -100,12 +97,9 @@ class RedisSaverTest {
 		// 本地单机 Redis，测试环境需保证 6379 端口可用
 		Config config = new Config();
 		config.useSingleServer()
-				.setAddress("redis://" + redisContainer.getHost() + ":" + redisContainer.getMappedPort(6379));
+			.setAddress("redis://" + redisContainer.getHost() + ":" + redisContainer.getMappedPort(6379));
 		redisson = Redisson.create(config);
-		redisSaver = RedisSaver.builder()
-				.redisson(redisson)
-				.stateSerializer(serializer)
-				.build();
+		redisSaver = RedisSaver.builder().redisson(redisson).stateSerializer(serializer).build();
 	}
 
 	@AfterAll
@@ -122,17 +116,17 @@ class RedisSaverTest {
 
 		// 构造 checkpoint
 		Checkpoint cp1 = Checkpoint.builder()
-				.id("cp1")
-				.state(java.util.Map.of("data", "data1"))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp1")
+			.state(java.util.Map.of("data", "data1"))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		Checkpoint cp2 = Checkpoint.builder()
-				.id("cp2")
-				.state(java.util.Map.of("data", "data2"))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp2")
+			.state(java.util.Map.of("data", "data2"))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 
 		// put 第一个
 		redisSaver.put(config, cp1);
@@ -162,20 +156,20 @@ class RedisSaverTest {
 		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
 		Checkpoint cp1 = Checkpoint.builder()
-				.id("cp1")
-				.state(java.util.Map.of("data", "data1"))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp1")
+			.state(java.util.Map.of("data", "data1"))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		redisSaver.put(config, cp1);
 
 		// 替换 cp1
 		Checkpoint cp1New = Checkpoint.builder()
-				.id("cp1")
-				.state(java.util.Map.of("data", "data1-new"))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp1")
+			.state(java.util.Map.of("data", "data1-new"))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		RunnableConfig configWithId = RunnableConfig.builder(config).checkPointId("cp1").build();
 		redisSaver.put(configWithId, cp1New);
 
@@ -210,9 +204,11 @@ class RedisSaverTest {
 					System.out.println(threadName);
 					redisSaver.list(RunnableConfig.builder().threadId(threadName).build());
 
-				} catch (Exception e) {
+				}
+				catch (Exception e) {
 					e.printStackTrace();
-				} finally {
+				}
+				finally {
 					latch.countDown();
 				}
 			});
@@ -248,35 +244,31 @@ class RedisSaverTest {
 	}
 
 	/**
-	 * Test that Message objects (SystemMessage, UserMessage, AssistantMessage,
-	 * AgentInstructionMessage)
-	 * are properly serialized and deserialized, maintaining their type information.
-	 * This test addresses the bug where Message objects were being deserialized as
-	 * HashMap
-	 * instead of their original types, causing ClassCastException in AgentLlmNode.
+	 * Test that ChatMessage objects (ChatMessage, ChatMessage, ChatMessage,
+	 * AgentInstructionMessage) are properly serialized and deserialized, maintaining
+	 * their type information. This test addresses the bug where ChatMessage objects were
+	 * being deserialized as HashMap instead of their original types, causing
+	 * ClassCastException in AgentLlmNode.
 	 */
 	@Test
 	void testMessageSerializationAndDeserialization() throws Exception {
 		String threadId = "test-message-thread-" + UUID.randomUUID();
 		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
-		// Create a checkpoint with various Message types in the state
-		List<Message> messages = List.of(
-				SystemMessage.builder().text("System prompt").build(),
-				UserMessage.builder().text("User question").build(),
-				AssistantMessage.builder().content("Assistant response").build(),
+		// Create a checkpoint with various ChatMessage types in the state
+		List<ChatMessage> messages = List.of(ChatMessage.builder(ChatRole.SYSTEM).text("System prompt").build(),
+				ChatMessage.builder(ChatRole.USER).text("User question").build(),
+				ChatMessage.builder(ChatRole.ASSISTANT).text("Assistant response").build(),
 				AgentInstructionMessage.builder().text("Agent instruction template: {param}").build());
 
-		Map<String, Object> stateWithMessages = Map.of(
-				"messages", messages,
-				"someOtherData", "test-data");
+		Map<String, Object> stateWithMessages = Map.of("messages", messages, "someOtherData", "test-data");
 
 		Checkpoint checkpoint = Checkpoint.builder()
-				.id("cp-messages")
-				.state(stateWithMessages)
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp-messages")
+			.state(stateWithMessages)
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 
 		// Save the checkpoint
 		redisSaver.put(config, checkpoint);
@@ -298,103 +290,59 @@ class RedisSaverTest {
 		assertEquals(4, retrievedMessages.size(), "Should have 4 messages");
 
 		// Verify each message is of the correct type
-		assertInstanceOf(SystemMessage.class, retrievedMessages.get(0),
-				"First message should be SystemMessage, not HashMap");
-		assertInstanceOf(UserMessage.class, retrievedMessages.get(1),
-				"Second message should be UserMessage, not HashMap");
-		assertInstanceOf(AssistantMessage.class, retrievedMessages.get(2),
-				"Third message should be AssistantMessage, not HashMap");
-		assertInstanceOf(AgentInstructionMessage.class, retrievedMessages.get(3),
+		assertInstanceOf(ChatMessage.class, retrievedMessages.get(0),
+				"First message should be ChatMessage, not HashMap");
+		assertInstanceOf(ChatMessage.class, retrievedMessages.get(1),
+				"Second message should be ChatMessage, not HashMap");
+		assertInstanceOf(ChatMessage.class, retrievedMessages.get(2),
+				"Third message should be ChatMessage, not HashMap");
+		assertInstanceOf(ChatMessage.class, retrievedMessages.get(3),
 				"Fourth message should be AgentInstructionMessage, not HashMap");
 
 		// Verify the content is preserved
-		SystemMessage systemMsg = (SystemMessage) retrievedMessages.get(0);
-		assertEquals("System prompt", systemMsg.getText());
+		ChatMessage systemMsg = (ChatMessage) retrievedMessages.get(0);
+		assertEquals("System prompt", systemMsg.text());
 
-		UserMessage userMsg = (UserMessage) retrievedMessages.get(1);
-		assertEquals("User question", userMsg.getText());
+		ChatMessage userMsg = (ChatMessage) retrievedMessages.get(1);
+		assertEquals("User question", userMsg.text());
 
-		AssistantMessage assistantMsg = (AssistantMessage) retrievedMessages.get(2);
-		assertEquals("Assistant response", assistantMsg.getText());
+		ChatMessage assistantMsg = (ChatMessage) retrievedMessages.get(2);
+		assertEquals("Assistant response", assistantMsg.text());
 
-		AgentInstructionMessage instructionMsg = (AgentInstructionMessage) retrievedMessages.get(3);
-		assertEquals("Agent instruction template: {param}", instructionMsg.getText());
+		ChatMessage instructionMsg = (ChatMessage) retrievedMessages.get(3);
+		assertTrue(AgentInstructionMessage.isTemplate(instructionMsg));
+		assertEquals("Agent instruction template: {param}", instructionMsg.text());
 	}
 
 	@Test
 	void testToolResponseMessageSerialization() throws Exception {
-		String threadId = "test-tool-response-" + UUID.randomUUID();
-		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
-
-		Map<String, Object> metadata = new HashMap<>();
-		metadata.put("tool_execution_id", "exec_123");
-		metadata.put("execution_time", 150);
-
-		List<ToolResponseMessage.ToolResponse> responses = List.of(
-				new ToolResponseMessage.ToolResponse("tool_call_1", "calculator", "{\"result\": 42}"),
-				new ToolResponseMessage.ToolResponse("tool_call_2", "weather", "{\"temperature\": 25}"));
-
-		ToolResponseMessage original = ToolResponseMessage.builder()
-			.responses(responses)
-			.metadata(metadata)
-			.build();
-
+		RunnableConfig config = RunnableConfig.builder().threadId("tool-" + UUID.randomUUID()).build();
+		List<ChatMessage> original = List.of(
+				ChatMessage.tool("call-1", "calculator", "42").withMetadata(Map.of("time", 150)),
+				ChatMessage.tool("call-2", "weather", "25").withMetadata(Map.of("time", 200)));
 		Checkpoint checkpoint = Checkpoint.builder()
-				.id("cp-tool")
-				.state(Map.of("message", original))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
-
+			.id("tools")
+			.state(Map.of("messages", original))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		redisSaver.put(config, checkpoint);
-
-		Optional<Checkpoint> retrievedOpt = redisSaver.get(config);
-		assertTrue(retrievedOpt.isPresent());
-
-		Object msgObj = retrievedOpt.get().getState().get("message");
-		assertInstanceOf(ToolResponseMessage.class, msgObj);
-
-		ToolResponseMessage deserialized = (ToolResponseMessage) msgObj;
-		assertEquals(original.getResponses().size(), deserialized.getResponses().size());
-		assertEquals(original.getMetadata(), deserialized.getMetadata());
+		assertEquals(original, redisSaver.get(config).orElseThrow().getState().get("messages"));
 	}
 
 	@Test
-	void testDocumentSerialization() throws Exception {
-		String threadId = "test-document-" + UUID.randomUUID();
-		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
-
-		Map<String, Object> metadata = new HashMap<>();
-		metadata.put("source", "file.pdf");
-		metadata.put("page", 1);
-
-		Document original = Document.builder()
-				.id("doc_123")
-				.text("This is a test document content.")
-				.metadata(metadata)
-				.score(0.95)
-				.build();
-
+	void testApplicationDocumentSerialization() throws Exception {
+		RunnableConfig config = RunnableConfig.builder().threadId("document-" + UUID.randomUUID()).build();
+		Map<String, Object> original = Map.of("id", "doc", "text", "content", "score", 0.95, "metadata",
+				Map.of("source", "file.pdf", "page", 1));
 		Checkpoint checkpoint = Checkpoint.builder()
-				.id("cp-doc")
-				.state(Map.of("document", original))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
-
+			.id("doc")
+			.state(Map.of("document", original))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		redisSaver.put(config, checkpoint);
-
-		Optional<Checkpoint> retrievedOpt = redisSaver.get(config);
-		assertTrue(retrievedOpt.isPresent());
-
-		Object docObj = retrievedOpt.get().getState().get("document");
-		assertInstanceOf(Document.class, docObj);
-
-		Document deserialized = (Document) docObj;
-		assertEquals(original.getId(), deserialized.getId());
-		assertEquals(original.getText(), deserialized.getText());
-		assertEquals(original.getScore(), deserialized.getScore());
-		assertEquals(original.getMetadata(), deserialized.getMetadata());
+		assertEquals(original, redisSaver.get(config).orElseThrow().getState().get("document"));
 	}
 
 	@Test
@@ -412,14 +360,17 @@ class RedisSaverTest {
 		nestedMap.put("nested_key", "nested_value");
 		metadata.put("nested_object", nestedMap);
 
-		UserMessage original = UserMessage.builder().text("Message with complex metadata").metadata(metadata).build();
+		ChatMessage original = ChatMessage.builder(ChatRole.USER)
+			.text("ChatMessage with complex metadata")
+			.metadata(metadata)
+			.build();
 
 		Checkpoint checkpoint = Checkpoint.builder()
-				.id("cp-complex")
-				.state(Map.of("message", original))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp-complex")
+			.state(Map.of("message", original))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 
 		redisSaver.put(config, checkpoint);
 
@@ -427,10 +378,10 @@ class RedisSaverTest {
 		assertTrue(retrievedOpt.isPresent());
 
 		Object msgObj = retrievedOpt.get().getState().get("message");
-		assertInstanceOf(UserMessage.class, msgObj);
+		assertInstanceOf(ChatMessage.class, msgObj);
 
-		UserMessage deserialized = (UserMessage) msgObj;
-		Map<String, Object> deserializedMetadata = deserialized.getMetadata();
+		ChatMessage deserialized = (ChatMessage) msgObj;
+		Map<String, Object> deserializedMetadata = deserialized.metadata();
 
 		assertEquals("test_value", deserializedMetadata.get("string_field"));
 		assertEquals(42, deserializedMetadata.get("number_field"));
@@ -447,43 +398,44 @@ class RedisSaverTest {
 	}
 
 	/**
-	 * Test that RedisSaver can be created with ObjectMapper from StateGraph's Jackson serializer.
-	 * This ensures consistency between StateGraph serialization and RedisSaver serialization.
+	 * Test that RedisSaver can be created with ObjectMapper from StateGraph's Jackson
+	 * serializer. This ensures consistency between StateGraph serialization and
+	 * RedisSaver serialization.
 	 */
 	@Test
 	void testRedisSaverWithStateGraphJacksonSerializer() throws Exception {
-		// Create StateGraph with SpringAIJacksonStateSerializer
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		// Create StateGraph with ArgiJacksonStateSerializer
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		KeyStrategyFactory keyStrategyFactory = () -> Map.of("value", new ReplaceStrategy());
-		
+
 		StateGraph graph = new StateGraph("testGraph", keyStrategyFactory, serializer);
-		
+
 		// Get ObjectMapper from the serializer (if it's a Jackson serializer)
 		StateSerializer graphSerializer = graph.getStateSerializer();
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer);
-		
-		SpringAIJacksonStateSerializer jacksonSerializer = (SpringAIJacksonStateSerializer) graphSerializer;
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer);
+
+		ArgiJacksonStateSerializer jacksonSerializer = (ArgiJacksonStateSerializer) graphSerializer;
 		ObjectMapper objectMapper = jacksonSerializer.objectMapper();
-		
+
 		// Create RedisSaver with the ObjectMapper from StateGraph's serializer
 		RedisSaver saverWithSerializer = RedisSaver.builder()
-				.redisson(redisson)
-				.stateSerializer(graphSerializer)
-				.build();
-		
+			.redisson(redisson)
+			.stateSerializer(graphSerializer)
+			.build();
+
 		// Test that it works correctly
 		String threadId = "test-serializer-thread-" + UUID.randomUUID();
 		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
-		
+
 		Checkpoint checkpoint = Checkpoint.builder()
-				.id("cp-serializer")
-				.state(Map.of("data", "test_value", "number", 42))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
-		
+			.id("cp-serializer")
+			.state(Map.of("data", "test_value", "number", 42))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
+
 		saverWithSerializer.put(config, checkpoint);
-		
+
 		Optional<Checkpoint> retrieved = saverWithSerializer.get(config);
 		assertTrue(retrieved.isPresent());
 		assertEquals("test_value", retrieved.get().getState().get("data"));
@@ -492,51 +444,46 @@ class RedisSaverTest {
 
 	/**
 	 * Test that StateGraph with different serializers works correctly with RedisSaver.
-	 * Note: RedisSaver uses JSON serialization, so it works best with Jackson-based serializers.
+	 * Note: RedisSaver uses JSON serialization, so it works best with Jackson-based
+	 * serializers.
 	 */
 	@Test
 	void testStateGraphWithSerializerAndRedisSaver() throws Exception {
-		// Create StateGraph with SpringAIJacksonStateSerializer
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		// Create StateGraph with ArgiJacksonStateSerializer
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		KeyStrategyFactory keyStrategyFactory = () -> Map.of("steps", new ReplaceStrategy());
-		
-		StateGraph graph = new StateGraph("testGraph", keyStrategyFactory, serializer)
-			.addEdge(START, "node1")
+
+		StateGraph graph = new StateGraph("testGraph", keyStrategyFactory, serializer).addEdge(START, "node1")
 			.addNode("node1", node_async(state -> {
 				int steps = (int) state.value("steps").orElse(0);
 				return Map.of("steps", steps + 1);
 			}))
 			.addEdge("node1", END);
-		
+
 		// Get ObjectMapper from StateGraph's serializer
 		StateSerializer graphSerializer = graph.getStateSerializer();
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer);
-		SpringAIJacksonStateSerializer jacksonSerializer = (SpringAIJacksonStateSerializer) graphSerializer;
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer);
+		ArgiJacksonStateSerializer jacksonSerializer = (ArgiJacksonStateSerializer) graphSerializer;
 		ObjectMapper objectMapper = jacksonSerializer.objectMapper();
-		
+
 		// Create RedisSaver using the same ObjectMapper
-		RedisSaver saver = RedisSaver.builder()
-				.redisson(redisson)
-				.stateSerializer(graphSerializer)
-				.build();
-		
+		RedisSaver saver = RedisSaver.builder().redisson(redisson).stateSerializer(graphSerializer).build();
+
 		// Compile graph with saver
 		CompileConfig compileConfig = CompileConfig.builder()
-			.saverConfig(SaverConfig.builder()
-				.register(saver)
-				.build())
+			.saverConfig(SaverConfig.builder().register(saver).build())
 			.build();
-		
+
 		CompiledGraph compiledGraph = graph.compile(compileConfig);
-		
+
 		// Execute and verify
 		String threadId = "test-execution-thread-" + UUID.randomUUID();
 		RunnableConfig runnableConfig = RunnableConfig.builder().threadId(threadId).build();
 		java.util.Optional<OverAllState> result = compiledGraph.invoke(Map.of(), runnableConfig);
-		
+
 		assertTrue(result.isPresent());
 		assertEquals(1, result.get().value("steps").orElse(0));
-		
+
 		// Verify checkpoint was saved
 		Optional<Checkpoint> checkpoint = saver.get(runnableConfig);
 		assertTrue(checkpoint.isPresent());
@@ -551,51 +498,46 @@ class RedisSaverTest {
 		// Create StateGraph with default serializer (should be JacksonSerializer)
 		KeyStrategyFactory keyStrategyFactory = () -> Map.of("value", new ReplaceStrategy());
 		StateGraph graph = new StateGraph("testGraph", keyStrategyFactory);
-		
+
 		// Verify default serializer is Jackson-based
 		StateSerializer graphSerializer = graph.getStateSerializer();
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer);
-		
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer);
+
 		// Get ObjectMapper from default serializer
-		SpringAIJacksonStateSerializer jacksonSerializer = (SpringAIJacksonStateSerializer) graphSerializer;
+		ArgiJacksonStateSerializer jacksonSerializer = (ArgiJacksonStateSerializer) graphSerializer;
 		ObjectMapper objectMapper = jacksonSerializer.objectMapper();
-		
+
 		// Create RedisSaver with the ObjectMapper
-		RedisSaver saver = RedisSaver.builder()
-				.redisson(redisson)
-				.stateSerializer(graphSerializer)
-				.build();
-		
+		RedisSaver saver = RedisSaver.builder().redisson(redisson).stateSerializer(graphSerializer).build();
+
 		// Test serialization/deserialization
 		String threadId = "test-default-serializer-thread-" + UUID.randomUUID();
 		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
-		
-		// Create checkpoint with Message objects
-		List<Message> messages = List.of(
-			SystemMessage.builder().text("System message").build(),
-			UserMessage.builder().text("User message").build()
-		);
-		
+
+		// Create checkpoint with ChatMessage objects
+		List<ChatMessage> messages = List.of(ChatMessage.builder(ChatRole.SYSTEM).text("System message").build(),
+				ChatMessage.builder(ChatRole.USER).text("User message").build());
+
 		Checkpoint checkpoint = Checkpoint.builder()
 			.id("cp-default")
 			.state(Map.of("messages", messages, "data", "test"))
 			.nodeId("node1")
 			.nextNodeId("node2")
 			.build();
-		
+
 		saver.put(config, checkpoint);
-		
+
 		Optional<Checkpoint> retrieved = saver.get(config);
 		assertTrue(retrieved.isPresent());
-		
+
 		// Verify messages are correctly deserialized
 		Object messagesObj = retrieved.get().getState().get("messages");
 		assertInstanceOf(List.class, messagesObj);
 		@SuppressWarnings("unchecked")
 		List<Object> retrievedMessages = (List<Object>) messagesObj;
 		assertEquals(2, retrievedMessages.size());
-		assertInstanceOf(SystemMessage.class, retrievedMessages.get(0));
-		assertInstanceOf(UserMessage.class, retrievedMessages.get(1));
+		assertInstanceOf(ChatMessage.class, retrievedMessages.get(0));
+		assertInstanceOf(ChatMessage.class, retrievedMessages.get(1));
 	}
 
 	/**
@@ -604,61 +546,56 @@ class RedisSaverTest {
 	@Test
 	void testSerializerConsistencyBetweenStateGraphAndRedisSaver() throws Exception {
 		// Create StateGraph with specific serializer
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		KeyStrategyFactory keyStrategyFactory = () -> Map.of("test", new ReplaceStrategy());
-		
+
 		StateGraph graph = new StateGraph("testGraph", keyStrategyFactory, serializer);
-		
+
 		// Get ObjectMapper from StateGraph's serializer
 		StateSerializer graphSerializer = graph.getStateSerializer();
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer);
-		SpringAIJacksonStateSerializer jacksonSerializer = (SpringAIJacksonStateSerializer) graphSerializer;
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer);
+		ArgiJacksonStateSerializer jacksonSerializer = (ArgiJacksonStateSerializer) graphSerializer;
 		ObjectMapper graphObjectMapper = jacksonSerializer.objectMapper();
-		
+
 		// Create RedisSaver with the same ObjectMapper
-		RedisSaver saver = RedisSaver.builder()
-				.redisson(redisson)
-				.stateSerializer(graphSerializer)
-				.build();
-		
+		RedisSaver saver = RedisSaver.builder().redisson(redisson).stateSerializer(graphSerializer).build();
+
 		// Verify they use compatible serialization
 		String threadId = "test-consistency-thread-" + UUID.randomUUID();
 		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
-		
+
 		// Create complex state with various types
 		Map<String, Object> complexState = new HashMap<>();
 		complexState.put("string", "value");
 		complexState.put("number", 123);
-		complexState.put("messages", List.of(
-			SystemMessage.builder().text("System").build(),
-			UserMessage.builder().text("User").build()
-		));
-		
+		complexState.put("messages", List.of(ChatMessage.builder(ChatRole.SYSTEM).text("System").build(),
+				ChatMessage.builder(ChatRole.USER).text("User").build()));
+
 		Checkpoint checkpoint = Checkpoint.builder()
 			.id("cp-consistency")
 			.state(complexState)
 			.nodeId("node1")
 			.nextNodeId("node2")
 			.build();
-		
+
 		// Save and retrieve
 		saver.put(config, checkpoint);
 		Optional<Checkpoint> retrieved = saver.get(config);
-		
+
 		assertTrue(retrieved.isPresent());
 		Map<String, Object> retrievedState = retrieved.get().getState();
-		
+
 		// Verify all types are correctly preserved
 		assertEquals("value", retrievedState.get("string"));
 		assertEquals(123, retrievedState.get("number"));
-		
+
 		Object messagesObj = retrievedState.get("messages");
 		assertInstanceOf(List.class, messagesObj);
 		@SuppressWarnings("unchecked")
 		List<Object> messages = (List<Object>) messagesObj;
 		assertEquals(2, messages.size());
-		assertInstanceOf(SystemMessage.class, messages.get(0));
-		assertInstanceOf(UserMessage.class, messages.get(1));
+		assertInstanceOf(ChatMessage.class, messages.get(0));
+		assertInstanceOf(ChatMessage.class, messages.get(1));
 	}
 
 	/**
@@ -671,17 +608,17 @@ class RedisSaverTest {
 
 		// Add some checkpoints
 		Checkpoint cp1 = Checkpoint.builder()
-				.id("cp1")
-				.state(Map.of("data", "data1"))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp1")
+			.state(Map.of("data", "data1"))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		Checkpoint cp2 = Checkpoint.builder()
-				.id("cp2")
-				.state(Map.of("data", "data2"))
-				.nodeId("node2")
-				.nextNodeId("node3")
-				.build();
+			.id("cp2")
+			.state(Map.of("data", "data2"))
+			.nodeId("node2")
+			.nextNodeId("node3")
+			.build();
 
 		redisSaver.put(config, cp1);
 		redisSaver.put(config, cp2);
@@ -706,8 +643,8 @@ class RedisSaverTest {
 	}
 
 	/**
-	 * Test thread versioning: releasing a thread and reusing the same thread_name
-	 * should create a new thread_id and not overwrite old checkpoints.
+	 * Test thread versioning: releasing a thread and reusing the same thread_name should
+	 * create a new thread_id and not overwrite old checkpoints.
 	 */
 	@Test
 	void testThreadVersioning() throws Exception {
@@ -716,17 +653,17 @@ class RedisSaverTest {
 
 		// First version: add checkpoints
 		Checkpoint cp1v1 = Checkpoint.builder()
-				.id("cp1-v1")
-				.state(Map.of("version", "v1", "data", "data1"))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp1-v1")
+			.state(Map.of("version", "v1", "data", "data1"))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		Checkpoint cp2v1 = Checkpoint.builder()
-				.id("cp2-v1")
-				.state(Map.of("version", "v1", "data", "data2"))
-				.nodeId("node2")
-				.nextNodeId("node3")
-				.build();
+			.id("cp2-v1")
+			.state(Map.of("version", "v1", "data", "data2"))
+			.nodeId("node2")
+			.nextNodeId("node3")
+			.build();
 
 		redisSaver.put(config, cp1v1);
 		redisSaver.put(config, cp2v1);
@@ -747,17 +684,17 @@ class RedisSaverTest {
 
 		// Reuse the same thread_name - should create a new thread_id
 		Checkpoint cp1v2 = Checkpoint.builder()
-				.id("cp1-v2")
-				.state(Map.of("version", "v2", "data", "data1-new"))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp1-v2")
+			.state(Map.of("version", "v2", "data", "data1-new"))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		Checkpoint cp2v2 = Checkpoint.builder()
-				.id("cp2-v2")
-				.state(Map.of("version", "v2", "data", "data2-new"))
-				.nodeId("node2")
-				.nextNodeId("node3")
-				.build();
+			.id("cp2-v2")
+			.state(Map.of("version", "v2", "data", "data2-new"))
+			.nodeId("node2")
+			.nextNodeId("node3")
+			.build();
 
 		redisSaver.put(config, cp1v2);
 		redisSaver.put(config, cp2v2);
@@ -769,8 +706,7 @@ class RedisSaverTest {
 		assertEquals("v2", v2Checkpoints.get(1).getState().get("version"));
 
 		// Verify old checkpoints are not accessible (data isolation)
-		boolean foundV1 = v2Checkpoints.stream()
-				.anyMatch(cp -> "v1".equals(cp.getState().get("version")));
+		boolean foundV1 = v2Checkpoints.stream().anyMatch(cp -> "v1".equals(cp.getState().get("version")));
 		assertFalse(foundV1, "Old version checkpoints should not be accessible");
 	}
 
@@ -789,8 +725,8 @@ class RedisSaverTest {
 	}
 
 	/**
-	 * Test that multiple operations on the same thread_name use the same thread_id
-	 * until the thread is released.
+	 * Test that multiple operations on the same thread_name use the same thread_id until
+	 * the thread is released.
 	 */
 	@Test
 	void testThreadIdConsistency() throws Exception {
@@ -799,20 +735,20 @@ class RedisSaverTest {
 
 		// First put - creates thread_id
 		Checkpoint cp1 = Checkpoint.builder()
-				.id("cp1")
-				.state(Map.of("data", "data1"))
-				.nodeId("node1")
-				.nextNodeId("node2")
-				.build();
+			.id("cp1")
+			.state(Map.of("data", "data1"))
+			.nodeId("node1")
+			.nextNodeId("node2")
+			.build();
 		redisSaver.put(config, cp1);
 
 		// Second put - should use the same thread_id
 		Checkpoint cp2 = Checkpoint.builder()
-				.id("cp2")
-				.state(Map.of("data", "data2"))
-				.nodeId("node2")
-				.nextNodeId("node3")
-				.build();
+			.id("cp2")
+			.state(Map.of("data", "data2"))
+			.nodeId("node2")
+			.nextNodeId("node3")
+			.build();
 		redisSaver.put(config, cp2);
 
 		// Verify both checkpoints are in the same list
@@ -839,17 +775,19 @@ class RedisSaverTest {
 				try {
 					RunnableConfig config = RunnableConfig.builder().threadId(threadName).build();
 					Checkpoint cp = Checkpoint.builder()
-							.id("cp-" + index)
-							.state(Map.of("index", index))
-							.nodeId("node1")
-							.nextNodeId("node2")
-							.build();
+						.id("cp-" + index)
+						.state(Map.of("index", index))
+						.nodeId("node1")
+						.nextNodeId("node2")
+						.build();
 					redisSaver.put(config, cp);
 					return true;
-				} catch (Exception e) {
+				}
+				catch (Exception e) {
 					e.printStackTrace();
 					return false;
-				} finally {
+				}
+				finally {
 					latch.countDown();
 				}
 			});
@@ -868,4 +806,5 @@ class RedisSaverTest {
 		executorService.shutdown();
 		executorService.awaitTermination(5, TimeUnit.SECONDS);
 	}
+
 }

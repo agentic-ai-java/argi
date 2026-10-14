@@ -15,6 +15,8 @@
  */
 package io.github.agentic.ai.graph.agent;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.tool.ToolContext;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.agent.hook.HookPosition;
@@ -22,18 +24,22 @@ import io.github.agentic.ai.graph.agent.hook.HookPositions;
 import io.github.agentic.ai.graph.agent.hook.ModelHook;
 import io.github.agentic.ai.graph.agent.tools.ToolContextConstants;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
+import io.github.agentic.ai.graph.execution.DelegationScope;
+import io.github.agentic.ai.graph.execution.PrincipalReference;
+import io.github.agentic.ai.graph.execution.TenantReference;
+import io.github.agentic.ai.graph.execution.TrustedExecutionContext;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -50,23 +56,30 @@ class AgentToolConfigPropagationTest {
 	void shouldOverrideAgentMetadataAndPreserveBusinessMetadata() {
 		ConfigCaptureHook captureHook = new ConfigCaptureHook();
 		ReactAgent subAgent = ReactAgent.builder()
-				.name("child_agent")
-				.model(new FixedResponseChatModel("child response"))
-				.hooks(List.of(captureHook))
-				.saver(new MemorySaver())
-				.build();
+			.name("child_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(
+					new FixedResponseChatModel("child response")))
+			.hooks(List.of(captureHook))
+			.saver(new MemorySaver())
+			.build();
 
 		RunnableConfig parentConfig = RunnableConfig.builder()
-				.threadId("parent-thread")
-				.addMetadata("_AGENT_", "parent_agent")
-				.addMetadata("business_key", "business-value")
-				.build();
+			.threadId("parent-thread")
+			.addMetadata("_AGENT_", "parent_agent")
+			.addMetadata("business_key", "business-value")
+			.trustedExecutionContext(TrustedExecutionContext.builder()
+				.tenant(new TenantReference("example-iam", "tenant-a"))
+				.principal(new PrincipalReference("example-iam", "principal-a"))
+				.runId("run-parent")
+				.correlationId("correlation-a")
+				.delegationScope(DelegationScope.of(Set.of("agents:delegate")))
+				.build())
+			.build();
 
-		AssistantMessage result = new AgentTool.AgentToolExecutor(subAgent)
-				.executeAgent("{\"input\":\"hello\"}",
-						new ToolContext(Map.of(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY, parentConfig)));
+		ChatMessage result = new AgentTool.AgentToolExecutor(subAgent).executeAgent("{\"input\":\"hello\"}",
+				new ToolContext(Map.of(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY, parentConfig)));
 
-		assertEquals("child response", result.getText());
+		assertEquals("child response", result.text());
 
 		RunnableConfig capturedConfig = captureHook.capturedConfig();
 		assertNotNull(capturedConfig, "Sub-agent should receive a runnable config");
@@ -76,27 +89,31 @@ class AgentToolConfigPropagationTest {
 				"Business metadata from parent config should be preserved");
 		assertEquals("parent-thread_child_agent", capturedConfig.threadId().orElse(null),
 				"Sub-agent thread id should be derived from the parent thread id");
+		assertEquals("tenant-a", capturedConfig.trustedExecutionContext().orElseThrow().tenant().id(),
+				"Sub-agent should receive the trusted tenant reference");
+		assertEquals("principal-a", capturedConfig.trustedExecutionContext().orElseThrow().principal().id(),
+				"Sub-agent should receive the trusted principal reference");
 	}
 
 	@Test
 	@DisplayName("AgentTool should include context when sub-agent invocation fails")
 	void shouldIncludeContextInInvocationFailureMessage() {
 		ReactAgent failingSubAgent = ReactAgent.builder()
-				.name("failing_child_agent")
-				.model(new FixedResponseChatModel("unused"))
-				.hooks(List.of(new FailingHook()))
-				.saver(new MemorySaver())
-				.build();
+			.name("failing_child_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(
+					new FixedResponseChatModel("unused")))
+			.hooks(List.of(new FailingHook()))
+			.saver(new MemorySaver())
+			.build();
 
 		RunnableConfig parentConfig = RunnableConfig.builder()
-				.threadId("parent-thread")
-				.addMetadata("business_key", "business-value")
-				.build();
+			.threadId("parent-thread")
+			.addMetadata("business_key", "business-value")
+			.build();
 
 		RuntimeException exception = assertThrows(RuntimeException.class,
-				() -> new AgentTool.AgentToolExecutor(failingSubAgent)
-						.executeAgent("{\"input\":\"hello\"}",
-								new ToolContext(Map.of(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY, parentConfig))));
+				() -> new AgentTool.AgentToolExecutor(failingSubAgent).executeAgent("{\"input\":\"hello\"}",
+						new ToolContext(Map.of(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY, parentConfig))));
 
 		assertTrue(exception.getMessage().contains("Failed to execute agent tool 'failing_child_agent'"));
 		assertTrue(exception.getMessage().contains("parentThreadId=parent-thread"));
@@ -120,6 +137,7 @@ class AgentToolConfigPropagationTest {
 		public Flux<ChatResponse> stream(Prompt prompt) {
 			return Flux.just(call(prompt));
 		}
+
 	}
 
 	@HookPositions(HookPosition.BEFORE_MODEL)
@@ -141,6 +159,7 @@ class AgentToolConfigPropagationTest {
 		public String getName() {
 			return "ConfigCaptureHook";
 		}
+
 	}
 
 	@HookPositions(HookPosition.BEFORE_MODEL)
@@ -155,6 +174,7 @@ class AgentToolConfigPropagationTest {
 		public String getName() {
 			return "FailingHook";
 		}
+
 	}
 
 }

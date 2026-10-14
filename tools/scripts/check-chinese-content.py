@@ -262,7 +262,8 @@ def main():
                        default=['argi-agent-framework/src/main/java',
                                'argi-graph-core/src/main/java',
                                'argi-studio/src/main/java',
-                               'spring-boot-starters',
+                               'argi-api',
+                               'argi-spring-boot-starter',
                                'argi-studio/agent-chat-ui/src'],
                        help='Directory paths to check (relative to current directory)')
     parser.add_argument('--patterns', '-p',

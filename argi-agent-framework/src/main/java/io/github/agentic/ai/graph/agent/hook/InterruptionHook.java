@@ -15,15 +15,14 @@
  */
 package io.github.agentic.ai.graph.agent.hook;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.graph.KeyStrategy;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.action.InterruptionMetadata;
 import io.github.agentic.ai.graph.state.strategy.ReplaceStrategy;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -39,27 +38,28 @@ import static io.github.agentic.ai.graph.checkpoint.BaseCheckpointSaver.THREAD_I
 
 /**
  * Hook that supports interruption and feedback mechanism.
- * 
+ *
  * This hook checks for interruption requests and handles feedback messages.
- * 
- * Example:
- * InterruptionHook hook = InterruptionHook.builder().build();
+ *
+ * Example: InterruptionHook hook = InterruptionHook.builder().build();
  */
-@HookPositions({HookPosition.BEFORE_MODEL})
+@HookPositions({ HookPosition.BEFORE_MODEL })
 public class InterruptionHook extends AbstractInterruptableModelHook {
+
 	private static final Logger log = LoggerFactory.getLogger(InterruptionHook.class);
-	
+
 	public static final String INTERRUPTION_FEEDBACK_KEY = "INTERRUPTION_FEEDBACK";
+
 	public static final String INTERRUPTION_NODE_NAME = "INTERRUPTION";
 
 	private InterruptionHook(Builder builder) {
 		// No additional configuration needed for now
 	}
-	
+
 	public static Builder builder() {
 		return new Builder();
 	}
-	
+
 	@Override
 	public CompletableFuture<Map<String, Object>> apply(OverAllState state, RunnableConfig config) {
 		String threadId = config.threadId().orElse(THREAD_ID_DEFAULT);
@@ -73,66 +73,75 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 		// Atomically get and remove the feedback key using remove()
 		// ConcurrentHashMap.remove() is thread-safe and returns the removed value
 		// This ensures thread-safety: if updateAgentState() is called concurrently,
-		// it will either see the old value (before removal) or set a new value (after removal)
+		// it will either see the old value (before removal) or set a new value (after
+		// removal)
 		// The remove() operation is atomic, preventing race conditions
 		Object feedback = agentThreadState.remove(INTERRUPTION_FEEDBACK_KEY);
-		
+
 		if (feedback == null) {
 			log.debug("No interruption feedback found in state, continue reasoning with no updates.");
 			return CompletableFuture.completedFuture(Map.of());
 		}
 
-		List<Message> feedbackMessages = new ArrayList<>();
-		
-		// Check if feedback is List<Message>, UserMessage, or String
+		List<ChatMessage> feedbackMessages = new ArrayList<>();
+
+		// Check if feedback is List<ChatMessage>, ChatMessage, or String
 		if (feedback instanceof List<?> feedbackList) {
-			// Check if all elements in the list are Message instances
+			// Check if all elements in the list are ChatMessage instances
 			for (Object item : feedbackList) {
-				if (item instanceof Message) {
-					feedbackMessages.add((Message) item);
-				} else {
-					log.warn("Feedback list contains non-Message item, ignoring. Type: {}", 
+				if (item instanceof ChatMessage) {
+					feedbackMessages.add((ChatMessage) item);
+				}
+				else {
+					log.warn("Feedback list contains non-ChatMessage item, ignoring. Type: {}",
 							item != null ? item.getClass().getName() : "null");
 				}
 			}
 			if (feedbackMessages.isEmpty()) {
-				log.warn("Feedback list is empty or contains no valid Message instances, stop and wait for more input.");
+				log.warn(
+						"Feedback list is empty or contains no valid ChatMessage instances, stop and wait for more input.");
 				return CompletableFuture.completedFuture(Map.of());
 			}
-		} else if (feedback instanceof UserMessage) {
-			feedbackMessages.add((UserMessage) feedback);
-		} else if (feedback instanceof String) {
-			feedbackMessages.add(new UserMessage((String) feedback));
-		} else {
-			log.warn("Interruption feedback is neither List<Message>, UserMessage nor String, stop and wait for more input. Type: {}",
+		}
+		else if (feedback instanceof ChatMessage && ((ChatMessage) feedback).role() == ChatRole.USER) {
+			feedbackMessages.add((ChatMessage) feedback);
+		}
+		else if (feedback instanceof String) {
+			feedbackMessages.add(ChatMessage.user((String) feedback));
+		}
+		else {
+			log.warn(
+					"Interruption feedback is neither List<ChatMessage>, ChatMessage nor String, stop and wait for more input. Type: {}",
 					feedback.getClass().getName());
 			return CompletableFuture.completedFuture(Map.of());
 		}
-		
+
 		// Get current messages list
 		@SuppressWarnings("unchecked")
-		List<Message> messages = (List<Message>) state.value("messages").orElse(new ArrayList<>());
+		List<ChatMessage> messages = (List<ChatMessage>) state.value("messages").orElse(new ArrayList<>());
 
-		if (!messages.isEmpty() && messages.get(messages.size() - 1) instanceof AssistantMessage assistantMessage) {
+		if (!messages.isEmpty() && messages.get(messages.size() - 1).role() == ChatRole.ASSISTANT) {
+			ChatMessage assistantMessage = messages.get(messages.size() - 1);
 			if (assistantMessage.hasToolCalls()) {
-				log.info("Last message is an AssistantMessage with tool calls, not adding interruption feedback to messages list.");
+				log.info(
+						"Last message is an ChatMessage with tool calls, not adding interruption feedback to messages list.");
 				return CompletableFuture.completedFuture(Map.of());
 			}
 		}
-		
+
 		// Create new messages list with the feedback messages appended
-		List<Message> newMessages = new ArrayList<>(feedbackMessages);
-		
+		List<ChatMessage> newMessages = new ArrayList<>(feedbackMessages);
+
 		Map<String, Object> updates = new HashMap<>();
 		updates.put("messages", newMessages);
 
-		
-		log.debug("Added {} interruption feedback message(s) to messages list and removed INTERRUPTION_FEEDBACK_KEY from state.", 
+		log.debug(
+				"Added {} interruption feedback message(s) to messages list and removed INTERRUPTION_FEEDBACK_KEY from state.",
 				feedbackMessages.size());
-		
+
 		return CompletableFuture.completedFuture(updates);
 	}
-	
+
 	@Override
 	public Optional<InterruptionMetadata> interrupt(String nodeId, OverAllState state, RunnableConfig config) {
 		// Check INTERRUPTION_FEEDBACK_KEY from state
@@ -143,10 +152,12 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 			return Optional.empty();
 		}
 
-		// Use get() with synchronization awareness - ConcurrentHashMap.get() is thread-safe
-		// but we need to be careful about the value being modified between get() and check
+		// Use get() with synchronization awareness - ConcurrentHashMap.get() is
+		// thread-safe
+		// but we need to be careful about the value being modified between get() and
+		// check
 		Object feedbackValue = agentThreadState.get(INTERRUPTION_FEEDBACK_KEY);
-		
+
 		if (feedbackValue == null) {
 			// No INTERRUPTION_FEEDBACK_KEY in state, continue normal execution
 			log.debug("No INTERRUPTION_FEEDBACK_KEY in state, continuing normal execution.");
@@ -159,28 +170,30 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 			if (feedbackList.isEmpty()) {
 				// Empty list - return InterruptionMetadata to interrupt
 				InterruptionMetadata interruptionMetadata = InterruptionMetadata.builder(nodeId, state)
-						.addMetadata("interruption_requested", true)
-						.build();
-				
+					.addMetadata("interruption_requested", true)
+					.build();
+
 				log.debug("INTERRUPTION_FEEDBACK_KEY is empty list, returning InterruptionMetadata.");
 				return Optional.of(interruptionMetadata);
-			} else {
+			}
+			else {
 				// Non-empty list - continue normal execution
 				log.debug("INTERRUPTION_FEEDBACK_KEY has non-empty list, continuing normal execution.");
 				return Optional.empty();
 			}
-		} else {
+		}
+		else {
 			// Not a list - continue normal execution
 			log.debug("INTERRUPTION_FEEDBACK_KEY is not a list, continuing normal execution.");
 			return Optional.empty();
 		}
 	}
-	
+
 	@Override
 	public String getName() {
 		return INTERRUPTION_NODE_NAME;
 	}
-	
+
 	@Override
 	public List<JumpTo> canJumpTo() {
 		return List.of();
@@ -192,9 +205,11 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 	}
 
 	public static class Builder {
-		
+
 		public InterruptionHook build() {
 			return new InterruptionHook(this);
 		}
+
 	}
+
 }

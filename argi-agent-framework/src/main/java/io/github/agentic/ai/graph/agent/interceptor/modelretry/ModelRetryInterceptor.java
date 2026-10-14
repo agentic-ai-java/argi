@@ -20,25 +20,23 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
+import io.github.agentic.ai.api.chat.ChatEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 import reactor.core.publisher.Flux;
+import reactor.adapter.JdkFlowAdapter;
 
 /**
- * The model calls a retry interceptor to handle retryable exceptions such as network errors.
- * When a model call fails, it will be retried according to the configured retry policy until it succeeds or the maximum number of retries is reached.
- * Example:
- * <pre>
+ * The model calls a retry interceptor to handle retryable exceptions such as network
+ * errors. When a model call fails, it will be retried according to the configured retry
+ * policy until it succeeds or the maximum number of retries is reached. Example: <pre>
  * ModelRetryInterceptor interceptor = ModelRetryInterceptor.builder()
  *     .maxAttempts(3)
  *     .initialDelay(1000)
@@ -52,9 +50,13 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 	private static final Logger log = LoggerFactory.getLogger(ModelRetryInterceptor.class);
 
 	private final int maxAttempts;
+
 	private final long initialDelay;
+
 	private final long maxDelay;
+
 	private final double backoffMultiplier;
+
 	private final Predicate<Exception> retryableExceptionPredicate;
 
 	private ModelRetryInterceptor(Builder builder) {
@@ -76,61 +78,36 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 
 		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
+				checkInterrupted();
 				if (attempt > 1) {
 					log.info("Retry model call, on the {}th attempt (out of {} attempts).", attempt, maxAttempts);
 				}
 
 				ModelResponse modelResponse = handler.call(request);
-				Object messagePayload = modelResponse.getMessage();
-				if (messagePayload instanceof Flux<?> responseFlux) {
-					return ModelResponse.of(withStreamingRetry(request, handler, castChatResponseFlux(responseFlux), attempt, currentDelay));
+				checkInterrupted();
+				if (modelResponse.isStreaming()) {
+					return ModelResponse
+						.stream(JdkFlowAdapter.publisherToFlowPublisher(withStreamingRetry(request, handler,
+								JdkFlowAdapter.flowPublisherToFlux(modelResponse.getStream()), attempt, currentDelay)));
 				}
-				if (!(messagePayload instanceof Message message)) {
-					return modelResponse;
-				}
-
-				// Check if the response contains any exception information (exceptions captured from AgentLlmNode).
-				if (message != null && message.getText() != null && message.getText().startsWith("Exception:")) {
-					String exceptionText = message.getText();
-					log.warn("The model call returned an exception message: {}", exceptionText);
-
-					// Extract anomaly information from the text and determine whether a retry is possible.
-					if (attempt < maxAttempts && isRetryableExceptionMessage(exceptionText)) {
-						lastException = new RuntimeException(exceptionText);
-						// Wait and try again
-						if (currentDelay > 0) {
-							try {
-								log.info("Retry after {} ms", currentDelay);
-								Thread.sleep(currentDelay);
-							} catch (InterruptedException e) {
-								Thread.currentThread().interrupt();
-								throw new RuntimeException("Retry interrupted", e);
-							}
-						}
-						// Calculate the next delay time (exponential backoff)
-						currentDelay = RetryDelayCalculator.nextDelay(currentDelay, backoffMultiplier, maxDelay);
-						continue;
-					} else if (attempt >= maxAttempts) {
-						log.error("The maximum number of retries has been reached {}, and the model call has failed.", maxAttempts);
-						throw new RuntimeException("Model call failed, maximum number of retries reached:" + exceptionText);
-					}
-
-					// For non-retryable exceptions, return immediately.
-					return modelResponse;
-				}
-
-				// Successful response
+				// Assistant content is data, never an out-of-band error signal.
 				if (attempt > 1) {
 					log.info("The model call succeeded after the {}th attempt.", attempt);
 				}
 				return modelResponse;
 
-			} catch (Exception e) {
+			}
+			catch (Exception e) {
+				CancellationException cancellation = cancellation(e);
+				if (cancellation != null) {
+					throw cancellation;
+				}
 				lastException = e;
 				log.warn("Model call failed (attempted {}/{}): {}", attempt, maxAttempts, e.getMessage());
 
 				if (attempt >= maxAttempts) {
-					log.error("The maximum number of retries has been reached {}, and the model call has failed.", maxAttempts);
+					log.error("The maximum number of retries has been reached {}, and the model call has failed.",
+							maxAttempts);
 					throw new RuntimeException("Model call failed, maximum number of retries reached.", lastException);
 				}
 
@@ -141,15 +118,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 				}
 
 				// Wait and try again
-				if (currentDelay > 0) {
-					try {
-						log.info("Retry after {} ms", currentDelay);
-						Thread.sleep(currentDelay);
-					} catch (InterruptedException ie) {
-						Thread.currentThread().interrupt();
-						throw new RuntimeException("Retry interrupted", ie);
-					}
-				}
+				pause(currentDelay);
 
 				// Calculate the next delay time (exponential backoff)
 				currentDelay = RetryDelayCalculator.nextDelay(currentDelay, backoffMultiplier, maxDelay);
@@ -157,12 +126,17 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		}
 
 		// All retries failed.
-		throw new RuntimeException("Model call failed, maximum number of retries reached. " + maxAttempts, lastException);
+		throw new RuntimeException("Model call failed, maximum number of retries reached. " + maxAttempts,
+				lastException);
 	}
 
-	private Flux<ChatResponse> withStreamingRetry(ModelRequest request, ModelCallHandler handler, Flux<ChatResponse> responseFlux,
-			int attempt, long currentDelay) {
+	private Flux<ChatEvent> withStreamingRetry(ModelRequest request, ModelCallHandler handler,
+			Flux<ChatEvent> responseFlux, int attempt, long currentDelay) {
 		return Flux.defer(() -> {
+			CancellationException cancellation = cancellation(null);
+			if (cancellation != null) {
+				return Flux.error(cancellation);
+			}
 			AtomicBoolean chunkEmitted = new AtomicBoolean(false);
 			return responseFlux.doOnNext(response -> chunkEmitted.set(true)).onErrorResume(error -> {
 				if (chunkEmitted.get()) {
@@ -174,17 +148,26 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		});
 	}
 
-	private Flux<ChatResponse> retryStreamingModelCall(ModelRequest request, ModelCallHandler handler, int failedAttempt,
+	private Flux<ChatEvent> retryStreamingModelCall(ModelRequest request, ModelCallHandler handler, int failedAttempt,
 			long currentDelay, Throwable error) {
+		if (error instanceof Error) {
+			return Flux.error(error);
+		}
+		CancellationException cancellation = cancellation(error);
+		if (cancellation != null) {
+			return Flux.error(cancellation);
+		}
 		Exception exception = toException(error);
-		log.warn("Streaming model call failed (attempted {}/{}): {}", failedAttempt, maxAttempts, exception.getMessage());
+		log.warn("Streaming model call failed (attempted {}/{}): {}", failedAttempt, maxAttempts,
+				exception.getMessage());
 
 		if (failedAttempt >= maxAttempts) {
-			log.error("The maximum number of retries has been reached {}, and the streaming model call has failed.", maxAttempts);
+			log.error("The maximum number of retries has been reached {}, and the streaming model call has failed.",
+					maxAttempts);
 			return Flux.error(new RuntimeException("Model call failed, maximum number of retries reached.", exception));
 		}
 
-		if (!isRetryableStreamingException(exception)) {
+		if (!retryableExceptionPredicate.test(exception)) {
 			log.warn("Exceptions cannot be retried and are thrown immediately: {}", exception.getMessage());
 			return Flux.error(new RuntimeException("Model call failed (non-retryable exception)", exception));
 		}
@@ -194,6 +177,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		return delay(currentDelay).thenMany(Flux.defer(() -> {
 			log.info("Retry model call, on the {}th attempt (out of {} attempts).", nextAttempt, maxAttempts);
 			try {
+				checkInterrupted();
 				ModelResponse retryResponse = handler.call(request);
 				return toStreamingFlux(request, handler, retryResponse, nextAttempt, nextDelay);
 			}
@@ -203,35 +187,62 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		}));
 	}
 
-	private Flux<ChatResponse> toStreamingFlux(ModelRequest request, ModelCallHandler handler, ModelResponse modelResponse,
+	private void pause(long delay) {
+		checkInterrupted();
+		if (delay <= 0) {
+			return;
+		}
+		try {
+			log.info("Retry after {} ms", delay);
+			Thread.sleep(delay);
+		}
+		catch (InterruptedException failure) {
+			Thread.currentThread().interrupt();
+			throw cancellation(failure);
+		}
+	}
+
+	private void checkInterrupted() {
+		CancellationException cancellation = cancellation(null);
+		if (cancellation != null) {
+			throw cancellation;
+		}
+	}
+
+	private CancellationException cancellation(Throwable failure) {
+		for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+			if (cause instanceof CancellationException cancelled) {
+				return cancelled;
+			}
+			if (cause instanceof InterruptedException) {
+				Thread.currentThread().interrupt();
+				break;
+			}
+		}
+		if (!Thread.currentThread().isInterrupted()) {
+			return null;
+		}
+		CancellationException cancelled = new CancellationException("Model retry interrupted");
+		if (failure != null) {
+			cancelled.initCause(failure);
+		}
+		return cancelled;
+	}
+
+	private Flux<ChatEvent> toStreamingFlux(ModelRequest request, ModelCallHandler handler, ModelResponse modelResponse,
 			int attempt, long currentDelay) {
-		Object messagePayload = modelResponse.getMessage();
-		if (messagePayload instanceof Flux<?> responseFlux) {
-			return withStreamingRetry(request, handler, castChatResponseFlux(responseFlux), attempt, currentDelay);
+		if (modelResponse.isStreaming()) {
+			return withStreamingRetry(request, handler, JdkFlowAdapter.flowPublisherToFlux(modelResponse.getStream()),
+					attempt, currentDelay);
 		}
-		if (messagePayload instanceof Message message) {
-			if (isExceptionMessage(message)) {
-				return retryStreamingModelCall(request, handler, attempt, currentDelay,
-						new RuntimeException(message.getText()));
-			}
-			if (message instanceof AssistantMessage assistantMessage) {
-				return Flux.just(new ChatResponse(List.of(new Generation(assistantMessage))));
-			}
-		}
-		return Flux.error(new IllegalStateException(
-				"Streaming model call returned unsupported response type: " + responseTypeName(messagePayload)));
+		return Flux.just(ChatEvent.response(modelResponse.getChatResponse()));
 	}
 
-	@SuppressWarnings("unchecked")
-	private Flux<ChatResponse> castChatResponseFlux(Flux<?> responseFlux) {
-		return (Flux<ChatResponse>) responseFlux;
-	}
-
-	private Flux<ChatResponse> delay(long currentDelay) {
+	private Flux<ChatEvent> delay(long currentDelay) {
 		if (currentDelay <= 0) {
 			return Flux.empty();
 		}
-		return Flux.<ChatResponse>empty().delaySubscription(Duration.ofMillis(currentDelay));
+		return Flux.<ChatEvent>empty().delaySubscription(Duration.ofMillis(currentDelay));
 	}
 
 	private long nextDelay(long currentDelay) {
@@ -245,50 +256,21 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		return new RuntimeException(error);
 	}
 
-	private boolean isExceptionMessage(Message message) {
-		return message != null && isExceptionMessageText(message.getText());
-	}
-
-	private boolean isExceptionMessageText(String text) {
-		return text != null && text.startsWith("Exception:");
-	}
-
-	private boolean isRetryableStreamingException(Exception exception) {
-		String message = exception.getMessage();
-		if (isExceptionMessageText(message)) {
-			return isRetryableExceptionMessage(message);
-		}
-		return retryableExceptionPredicate.test(exception);
-	}
-
-	private String responseTypeName(Object messagePayload) {
-		return messagePayload != null ? messagePayload.getClass().getName() : "null";
-	}
-
-	/**
-	 * Determine if the exception message indicates a retryable error.
-	 */
-	private boolean isRetryableExceptionMessage(String exceptionText) {
-		String lowerText = exceptionText.toLowerCase();
-		return lowerText.contains("i/o error") ||
-				lowerText.contains("remote host terminated") ||
-				lowerText.contains("connection") ||
-				lowerText.contains("timeout") ||
-				lowerText.contains("network") ||
-				lowerText.contains("handshake") ||
-				lowerText.contains("socket");
-	}
-
 	@Override
 	public String getName() {
 		return "ModelRetry";
 	}
 
 	public static class Builder {
+
 		private int maxAttempts = 3;
+
 		private long initialDelay = 1000;
+
 		private long maxDelay = 30000;
+
 		private double backoffMultiplier = 2.0;
+
 		private Predicate<Exception> retryableExceptionPredicate = Builder::isRetryableException;
 
 		/**
@@ -332,7 +314,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		 * @param backoffMultiplier The retreat factor must be >= 1.0
 		 */
 		public Builder backoffMultiplier(double backoffMultiplier) {
-			if (backoffMultiplier < 1.0) {
+			if (!Double.isFinite(backoffMultiplier) || backoffMultiplier < 1.0) {
 				throw new IllegalArgumentException("The backoffMultiplier must be >= 1.0");
 			}
 			this.backoffMultiplier = backoffMultiplier;
@@ -344,7 +326,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		 * @param predicate Exception detection function
 		 */
 		public Builder retryableExceptionPredicate(Predicate<Exception> predicate) {
-			this.retryableExceptionPredicate = predicate;
+			this.retryableExceptionPredicate = Objects.requireNonNull(predicate, "predicate must not be null");
 			return this;
 		}
 
@@ -364,18 +346,15 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 			String lowerMessage = message.toLowerCase();
 
 			// Network-related exceptions
-			if (lowerMessage.contains("i/o error") ||
-					lowerMessage.contains("remote host terminated") ||
-					lowerMessage.contains("connection") ||
-					lowerMessage.contains("timeout") ||
-					lowerMessage.contains("handshake") ||
-					lowerMessage.contains("socket")) {
+			if (lowerMessage.contains("i/o error") || lowerMessage.contains("remote host terminated")
+					|| lowerMessage.contains("connection") || lowerMessage.contains("timeout")
+					|| lowerMessage.contains("handshake") || lowerMessage.contains("socket")) {
 				return true;
 			}
 
 			// Spring WebClient related exceptions
-			if (e.getClass().getName().contains("ResourceAccessException") ||
-					e.getClass().getName().contains("WebClientRequestException")) {
+			if (e.getClass().getName().contains("ResourceAccessException")
+					|| e.getClass().getName().contains("WebClientRequestException")) {
 				return true;
 			}
 
@@ -383,11 +362,9 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 			Throwable cause = e.getCause();
 			while (cause != null) {
 				String causeClassName = cause.getClass().getName();
-				if (causeClassName.contains("IOException") ||
-						causeClassName.contains("SocketException") ||
-						causeClassName.contains("ConnectException") ||
-						causeClassName.contains("TimeoutException") ||
-						causeClassName.contains("SSLException")) {
+				if (causeClassName.contains("IOException") || causeClassName.contains("SocketException")
+						|| causeClassName.contains("ConnectException") || causeClassName.contains("TimeoutException")
+						|| causeClassName.contains("SSLException")) {
 					return true;
 				}
 				cause = cause.getCause();
@@ -395,5 +372,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 
 			return false;
 		}
+
 	}
+
 }

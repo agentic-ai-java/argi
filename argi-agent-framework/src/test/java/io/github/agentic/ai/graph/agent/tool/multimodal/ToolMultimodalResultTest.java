@@ -17,28 +17,24 @@ package io.github.agentic.ai.graph.agent.tool.multimodal;
 
 import org.junit.jupiter.api.Test;
 
-import org.springframework.ai.content.Media;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.tool.ToolResult;
+import java.util.Base64;
 import org.springframework.util.MimeTypeUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ToolMultimodalResultTest {
 
 	@Test
-	void preservesUrlAndBase64InSpringAiMedia() {
+	void preservesUrlAndBytesInNeutralContent() {
 		String url = "https://example.com/image.png";
 		String base64 = "aW1hZ2U=";
 
-		Media media = ToolMultimodalResult.mediaFromUrlAndBase64(url, base64, MimeTypeUtils.IMAGE_PNG);
-		String serialized = assertInstanceOf(String.class, media.getData());
-		ToolMultimodalResult.MediaFormats formats = ToolMultimodalResult.MediaFormats.deserialize(serialized);
-
-		assertNotNull(formats);
-		assertEquals(url, formats.url());
-		assertEquals(base64, formats.base64());
+		ContentPart media = ToolMultimodalResult.mediaFromUrlAndBase64(url, base64, MimeTypeUtils.IMAGE_PNG);
+		assertEquals(url, media.metadata().get("uri"));
+		assertEquals(base64, Base64.getEncoder().encodeToString(media.data()));
+		assertEquals("image/png", media.mimeType());
 	}
 
 	@Test
@@ -48,13 +44,14 @@ class ToolMultimodalResultTest {
 		ToolMultimodalResult result = ToolMultimodalResult.of("image",
 				ToolMultimodalResult.mediaFromUrlAndBase64(url, base64, MimeTypeUtils.IMAGE_PNG));
 
-		String urlJson = new MultimodalToolCallResultConverter(OutputFormat.url).convert(result,
+		ToolResult urlResult = new MultimodalToolCallResultConverter(OutputFormat.url).convert(result,
 				ToolMultimodalResult.class);
-		String base64Json = new MultimodalToolCallResultConverter(OutputFormat.base64).convert(result,
+		ToolResult base64Result = new MultimodalToolCallResultConverter(OutputFormat.base64).convert(result,
 				ToolMultimodalResult.class);
 
-		assertTrue(urlJson.contains("\"url\":\"" + url + "\""));
-		assertTrue(base64Json.contains("\"data\":\"data:image/png;base64," + base64 + "\""));
+		assertEquals(url, urlResult.content().get(1).metadata().get("uri"));
+		assertEquals(null, urlResult.content().get(1).data());
+		assertEquals(base64, Base64.getEncoder().encodeToString(base64Result.content().get(1).data()));
 	}
 
 	@Test
@@ -63,9 +60,11 @@ class ToolMultimodalResultTest {
 		ToolMultimodalResult result = ToolMultimodalResult.of("audio",
 				ToolMultimodalResult.mediaFromBase64(base64, MimeTypeUtils.parseMimeType("audio/mpeg")));
 
-		String json = new MultimodalToolCallResultConverter(OutputFormat.base64).convert(result,
+		ToolResult converted = new MultimodalToolCallResultConverter(OutputFormat.base64).convert(result,
 				ToolMultimodalResult.class);
 
-		assertTrue(json.contains("\"data\":\"data:audio/mpeg;base64," + base64 + "\""));
+		assertEquals(base64, Base64.getEncoder().encodeToString(converted.content().get(1).data()));
+		assertEquals(ContentPart.Type.AUDIO, converted.content().get(1).type());
 	}
+
 }

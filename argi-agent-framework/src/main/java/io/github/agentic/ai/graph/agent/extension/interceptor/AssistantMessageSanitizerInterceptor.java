@@ -20,8 +20,9 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.ContentPart;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,35 +31,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Middleware that normalizes tool-calling {@link AssistantMessage}s whose text content
- * is {@code null} before they are sent back to the model.
- *
- * <p>When a ReAct loop performs a tool call, the assistant message that carries the
- * {@code tool_calls} typically has no textual content, so {@link AssistantMessage#getText()}
- * is {@code null}. On the second {@code /chat/completions} call this message is sent back to
- * the model together with the tool result. Spring AI's OpenAI/DeepSeek-compatible
- * serialization layer drops the {@code content} field entirely when the text is {@code null},
- * producing a payload such as:</p>
- *
- * <pre>{@code
- * { "role": "assistant", "tool_calls": [ ... ] }
- * }</pre>
- *
- * <p>instead of:</p>
- *
- * <pre>{@code
- * { "role": "assistant", "content": null, "tool_calls": [ ... ] }
- * }</pre>
- *
- * <p>Stricter DeepSeek-compatible backends reject the former with a validation error
- * ({@code content} field required). This interceptor rebuilds such assistant messages with
- * an empty-string content ({@code ""}) while preserving their {@code toolCalls}, metadata,
- * and media, which is accepted by these backends.</p>
- *
- * <p>This is a compatibility shim: the ideal fix belongs in the upstream Spring AI serializer.
- * It is registered as a default {@link ModelInterceptor} in the agent framework and can be
- * disabled via {@code ReactAgent.builder().assistantMessageSanitizerEnabled(false)} for users
- * who require a literal {@code "content": null} once upstream provides it.</p>
+ * Normalizes assistant tool-call messages without textual content to an explicit empty
+ * text part for backends that require a content field. Tool calls, metadata and nontext
+ * content are preserved. This default interceptor can be disabled with
+ * {@code ReactAgent.builder().assistantMessageSanitizerEnabled(false)}.
  *
  * @see <a href="https://github.com/agentic-ai-java/argi/issues/4561">Issue #4561</a>
  */
@@ -69,7 +45,8 @@ public class AssistantMessageSanitizerInterceptor extends ModelInterceptor {
 	private static final String NAME = "AssistantMessageSanitizer";
 
 	private AssistantMessageSanitizerInterceptor(Builder builder) {
-		// Currently no configuration options, but builder pattern allows future extensibility
+		// Currently no configuration options, but builder pattern allows future
+		// extensibility
 	}
 
 	public static Builder builder() {
@@ -83,19 +60,17 @@ public class AssistantMessageSanitizerInterceptor extends ModelInterceptor {
 
 	@Override
 	public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
-		List<Message> messages = request.getMessages();
+		List<ChatMessage> messages = request.getMessages();
 
 		if (messages == null || messages.isEmpty()) {
 			return handler.call(request);
 		}
 
-		List<Message> sanitized = sanitizeMessages(messages);
+		List<ChatMessage> sanitized = sanitizeMessages(messages);
 
 		// Only rebuild the request when at least one message was rewritten.
 		if (sanitized != messages) {
-			ModelRequest sanitizedRequest = ModelRequest.builder(request)
-					.messages(sanitized)
-					.build();
+			ModelRequest sanitizedRequest = ModelRequest.builder(request).messages(sanitized).build();
 			return handler.call(sanitizedRequest);
 		}
 
@@ -103,15 +78,15 @@ public class AssistantMessageSanitizerInterceptor extends ModelInterceptor {
 	}
 
 	/**
-	 * Rewrite tool-calling {@link AssistantMessage}s with {@code null} text so their content
-	 * becomes an empty string, preserving tool calls, metadata, and media.
-	 *
+	 * Rewrite tool-calling {@link ChatMessage}s without text so their content becomes an
+	 * empty string, preserving tool calls, metadata, and media.
 	 * @param messages the original message list
-	 * @return a new list with normalized messages, or the original list if nothing needed fixing
+	 * @return a new list with normalized messages, or the original list if nothing needed
+	 * fixing
 	 */
-	private List<Message> sanitizeMessages(List<Message> messages) {
+	private List<ChatMessage> sanitizeMessages(List<ChatMessage> messages) {
 		boolean needsFix = false;
-		for (Message msg : messages) {
+		for (ChatMessage msg : messages) {
 			if (needsSanitizing(msg)) {
 				needsFix = true;
 				break;
@@ -122,22 +97,17 @@ public class AssistantMessageSanitizerInterceptor extends ModelInterceptor {
 			return messages;
 		}
 
-		List<Message> sanitized = new ArrayList<>(messages.size());
-		for (Message msg : messages) {
+		List<ChatMessage> sanitized = new ArrayList<>(messages.size());
+		for (ChatMessage msg : messages) {
 			if (needsSanitizing(msg)) {
-				AssistantMessage assistantMsg = (AssistantMessage) msg;
-				// text == null -> use empty string; keep toolCalls, metadata and media intact.
-				AssistantMessage fixed = AssistantMessage.builder()
-						.content("")
-						.toolCalls(assistantMsg.getToolCalls())
-						.properties(assistantMsg.getMetadata())
-						.media(assistantMsg.getMedia())
-						.build();
+				ChatMessage fixed = msg.appendText("");
 				if (log.isDebugEnabled()) {
-					log.debug("[{}] AssistantMessage text was null with tool calls; patched content to empty string", NAME);
+					log.debug("[{}] AssistantMessage text was null with tool calls; patched content to empty string",
+							NAME);
 				}
 				sanitized.add(fixed);
-			} else {
+			}
+			else {
 				sanitized.add(msg);
 			}
 		}
@@ -145,10 +115,11 @@ public class AssistantMessageSanitizerInterceptor extends ModelInterceptor {
 		return sanitized;
 	}
 
-	private static boolean needsSanitizing(Message msg) {
-		return msg instanceof AssistantMessage assistantMsg
-				&& assistantMsg.getText() == null
-				&& assistantMsg.hasToolCalls();
+	private static boolean needsSanitizing(ChatMessage msg) {
+		return msg.role() == ChatRole.ASSISTANT && !msg.toolCalls().isEmpty()
+				&& msg.content()
+					.stream()
+					.noneMatch(part -> part.type() == ContentPart.Type.TEXT || part.type() == ContentPart.Type.JSON);
 	}
 
 	/**
@@ -166,5 +137,7 @@ public class AssistantMessageSanitizerInterceptor extends ModelInterceptor {
 		public AssistantMessageSanitizerInterceptor build() {
 			return new AssistantMessageSanitizerInterceptor(this);
 		}
+
 	}
+
 }

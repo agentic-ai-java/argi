@@ -17,7 +17,7 @@ package io.github.agentic.ai.graph.agent.extension.tools.filesystem;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.ai.chat.model.ToolContext;
+import io.github.agentic.ai.api.tool.ToolContext;
 
 import java.nio.file.Files;
 import java.nio.file.Path;

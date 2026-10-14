@@ -15,29 +15,25 @@
  */
 package io.github.agentic.ai.graph.agent.hook;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ToolCall;
 
 import java.util.List;
 
 /**
  * Functional interface for counting tokens in messages.
  *
- * <p>Implementations of this interface provide different strategies for
- * estimating token counts in conversation messages.</p>
+ * <p>
+ * Implementations of this interface provide different strategies for estimating token
+ * counts in conversation messages.
+ * </p>
  *
- * Example:
- * TokenCounter counter = messages -> {
- *     int total = 0;
- *     for (Message msg : messages) {
- *         total += msg.getText().length() / 4;
- *     }
- *     return total;
- * };
+ * Example: TokenCounter counter = messages -> { int total = 0; for (ChatMessage msg :
+ * messages) { total += msg.text().length() / 4; } return total; };
  */
 @FunctionalInterface
 public interface TokenCounter {
+
 	int DEFAULT_CHARS_PER_TOKEN = 4;
 
 	static TokenCounter approximateMsgCounter() {
@@ -45,38 +41,21 @@ public interface TokenCounter {
 	}
 
 	/**
-	 * Creates a token counter with a custom character-to-token ratio.
-	 * Handles ToolResponseMessage (processing ToolResponse) and AssistantMessage (processing ToolCall).
-	 *
+	 * Creates a token counter with a custom character-to-token ratio. Includes tool
+	 * result text and assistant tool call arguments.
 	 * @param charsPerToken The average number of characters per token
 	 * @return A token counter using the specified ratio
 	 */
 	static TokenCounter approximateMsgCounter(int charsPerToken) {
+		if (charsPerToken <= 0) {
+			throw new IllegalArgumentException("charsPerToken must be positive");
+		}
 		return messages -> {
 			int total = 0;
-			for (Message msg : messages) {
-				// Handle ToolResponseMessage - count tokens in tool responses
-				if (msg instanceof ToolResponseMessage toolResponseMessage) {
-					for (ToolResponseMessage.ToolResponse response : toolResponseMessage.getResponses()) {
-						// Count tokens in tool response data
-						total += response.responseData().length() / charsPerToken;
-					}
-				}
-				// Handle AssistantMessage - count tokens in tool calls
-				else if (msg instanceof AssistantMessage assistantMessage) {
-					// Count tokens in regular text content
-					if (msg.getText() != null) {
-						total += msg.getText().length() / charsPerToken;
-					}
-					// Count tokens in tool calls
-					for (AssistantMessage.ToolCall toolCall : assistantMessage.getToolCalls()) {
-						// Count tokens in tool arguments (JSON string)
-						total += toolCall.arguments().length() / charsPerToken;
-					}
-				}
-				// Handle other message types
-				else if (msg.getText() != null) {
-					total += msg.getText().length() / charsPerToken;
+			for (ChatMessage msg : messages) {
+				total += msg.text().length() / charsPerToken;
+				for (ToolCall toolCall : msg.toolCalls()) {
+					total += toolCall.arguments().length() / charsPerToken;
 				}
 			}
 			return total;
@@ -85,10 +64,9 @@ public interface TokenCounter {
 
 	/**
 	 * Count the approximate number of tokens in the given messages.
-	 *
 	 * @param messages The list of messages to count tokens for
 	 * @return The estimated token count
 	 */
-	int countTokens(List<Message> messages);
-}
+	int countTokens(List<ChatMessage> messages);
 
+}

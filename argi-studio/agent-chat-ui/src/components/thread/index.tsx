@@ -343,7 +343,7 @@ export function Thread() {
 
     if (!messageContent) return;
 
-    // Send message using Spring AI API
+    // Send the message through the ARGI Studio API.
     await stream.sendMessage(messageContent);
 
     setInput("");

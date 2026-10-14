@@ -81,26 +81,21 @@ import static java.util.Objects.requireNonNull;
  * </pre>
  * </p>
  * <p>
- * Thread identity: GraphThread.thread_name stores the thread id supplied
- * through {@code RunnableConfig}, while GraphThread.thread_id stores an
- * internally generated UUID that identifies one activation of that thread
- * between a release and the next reuse of the same id. This column split is
- * what allows a released thread id to be reused without orphaning the released
- * checkpoint history.
+ * Thread identity: GraphThread.thread_name stores the thread id supplied through
+ * {@code RunnableConfig}, while GraphThread.thread_id stores an internally generated UUID
+ * that identifies one activation of that thread between a release and the next reuse of
+ * the same id. This column split is what allows a released thread id to be reused without
+ * orphaning the released checkpoint history.
  * </p>
  * <p>
- * A builder can be used to create an instance of PostgresSaver. The builder
- * allows to configure the following options:
- * - DataSource: indicates which data source should be used to connect
- * to the database
- * - CreateOption : indicates whether the tables should be created or
- * existing tables should be used.
- * - MaxCachedThreads: indicates how many latest checkpoints are kept in memory.
+ * A builder can be used to create an instance of PostgresSaver. The builder allows to
+ * configure the following options: - DataSource: indicates which data source should be
+ * used to connect to the database - CreateOption : indicates whether the tables should be
+ * created or existing tables should be used. - MaxCachedThreads: indicates how many
+ * latest checkpoints are kept in memory.
  * <p>
- * Replacement: add artifact
- * {@code io.github.agentic-ai:argi-graph-persistence-jdbc}
- * and use
- * {@code io.github.agentic.ai.graph.persistence.jdbc.postgresql.PostgresSaver}.
+ * Replacement: add artifact {@code io.github.agentic-ai:argi-graph-persistence-jdbc} and
+ * use {@code io.github.agentic.ai.graph.persistence.jdbc.postgresql.PostgresSaver}.
  * </p>
  * <p>
  * Ex:
@@ -114,8 +109,8 @@ import static java.util.Objects.requireNonNull;
  * </pre>
  * </p>
  *
- * @deprecated since 2.1.0 for removal. Use the replacement artifact and FQCN
- * listed above.
+ * @deprecated since 2.1.0 for removal. Use the replacement artifact and FQCN listed
+ * above.
  */
 @Deprecated(since = "2.1.0", forRemoval = true)
 public class PostgresSaver extends AbstractJdbcCheckpointSaver {
@@ -265,9 +260,7 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 	private final CreateOption createOption;
 
 	/**
-	 * Private constructor used by the builder to create a new instance of
-	 * PostgresSaver.
-	 *
+	 * Private constructor used by the builder to create a new instance of PostgresSaver.
 	 * @param builder the builder
 	 */
 	private PostgresSaver(Builder builder) throws SQLException {
@@ -279,9 +272,8 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 	}
 
 	/**
-	 * Creates an instance of a builder that allows to configure and create a new
-	 * instance of PostgresSaver.
-	 *
+	 * Creates an instance of a builder that allows to configure and create a new instance
+	 * of PostgresSaver.
 	 * @return a new instance of the builder.
 	 */
 	public static Builder builder() {
@@ -300,9 +292,7 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 			log.warn("Transaction rolled back for checkpoint {}", checkpoint.getId());
 		}
 		catch (SQLException exRollback) {
-			log.error("Failed to rollback transaction for checkpoint id {} in thread {}",
-					checkpoint.getId(),
-					threadId,
+			log.error("Failed to rollback transaction for checkpoint id {} in thread {}", checkpoint.getId(), threadId,
 					exRollback);
 		}
 	}
@@ -329,12 +319,12 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 				""", base64Data);
 	}
 
-	private Map<String, Object> decodeState(byte[] binaryPayload, String contentType) throws IOException, ClassNotFoundException {
+	private Map<String, Object> decodeState(byte[] binaryPayload, String contentType)
+			throws IOException, ClassNotFoundException {
 		if (!Objects.equals(contentType, stateSerializer.contentType())) {
 			throw new IllegalStateException(
 					format("Content Type used for store state '%s' is different from one '%s' used for deserialize it",
-							contentType,
-							stateSerializer.contentType()));
+							contentType, stateSerializer.contentType()));
 		}
 
 		byte[] bytes = Base64.getDecoder().decode(binaryPayload);
@@ -349,8 +339,7 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 				sqlCommand = DROP_TABLES;
 				statement.executeUpdate(sqlCommand);
 			}
-			if (createOption == CreateOption.CREATE_OR_REPLACE ||
-				createOption == CreateOption.CREATE_IF_NOT_EXISTS) {
+			if (createOption == CreateOption.CREATE_OR_REPLACE || createOption == CreateOption.CREATE_IF_NOT_EXISTS) {
 				log.trace("Executing create tables:\n---\n{}---", CREATE_TABLES);
 				sqlCommand = CREATE_TABLES;
 				statement.executeUpdate(sqlCommand);
@@ -366,21 +355,19 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 		}
 	}
 
-	private Checkpoint readCheckpoint(ResultSet resultSet)
-			throws SQLException, IOException, ClassNotFoundException {
+	private Checkpoint readCheckpoint(ResultSet resultSet) throws SQLException, IOException, ClassNotFoundException {
 		return Checkpoint.builder()
-				.id(resultSet.getString(1))
-				.nodeId(resultSet.getString(2))
-				.nextNodeId(resultSet.getString(3))
-				.state(decodeState(resultSet.getBytes(4), resultSet.getString(5)))
-				.build();
+			.id(resultSet.getString(1))
+			.nodeId(resultSet.getString(2))
+			.nextNodeId(resultSet.getString(3))
+			.state(decodeState(resultSet.getBytes(4), resultSet.getString(5)))
+			.build();
 	}
 
 	@Override
 	protected LinkedList<Checkpoint> selectCheckpoints(String threadId) throws Exception {
 		LinkedList<Checkpoint> checkpoints = new LinkedList<>();
-		try (Connection conn = getConnection();
-				PreparedStatement ps = conn.prepareStatement(SELECT_CHECKPOINTS)) {
+		try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(SELECT_CHECKPOINTS)) {
 
 			log.trace("Executing select checkpoints:\n---\n{}---", SELECT_CHECKPOINTS);
 			ps.setString(1, threadId);
@@ -417,8 +404,7 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 
 	@Override
 	protected Optional<Checkpoint> selectCheckpointById(String threadId, String checkpointId) throws Exception {
-		try (Connection conn = getConnection();
-				PreparedStatement ps = conn.prepareStatement(SELECT_CHECKPOINT_BY_ID)) {
+		try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(SELECT_CHECKPOINT_BY_ID)) {
 
 			log.trace("Executing select checkpoint by id:\n---\n{}---", SELECT_CHECKPOINT_BY_ID);
 			ps.setString(1, threadId);
@@ -470,20 +456,15 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 			}
 		}
 
-
 		// 2. Insert checkpoint data
 		try (PreparedStatement ps = conn.prepareStatement(INSERT_CHECKPOINT)) {
 			var field = 0;
 			// checkpoint_id
-			ps.setObject(++field,
-					UUID.fromString(checkpoint.getId()),
-					Types.OTHER);
+			ps.setObject(++field, UUID.fromString(checkpoint.getId()), Types.OTHER);
 			// parent_checkpoint_id
 			ps.setNull(++field, Types.OTHER);
 			// thread_id
-			ps.setObject(++field,
-					requireNonNull(threadUUID, "threadUUID cannot be null"),
-					Types.OTHER);
+			ps.setObject(++field, requireNonNull(threadUUID, "threadUUID cannot be null"), Types.OTHER);
 			// node_id
 			ps.setString(++field, checkpoint.getNodeId());
 			// next_node_id
@@ -494,9 +475,12 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 			ps.setString(++field, stateSerializer.contentType());
 
 			// DB schema has DEFAULT CURRENT_TIMESTAMP for saved_at.
-			// If checkpoint provides a specific time, use it. Otherwise, use current time from Java.
-			// To use DB default, one would typically omit the column or pass NULL if the column definition allows it to trigger default.
-			// OffsetDateTime savedAt = checkpoint.getSavedAt().orElse(OffsetDateTime.now());
+			// If checkpoint provides a specific time, use it. Otherwise, use current time
+			// from Java.
+			// To use DB default, one would typically omit the column or pass NULL if the
+			// column definition allows it to trigger default.
+			// OffsetDateTime savedAt =
+			// checkpoint.getSavedAt().orElse(OffsetDateTime.now());
 			// psCheckpoint.setObject(8, savedAt);
 			log.trace("Executing insert checkpoint:\n---\n{}---", INSERT_CHECKPOINT);
 			ps.executeUpdate();
@@ -526,9 +510,7 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 				}
 			}
 			conn.commit();
-			log.debug("Checkpoint with id {} for thread {} updated successfully.",
-					checkpoint.getId(),
-					threadId);
+			log.debug("Checkpoint with id {} for thread {} updated successfully.", checkpoint.getId(), threadId);
 		}
 		catch (SQLException | IOException ex) {
 			log.error("Error updating checkpoint with id {} in thread {}", checkpoint.getId(), threadId, ex);
@@ -543,8 +525,8 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 			return;
 		}
 		try (Connection conn = getConnection();
-				PreparedStatement ps = conn.prepareStatement(
-						DELETE_CHECKPOINTS.formatted(String.join(", ", Collections.nCopies(checkpointIds.size(), "?"))))) {
+				PreparedStatement ps = conn.prepareStatement(DELETE_CHECKPOINTS
+					.formatted(String.join(", ", Collections.nCopies(checkpointIds.size(), "?"))))) {
 			ps.setString(1, threadId);
 			int index = 2;
 			for (String checkpointId : checkpointIds) {
@@ -583,7 +565,6 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 
 	/**
 	 * Datasource connection
-	 *
 	 * @return Datasource connection
 	 * @throws SQLException exception
 	 */
@@ -595,12 +576,19 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 	 * A builder for PostgresSaver.
 	 */
 	public static class Builder {
+
 		public StateSerializer stateSerializer;
+
 		private String host;
+
 		private Integer port;
+
 		private String user;
+
 		private String password;
+
 		private String database;
+
 		private DataSource datasource;
 
 		// New CreateOption field with default value
@@ -610,6 +598,7 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 
 		// Legacy fields for backward compatibility
 		private boolean createTables;
+
 		private boolean dropTablesFirst;
 
 		/**
@@ -657,7 +646,8 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 
 		/**
 		 * Sets the create option for table initialization.
-		 * @param createOption the create option (CREATE_NONE, CREATE_IF_NOT_EXISTS, CREATE_OR_REPLACE)
+		 * @param createOption the create option (CREATE_NONE, CREATE_IF_NOT_EXISTS,
+		 * CREATE_OR_REPLACE)
 		 * @return this builder
 		 */
 		public Builder createOption(CreateOption createOption) {
@@ -666,8 +656,8 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 		}
 
 		/**
-		 * @deprecated Use {@link #createOption(CreateOption)} instead.
-		 * Sets whether to create tables on initialization.
+		 * @deprecated Use {@link #createOption(CreateOption)} instead. Sets whether to
+		 * create tables on initialization.
 		 * @param createTables true to create tables
 		 * @return this builder
 		 */
@@ -683,7 +673,8 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 
 		/**
 		 * Sets the DataSource directly. This is useful for testing or when you want to
-		 * provide a pre-configured DataSource instead of building one from host/port/user/password.
+		 * provide a pre-configured DataSource instead of building one from
+		 * host/port/user/password.
 		 * @param datasource the DataSource to use
 		 * @return this builder
 		 */
@@ -693,8 +684,8 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 		}
 
 		/**
-		 * @deprecated Use {@link #createOption(CreateOption)} instead.
-		 * Sets whether to drop tables before creating them.
+		 * @deprecated Use {@link #createOption(CreateOption)} instead. Sets whether to
+		 * drop tables before creating them.
 		 * @param dropTablesFirst true to drop tables first
 		 * @return this builder
 		 */
@@ -717,7 +708,7 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 
 		public PostgresSaver build() {
 			if (stateSerializer == null) {
-				log.info("No StateSerializer for saver provided, using default SpringAiJacksonStateSerializer, please make sure saver uses the same serializer of the graph.");
+				log.info("No StateSerializer provided; using the graph's default ArgiJacksonStateSerializer.");
 				this.stateSerializer = StateGraph.DEFAULT_JACKSON_SERIALIZER;
 			}
 
@@ -730,8 +721,8 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 				ds.setDatabaseName(requireNotBlank(database, "database"));
 				ds.setUser(requireNotBlank(user, "user"));
 				ds.setPassword(requireNonNull(password, "password cannot be null"));
-				ds.setPortNumbers(new int[] {port});
-				ds.setServerNames(new String[] {requireNotBlank(host, "host")});
+				ds.setPortNumbers(new int[] { port });
+				ds.setServerNames(new String[] { requireNotBlank(host, "host") });
 				datasource = ds;
 			}
 
@@ -742,5 +733,7 @@ public class PostgresSaver extends AbstractJdbcCheckpointSaver {
 				throw new RuntimeException(e);
 			}
 		}
+
 	}
+
 }

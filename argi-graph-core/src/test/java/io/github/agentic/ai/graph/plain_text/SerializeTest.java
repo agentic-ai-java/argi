@@ -22,7 +22,7 @@ import io.github.agentic.ai.graph.serializer.plain_text.jackson.JacksonStateSeri
 import io.github.agentic.ai.graph.serializer.std.NullableObjectSerializer;
 import io.github.agentic.ai.graph.serializer.std.ObjectStreamStateSerializer;
 
-import org.springframework.ai.chat.metadata.EmptyUsage;
+import io.github.agentic.ai.api.chat.Usage;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -184,19 +184,23 @@ public class SerializeTest {
 
 		JacksonSerializer serializer = new JacksonSerializer();
 
-		NodeOutput output = NodeOutput.of("node", "agent", null, new EmptyUsage());
+		NodeOutput output = NodeOutput.of("node", "agent", null, Usage.unknown());
 		output.setSubGraph(true);
 		ObjectMapper mapper = serializer.getObjectMapper();
 		mapper.configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
 
 		String json = mapper.writeValueAsString(output);
 
-		assertEquals("{\"agent\":\"agent\",\"end\":false,\"node\":\"node\",\"start\":false,\"state\":null,\"subGraph\":true,\"tokenUsage\":{\"completionTokens\":0,\"nativeUsage\":{},\"promptTokens\":0,\"totalTokens\":0}}", json);
+		assertEquals(
+				"{\"agent\":\"agent\",\"end\":false,\"node\":\"node\",\"start\":false,\"state\":null,\"subGraph\":true,\"tokenUsage\":{\"inputTokens\":null,\"outputTokens\":null,\"totalTokens\":null}}",
+				json);
 
 		output.setSubGraph(false);
 		json = mapper.writeValueAsString(output);
 
-		assertEquals("{\"agent\":\"agent\",\"end\":false,\"node\":\"node\",\"start\":false,\"state\":null,\"subGraph\":false,\"tokenUsage\":{\"completionTokens\":0,\"nativeUsage\":{},\"promptTokens\":0,\"totalTokens\":0}}", json);
+		assertEquals(
+				"{\"agent\":\"agent\",\"end\":false,\"node\":\"node\",\"start\":false,\"state\":null,\"subGraph\":false,\"tokenUsage\":{\"inputTokens\":null,\"outputTokens\":null,\"totalTokens\":null}}",
+				json);
 	}
 
 	// Test class containing a nullable field for serialization tests

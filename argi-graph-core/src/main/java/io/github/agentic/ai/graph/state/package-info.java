@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 /**
- * Provides classes and interfaces for managing the state of agents in the Spring AI
- * Alibaba framework.
+ * Provides classes and interfaces for managing the state of agents in ARGI.
  * <p>
  * This package includes:
  * <ul>

@@ -15,6 +15,15 @@
  */
 package io.github.agentic.ai.graph.agent.node;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ToolCall;
+import io.github.agentic.ai.api.chat.ToolDefinition;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.ToolRegistry;
+import io.github.agentic.ai.api.tool.ToolResult;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
 
@@ -25,13 +34,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.ai.tool.execution.DefaultToolExecutionExceptionProcessor;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -50,25 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /**
- * Regression test for thread pool starvation bug when parallelToolExecution=true and
- * wrapSyncToolsAsAsync=true.
- *
- * <p>
- * The bug scenario:
- * <ol>
- * <li>Outer runAsync submits tasks to executor (occupies threads)</li>
- * <li>AsyncToolCallbackAdapter.callAsync() submits another task to the same executor</li>
- * <li>Outer thread calls join() waiting for inner task</li>
- * <li>Inner task can't get a thread → deadlock</li>
- * </ol>
- *
- * <p>
- * The fix: In parallel mode, skip wrapping sync tools because the outer runAsync already
- * provides concurrency. The {@code inParallelExecution} parameter is passed through to
- * prevent the wrapping.
- *
- * @author disaster
- * @since 1.0.0
+ * Regression tests for neutral tool dispatch, bounded concurrency, and permit timeouts.
  */
 @DisplayName("AgentToolNode Parallel Starvation Tests")
 class AgentToolNodeParallelStarvationTest {
@@ -80,35 +64,17 @@ class AgentToolNodeParallelStarvationTest {
 		baseBuilder = AgentToolNode.builder()
 			.agentName("test-agent")
 			.toolExecutionTimeout(Duration.ofSeconds(10))
-			.toolExecutionExceptionProcessor(
-					DefaultToolExecutionExceptionProcessor.builder().alwaysThrow(false).build());
+			.throwOnToolError(false);
 	}
 
 	@Nested
 	@DisplayName("Thread Pool Starvation Prevention Tests")
 	class ThreadPoolStarvationTests {
 
-		/**
-		 * Tests that parallel execution with wrapSyncToolsAsAsync=true does NOT cause
-		 * deadlock when using a single-thread executor.
-		 *
-		 * <p>
-		 * Before the fix, this test would timeout/deadlock because:
-		 * <ul>
-		 * <li>Single thread runs the outer CompletableFuture.runAsync</li>
-		 * <li>Inside, AsyncToolCallbackAdapter.callAsync() tries to submit to same
-		 * executor</li>
-		 * <li>The single thread is blocked waiting for inner task → deadlock</li>
-		 * </ul>
-		 *
-		 * <p>
-		 * After the fix, sync tools execute directly in parallel mode (no wrapping), so
-		 * no deadlock occurs.
-		 */
 		@Test
 		@Timeout(value = 15, unit = TimeUnit.SECONDS)
-		@DisplayName("parallel execution with wrapSyncToolsAsAsync should not deadlock with single-thread executor")
-		void parallelExecutionWithWrapSyncToolsAsAsync_shouldNotDeadlock_withSingleThreadExecutor() throws Exception {
+		@DisplayName("parallel execution with neutral tool stages should not deadlock with single-thread executor")
+		void parallelExecutionWithNeutralStages_shouldNotDeadlock_withSingleThreadExecutor() throws Exception {
 			// Use single-thread executor to expose the starvation bug
 			ExecutorService singleThreadExecutor = Executors.newSingleThreadExecutor();
 
@@ -116,26 +82,25 @@ class AgentToolNodeParallelStarvationTest {
 				AtomicInteger executionCount = new AtomicInteger(0);
 
 				// Create two simple sync tools
-				ToolCallback tool1 = createSyncTool("tool1", () -> {
+				Tool tool1 = createSyncTool("tool1", () -> {
 					executionCount.incrementAndGet();
 					return "result1";
 				});
 
-				ToolCallback tool2 = createSyncTool("tool2", () -> {
+				Tool tool2 = createSyncTool("tool2", () -> {
 					executionCount.incrementAndGet();
 					return "result2";
 				});
 
-				// Build AgentToolNode with both parallel AND wrapSyncToolsAsAsync enabled
-				AgentToolNode toolNode = baseBuilder.toolCallbacks(List.of(tool1, tool2))
+				// Dispatch completed neutral stages on a single worker.
+				AgentToolNode toolNode = baseBuilder.toolRegistry(new ToolRegistry(List.of(tool1, tool2)))
 					.parallelToolExecution(true)
 					.maxParallelTools(5)
-					.wrapSyncToolsAsAsync(true) // This would cause deadlock before fix
 					.build();
 
 				// Create state with assistant message containing tool calls
-				AssistantMessage assistantMessage = createAssistantMessageWithToolCalls(
-						createToolCall("call1", "tool1", "{}"), createToolCall("call2", "tool2", "{}"));
+				ChatMessage assistantMessage = createChatMessageWithToolCalls(createToolCall("call1", "tool1", "{}"),
+						createToolCall("call2", "tool2", "{}"));
 
 				OverAllState state = createStateWithMessages(assistantMessage);
 
@@ -152,53 +117,44 @@ class AgentToolNodeParallelStarvationTest {
 				assertThat(executionCount.get()).isEqualTo(2);
 				assertThat(result).containsKey("messages");
 				Object messages = result.get("messages");
-				assertThat(messages).isInstanceOf(ToolResponseMessage.class);
+				assertThat(messages).isInstanceOf(List.class);
 
-				ToolResponseMessage responseMessage = (ToolResponseMessage) messages;
-				assertThat(responseMessage.getResponses()).hasSize(2);
-				assertThat(responseMessage.getResponses().get(0).responseData()).isEqualTo("result1");
-				assertThat(responseMessage.getResponses().get(1).responseData()).isEqualTo("result2");
+				List<ChatMessage> responseMessage = (List<ChatMessage>) messages;
+				assertThat(responseMessage).hasSize(2);
+				assertThat(responseMessage.get(0).text()).isEqualTo("result1");
+				assertThat(responseMessage.get(1).text()).isEqualTo("result2");
 			}
 			finally {
 				singleThreadExecutor.shutdownNow();
 			}
 		}
 
-		/**
-		 * Tests that sequential execution with wrapSyncToolsAsAsync=true still wraps
-		 * tools correctly.
-		 *
-		 * <p>
-		 * This ensures the fix only affects parallel mode, not sequential mode where
-		 * wrapping is safe and useful.
-		 */
 		@Test
 		@Timeout(value = 15, unit = TimeUnit.SECONDS)
-		@DisplayName("sequential execution with wrapSyncToolsAsAsync should still work")
-		void sequentialExecutionWithWrapSyncToolsAsAsync_shouldStillWork() throws Exception {
+		@DisplayName("sequential execution with neutral tool stages should still work")
+		void sequentialExecutionWithNeutralStages_shouldStillWork() throws Exception {
 			ExecutorService executor = Executors.newFixedThreadPool(2);
 
 			try {
 				AtomicInteger executionCount = new AtomicInteger(0);
 
-				ToolCallback tool1 = createSyncTool("tool1", () -> {
+				Tool tool1 = createSyncTool("tool1", () -> {
 					executionCount.incrementAndGet();
 					return "result1";
 				});
 
-				ToolCallback tool2 = createSyncTool("tool2", () -> {
+				Tool tool2 = createSyncTool("tool2", () -> {
 					executionCount.incrementAndGet();
 					return "result2";
 				});
 
-				// Sequential mode with wrapSyncToolsAsAsync - should still work
-				AgentToolNode toolNode = baseBuilder.toolCallbacks(List.of(tool1, tool2))
+				// Sequential mode with neutral tool stages - should still work
+				AgentToolNode toolNode = baseBuilder.toolRegistry(new ToolRegistry(List.of(tool1, tool2)))
 					.parallelToolExecution(false) // Sequential mode
-					.wrapSyncToolsAsAsync(true)
 					.build();
 
-				AssistantMessage assistantMessage = createAssistantMessageWithToolCalls(
-						createToolCall("call1", "tool1", "{}"), createToolCall("call2", "tool2", "{}"));
+				ChatMessage assistantMessage = createChatMessageWithToolCalls(createToolCall("call1", "tool1", "{}"),
+						createToolCall("call2", "tool2", "{}"));
 
 				OverAllState state = createStateWithMessages(assistantMessage);
 
@@ -211,8 +167,8 @@ class AgentToolNodeParallelStarvationTest {
 
 				assertThat(executionCount.get()).isEqualTo(2);
 				assertThat(result).containsKey("messages");
-				ToolResponseMessage responseMessage = (ToolResponseMessage) result.get("messages");
-				assertThat(responseMessage.getResponses()).hasSize(2);
+				List<ChatMessage> responseMessage = (List<ChatMessage>) result.get("messages");
+				assertThat(responseMessage).hasSize(2);
 			}
 			finally {
 				executor.shutdownNow();
@@ -225,10 +181,6 @@ class AgentToolNodeParallelStarvationTest {
 	@DisplayName("Parallel Concurrency Control Tests")
 	class ParallelConcurrencyControlTests {
 
-		/**
-		 * Tests parallel execution with a limited thread pool to verify proper
-		 * concurrency control.
-		 */
 		@Test
 		@Timeout(value = 20, unit = TimeUnit.SECONDS)
 		@DisplayName("parallel execution with limited thread pool should complete successfully")
@@ -257,20 +209,19 @@ class AgentToolNodeParallelStarvationTest {
 					return "result";
 				};
 
-				ToolCallback tool1 = createSyncTool("tool1", () -> workSimulator.get());
-				ToolCallback tool2 = createSyncTool("tool2", () -> workSimulator.get());
-				ToolCallback tool3 = createSyncTool("tool3", () -> workSimulator.get());
-				ToolCallback tool4 = createSyncTool("tool4", () -> workSimulator.get());
+				Tool tool1 = createSyncTool("tool1", () -> workSimulator.get());
+				Tool tool2 = createSyncTool("tool2", () -> workSimulator.get());
+				Tool tool3 = createSyncTool("tool3", () -> workSimulator.get());
+				Tool tool4 = createSyncTool("tool4", () -> workSimulator.get());
 
-				AgentToolNode toolNode = baseBuilder.toolCallbacks(List.of(tool1, tool2, tool3, tool4))
+				AgentToolNode toolNode = baseBuilder.toolRegistry(new ToolRegistry(List.of(tool1, tool2, tool3, tool4)))
 					.parallelToolExecution(true)
 					.maxParallelTools(2) // Limit to 2 concurrent
-					.wrapSyncToolsAsAsync(true)
 					.build();
 
-				AssistantMessage assistantMessage = createAssistantMessageWithToolCalls(
-						createToolCall("call1", "tool1", "{}"), createToolCall("call2", "tool2", "{}"),
-						createToolCall("call3", "tool3", "{}"), createToolCall("call4", "tool4", "{}"));
+				ChatMessage assistantMessage = createChatMessageWithToolCalls(createToolCall("call1", "tool1", "{}"),
+						createToolCall("call2", "tool2", "{}"), createToolCall("call3", "tool3", "{}"),
+						createToolCall("call4", "tool4", "{}"));
 
 				OverAllState state = createStateWithMessages(assistantMessage);
 
@@ -287,44 +238,40 @@ class AgentToolNodeParallelStarvationTest {
 				// Max concurrent should be limited to 2 (by semaphore)
 				assertThat(maxConcurrent.get()).isLessThanOrEqualTo(2);
 
-				ToolResponseMessage responseMessage = (ToolResponseMessage) result.get("messages");
-				assertThat(responseMessage.getResponses()).hasSize(4);
+				List<ChatMessage> responseMessage = (List<ChatMessage>) result.get("messages");
+				assertThat(responseMessage).hasSize(4);
 			}
 			finally {
 				limitedExecutor.shutdownNow();
 			}
 		}
 
-		/**
-		 * Tests that parallel mode without wrapSyncToolsAsAsync also works correctly.
-		 */
 		@Test
 		@Timeout(value = 15, unit = TimeUnit.SECONDS)
-		@DisplayName("parallel execution without wrapSyncToolsAsAsync should work")
-		void parallelExecution_withoutWrapSyncToolsAsAsync_shouldWork() throws Exception {
+		@DisplayName("parallel execution without neutral tool stages should work")
+		void parallelExecutionWithMultipleWorkers_shouldWork() throws Exception {
 			ExecutorService executor = Executors.newFixedThreadPool(4);
 
 			try {
 				AtomicInteger executionCount = new AtomicInteger(0);
 
-				ToolCallback tool1 = createSyncTool("tool1", () -> {
+				Tool tool1 = createSyncTool("tool1", () -> {
 					executionCount.incrementAndGet();
 					return "result1";
 				});
 
-				ToolCallback tool2 = createSyncTool("tool2", () -> {
+				Tool tool2 = createSyncTool("tool2", () -> {
 					executionCount.incrementAndGet();
 					return "result2";
 				});
 
-				AgentToolNode toolNode = baseBuilder.toolCallbacks(List.of(tool1, tool2))
+				AgentToolNode toolNode = baseBuilder.toolRegistry(new ToolRegistry(List.of(tool1, tool2)))
 					.parallelToolExecution(true)
 					.maxParallelTools(5)
-					.wrapSyncToolsAsAsync(false) // Disabled
 					.build();
 
-				AssistantMessage assistantMessage = createAssistantMessageWithToolCalls(
-						createToolCall("call1", "tool1", "{}"), createToolCall("call2", "tool2", "{}"));
+				ChatMessage assistantMessage = createChatMessageWithToolCalls(createToolCall("call1", "tool1", "{}"),
+						createToolCall("call2", "tool2", "{}"));
 
 				OverAllState state = createStateWithMessages(assistantMessage);
 
@@ -336,8 +283,8 @@ class AgentToolNodeParallelStarvationTest {
 				Map<String, Object> result = toolNode.apply(state, config);
 
 				assertThat(executionCount.get()).isEqualTo(2);
-				ToolResponseMessage responseMessage = (ToolResponseMessage) result.get("messages");
-				assertThat(responseMessage.getResponses()).hasSize(2);
+				List<ChatMessage> responseMessage = (List<ChatMessage>) result.get("messages");
+				assertThat(responseMessage).hasSize(2);
 			}
 			finally {
 				executor.shutdownNow();
@@ -357,7 +304,7 @@ class AgentToolNodeParallelStarvationTest {
 		AtomicInteger submissions = new AtomicInteger();
 		AtomicInteger lateCalls = new AtomicInteger();
 		try {
-			ToolCallback first = createSyncTool("first", () -> {
+			Tool first = createSyncTool("first", () -> {
 				firstStarted.countDown();
 				try {
 					releaseFirst.await();
@@ -367,38 +314,37 @@ class AgentToolNodeParallelStarvationTest {
 				}
 				return "first result";
 			});
-			ToolCallback second = createSyncTool("second", () -> {
+			Tool second = createSyncTool("second", () -> {
 				lateCalls.incrementAndGet();
 				return "second result";
 			});
-			AgentToolNode node = baseBuilder.toolCallbacks(List.of(first, second))
+			AgentToolNode node = baseBuilder.toolRegistry(new ToolRegistry(List.of(first, second)))
 				.parallelToolExecution(true)
 				.maxParallelTools(1)
 				.toolExecutionTimeout(Duration.ofSeconds(1))
 				.build();
-			RunnableConfig config = RunnableConfig.builder()
-				.addParallelNodeExecutor("_AGENT_TOOL_", command -> {
-					int index = submissions.getAndIncrement();
-					if (index == 0) {
-						executor.execute(command);
-						await().atMost(Duration.ofSeconds(5)).until(() -> firstStarted.getCount() == 0);
-					}
-					else {
-						executor.execute(() -> {
-							waitingWorker.set(Thread.currentThread());
-							command.run();
-						});
-						await().atMost(Duration.ofSeconds(5)).until(() -> waitingWorker.get() != null
+			RunnableConfig config = RunnableConfig.builder().addParallelNodeExecutor("_AGENT_TOOL_", command -> {
+				int index = submissions.getAndIncrement();
+				if (index == 0) {
+					executor.execute(command);
+					await().atMost(Duration.ofSeconds(5)).until(() -> firstStarted.getCount() == 0);
+				}
+				else {
+					executor.execute(() -> {
+						waitingWorker.set(Thread.currentThread());
+						command.run();
+					});
+					await().atMost(Duration.ofSeconds(5))
+						.until(() -> waitingWorker.get() != null
 								&& (waitingWorker.get().getState() == Thread.State.WAITING
 										|| waitingWorker.get().getState() == Thread.State.TIMED_WAITING));
-					}
-				})
-				.build();
-			OverAllState state = createStateWithMessages(createAssistantMessageWithToolCalls(
+				}
+			}).build();
+			OverAllState state = createStateWithMessages(createChatMessageWithToolCalls(
 					createToolCall("call1", "first", "{}"), createToolCall("call2", "second", "{}")));
 
-			ToolResponseMessage response = (ToolResponseMessage) node.apply(state, config).get("messages");
-			assertThat(response.getResponses()).extracting(ToolResponseMessage.ToolResponse::responseData)
+			List<ChatMessage> response = (List<ChatMessage>) node.apply(state, config).get("messages");
+			assertThat(response).extracting(ChatMessage::text)
 				.containsExactly("Error: Tool execution timed out", "Error: Tool execution timed out");
 			if (releaseBeforeProbe) {
 				releaseFirst.countDown();
@@ -420,38 +366,29 @@ class AgentToolNodeParallelStarvationTest {
 
 	// Helper methods
 
-	private ToolCallback createSyncTool(String name, Supplier<String> execution) {
-		return new ToolCallback() {
+	private Tool createSyncTool(String name, Supplier<String> execution) {
+		return new Tool() {
 			@Override
-			public ToolDefinition getToolDefinition() {
-				return ToolDefinition.builder()
-					.name(name)
-					.description("Test tool " + name)
-					.inputSchema("{\"type\":\"object\",\"properties\":{}}")
-					.build();
+			public ToolDefinition definition() {
+				return new ToolDefinition(name, "Test tool " + name, "{\"type\":\"object\",\"properties\":{}}");
 			}
 
 			@Override
-			public String call(String toolInput, ToolContext toolContext) {
-				return execution.get();
-			}
-
-			@Override
-			public String call(String toolInput) {
-				return call(toolInput, new ToolContext(Map.of()));
+			public CompletionStage<ToolResult> execute(ToolCall call, ToolContext context) {
+				return CompletableFuture.completedFuture(ToolResult.text(execution.get()));
 			}
 		};
 	}
 
-	private AssistantMessage.ToolCall createToolCall(String id, String name, String arguments) {
-		return new AssistantMessage.ToolCall(id, "function", name, arguments);
+	private ToolCall createToolCall(String id, String name, String arguments) {
+		return new ToolCall(id, name, arguments);
 	}
 
-	private AssistantMessage createAssistantMessageWithToolCalls(AssistantMessage.ToolCall... toolCalls) {
-		return AssistantMessage.builder().content("").toolCalls(List.of(toolCalls)).build();
+	private ChatMessage createChatMessageWithToolCalls(ToolCall... toolCalls) {
+		return ChatMessage.assistant("", List.of(toolCalls));
 	}
 
-	private OverAllState createStateWithMessages(Message... messages) {
+	private OverAllState createStateWithMessages(ChatMessage... messages) {
 		Map<String, Object> stateData = new HashMap<>();
 		stateData.put("messages", new ArrayList<>(List.of(messages)));
 		return new OverAllState(stateData);

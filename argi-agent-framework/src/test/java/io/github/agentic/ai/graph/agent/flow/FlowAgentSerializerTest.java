@@ -24,8 +24,8 @@ import io.github.agentic.ai.graph.agent.flow.agent.SequentialAgent;
 import io.github.agentic.ai.graph.agent.flow.agent.loop.LoopMode;
 import io.github.agentic.ai.graph.agent.utils.ChatClientTestUtils;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
-import io.github.agentic.ai.graph.serializer.std.SpringAIStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.std.ObjectStreamStateSerializer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -57,55 +57,55 @@ class FlowAgentSerializerTest {
 	}
 
 	/**
-	 * Test that SequentialAgent can be configured with SpringAIJacksonStateSerializer.
+	 * Test that SequentialAgent can be configured with ArgiJacksonStateSerializer.
 	 */
 	@Test
 	void testSequentialAgentWithJacksonSerializer() throws Exception {
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 		ReactAgent subAgent1 = createMockAgent("agent1", "output1");
 		ReactAgent subAgent2 = createMockAgent("agent2", "output2");
 
 		SequentialAgent agent = SequentialAgent.builder()
-				.name("sequential_agent")
-				.description("Sequential agent with Jackson serializer")
-				.stateSerializer(serializer)
-				.subAgents(List.of(subAgent1, subAgent2))
-				.build();
+			.name("sequential_agent")
+			.description("Sequential agent with Jackson serializer")
+			.stateSerializer(serializer)
+			.subAgents(List.of(subAgent1, subAgent2))
+			.build();
 
 		// Verify serializer is set correctly in StateGraph
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer,
-				"Serializer should be SpringAIJacksonStateSerializer");
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer,
+				"Serializer should be ArgiJacksonStateSerializer");
 	}
 
 	/**
-	 * Test that SequentialAgent can be configured with SpringAIStateSerializer.
+	 * Test that SequentialAgent can be configured with ObjectStreamStateSerializer.
 	 */
 	@Test
-	void testSequentialAgentWithSpringAIStateSerializer() throws Exception {
-		StateSerializer serializer = new SpringAIStateSerializer();
+	void testSequentialAgentWithObjectStreamStateSerializer() throws Exception {
+		StateSerializer serializer = new ObjectStreamStateSerializer(OverAllState::new);
 
 		ReactAgent subAgent1 = createMockAgent("agent1", "output1");
 		ReactAgent subAgent2 = createMockAgent("agent2", "output2");
 
 		SequentialAgent agent = SequentialAgent.builder()
-				.name("sequential_agent")
-				.description("Sequential agent with SpringAI serializer")
-				.stateSerializer(serializer)
-				.subAgents(List.of(subAgent1, subAgent2))
-				.build();
+			.name("sequential_agent")
+			.description("Sequential agent with SpringAI serializer")
+			.stateSerializer(serializer)
+			.subAgents(List.of(subAgent1, subAgent2))
+			.build();
 
 		// Verify serializer is set correctly in StateGraph
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIStateSerializer.class, graphSerializer,
-				"Serializer should be SpringAIStateSerializer");
+		assertInstanceOf(ObjectStreamStateSerializer.class, graphSerializer,
+				"Serializer should be ObjectStreamStateSerializer");
 	}
 
 	/**
@@ -117,73 +117,73 @@ class FlowAgentSerializerTest {
 		ReactAgent subAgent2 = createMockAgent("agent2", "output2");
 
 		SequentialAgent agent = SequentialAgent.builder()
-				.name("sequential_agent")
-				.description("Sequential agent with default serializer")
-				.subAgents(List.of(subAgent1, subAgent2))
-				.build();
+			.name("sequential_agent")
+			.description("Sequential agent with default serializer")
+			.subAgents(List.of(subAgent1, subAgent2))
+			.build();
 
 		// Verify default serializer is used
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		// Default should be JacksonSerializer (extends SpringAIJacksonStateSerializer)
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer,
-				"Default serializer should be SpringAIJacksonStateSerializer");
+		// Default should be JacksonSerializer (extends ArgiJacksonStateSerializer)
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer,
+				"Default serializer should be ArgiJacksonStateSerializer");
 	}
 
 	/**
-	 * Test that ParallelAgent can be configured with SpringAIJacksonStateSerializer.
+	 * Test that ParallelAgent can be configured with ArgiJacksonStateSerializer.
 	 */
 	@Test
 	void testParallelAgentWithJacksonSerializer() throws Exception {
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 		ReactAgent subAgent1 = createMockAgent("agent1", "output1");
 		ReactAgent subAgent2 = createMockAgent("agent2", "output2");
 
 		ParallelAgent agent = ParallelAgent.builder()
-				.name("parallel_agent")
-				.description("Parallel agent with Jackson serializer")
-				.stateSerializer(serializer)
-				.subAgents(List.of(subAgent1, subAgent2))
-				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-				.build();
+			.name("parallel_agent")
+			.description("Parallel agent with Jackson serializer")
+			.stateSerializer(serializer)
+			.subAgents(List.of(subAgent1, subAgent2))
+			.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+			.build();
 
 		// Verify serializer is set correctly in StateGraph
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer,
-				"Serializer should be SpringAIJacksonStateSerializer");
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer,
+				"Serializer should be ArgiJacksonStateSerializer");
 	}
 
 	/**
-	 * Test that ParallelAgent can be configured with SpringAIStateSerializer.
+	 * Test that ParallelAgent can be configured with ObjectStreamStateSerializer.
 	 */
 	@Test
-	void testParallelAgentWithSpringAIStateSerializer() throws Exception {
-		StateSerializer serializer = new SpringAIStateSerializer();
+	void testParallelAgentWithObjectStreamStateSerializer() throws Exception {
+		StateSerializer serializer = new ObjectStreamStateSerializer(OverAllState::new);
 
 		ReactAgent subAgent1 = createMockAgent("agent1", "output1");
 		ReactAgent subAgent2 = createMockAgent("agent2", "output2");
 
 		ParallelAgent agent = ParallelAgent.builder()
-				.name("parallel_agent")
-				.description("Parallel agent with SpringAI serializer")
-				.stateSerializer(serializer)
-				.subAgents(List.of(subAgent1, subAgent2))
-				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-				.build();
+			.name("parallel_agent")
+			.description("Parallel agent with SpringAI serializer")
+			.stateSerializer(serializer)
+			.subAgents(List.of(subAgent1, subAgent2))
+			.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+			.build();
 
 		// Verify serializer is set correctly in StateGraph
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIStateSerializer.class, graphSerializer,
-				"Serializer should be SpringAIStateSerializer");
+		assertInstanceOf(ObjectStreamStateSerializer.class, graphSerializer,
+				"Serializer should be ObjectStreamStateSerializer");
 	}
 
 	/**
@@ -195,71 +195,71 @@ class FlowAgentSerializerTest {
 		ReactAgent subAgent2 = createMockAgent("agent2", "output2");
 
 		ParallelAgent agent = ParallelAgent.builder()
-				.name("parallel_agent")
-				.description("Parallel agent with default serializer")
-				.subAgents(List.of(subAgent1, subAgent2))
-				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-				.build();
+			.name("parallel_agent")
+			.description("Parallel agent with default serializer")
+			.subAgents(List.of(subAgent1, subAgent2))
+			.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+			.build();
 
 		// Verify default serializer is used
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer,
-				"Default serializer should be SpringAIJacksonStateSerializer");
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer,
+				"Default serializer should be ArgiJacksonStateSerializer");
 	}
 
 	/**
-	 * Test that LoopAgent can be configured with SpringAIJacksonStateSerializer.
+	 * Test that LoopAgent can be configured with ArgiJacksonStateSerializer.
 	 */
 	@Test
 	void testLoopAgentWithJacksonSerializer() throws Exception {
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 		ReactAgent subAgent = createMockAgent("sub_agent", "output");
 
 		LoopAgent agent = LoopAgent.builder()
-				.name("loop_agent")
-				.description("Loop agent with Jackson serializer")
-				.stateSerializer(serializer)
-				.subAgent(subAgent)
-				.loopStrategy(LoopMode.count(2))
-				.build();
+			.name("loop_agent")
+			.description("Loop agent with Jackson serializer")
+			.stateSerializer(serializer)
+			.subAgent(subAgent)
+			.loopStrategy(LoopMode.count(2))
+			.build();
 
 		// Verify serializer is set correctly in StateGraph
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer,
-				"Serializer should be SpringAIJacksonStateSerializer");
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer,
+				"Serializer should be ArgiJacksonStateSerializer");
 	}
 
 	/**
-	 * Test that LoopAgent can be configured with SpringAIStateSerializer.
+	 * Test that LoopAgent can be configured with ObjectStreamStateSerializer.
 	 */
 	@Test
-	void testLoopAgentWithSpringAIStateSerializer() throws Exception {
-		StateSerializer serializer = new SpringAIStateSerializer();
+	void testLoopAgentWithObjectStreamStateSerializer() throws Exception {
+		StateSerializer serializer = new ObjectStreamStateSerializer(OverAllState::new);
 
 		ReactAgent subAgent = createMockAgent("sub_agent", "output");
 
 		LoopAgent agent = LoopAgent.builder()
-				.name("loop_agent")
-				.description("Loop agent with SpringAI serializer")
-				.stateSerializer(serializer)
-				.subAgent(subAgent)
-				.loopStrategy(LoopMode.count(2))
-				.build();
+			.name("loop_agent")
+			.description("Loop agent with SpringAI serializer")
+			.stateSerializer(serializer)
+			.subAgent(subAgent)
+			.loopStrategy(LoopMode.count(2))
+			.build();
 
 		// Verify serializer is set correctly in StateGraph
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIStateSerializer.class, graphSerializer,
-				"Serializer should be SpringAIStateSerializer");
+		assertInstanceOf(ObjectStreamStateSerializer.class, graphSerializer,
+				"Serializer should be ObjectStreamStateSerializer");
 	}
 
 	/**
@@ -270,19 +270,19 @@ class FlowAgentSerializerTest {
 		ReactAgent subAgent = createMockAgent("sub_agent", "output");
 
 		LoopAgent agent = LoopAgent.builder()
-				.name("loop_agent")
-				.description("Loop agent with default serializer")
-				.subAgent(subAgent)
-				.loopStrategy(LoopMode.count(2))
-				.build();
+			.name("loop_agent")
+			.description("Loop agent with default serializer")
+			.subAgent(subAgent)
+			.loopStrategy(LoopMode.count(2))
+			.build();
 
 		// Verify default serializer is used
 		StateGraph stateGraph = agent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer,
-				"Default serializer should be SpringAIJacksonStateSerializer");
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer,
+				"Default serializer should be ArgiJacksonStateSerializer");
 	}
 
 	/**
@@ -290,25 +290,25 @@ class FlowAgentSerializerTest {
 	 */
 	@Test
 	void testFlowAgentSerializerConsistency() throws Exception {
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 		ReactAgent subAgent1 = createMockAgent("agent1", "output1");
 		ReactAgent subAgent2 = createMockAgent("agent2", "output2");
 
 		SequentialAgent sequentialAgent = SequentialAgent.builder()
-				.name("sequential_agent")
-				.description("Sequential agent")
-				.stateSerializer(serializer)
-				.subAgents(List.of(subAgent1, subAgent2))
-				.build();
+			.name("sequential_agent")
+			.description("Sequential agent")
+			.stateSerializer(serializer)
+			.subAgents(List.of(subAgent1, subAgent2))
+			.build();
 
 		ParallelAgent parallelAgent = ParallelAgent.builder()
-				.name("parallel_agent")
-				.description("Parallel agent")
-				.stateSerializer(serializer)
-				.subAgents(List.of(subAgent1, subAgent2))
-				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-				.build();
+			.name("parallel_agent")
+			.description("Parallel agent")
+			.stateSerializer(serializer)
+			.subAgents(List.of(subAgent1, subAgent2))
+			.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+			.build();
 
 		// Both should use the same serializer type
 		StateSerializer sequentialSerializer = sequentialAgent.asStateGraph().getStateSerializer();
@@ -325,17 +325,17 @@ class FlowAgentSerializerTest {
 	 */
 	@Test
 	void testFlowAgentBuilderFluentInterface() throws Exception {
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 		ReactAgent subAgent1 = createMockAgent("agent1", "output1");
 		ReactAgent subAgent2 = createMockAgent("agent2", "output2");
 
 		SequentialAgent agent = SequentialAgent.builder()
-				.name("test_agent")
-				.description("Test agent")
-				.stateSerializer(serializer)  // Test fluent interface
-				.subAgents(List.of(subAgent1, subAgent2))
-				.build();
+			.name("test_agent")
+			.description("Test agent")
+			.stateSerializer(serializer) // Test fluent interface
+			.subAgents(List.of(subAgent1, subAgent2))
+			.build();
 
 		assertNotNull(agent);
 		assertEquals("test_agent", agent.name());
@@ -344,7 +344,7 @@ class FlowAgentSerializerTest {
 		// Verify serializer is set
 		StateSerializer graphSerializer = agent.asStateGraph().getStateSerializer();
 		assertNotNull(graphSerializer);
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer);
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer);
 	}
 
 	/**
@@ -352,12 +352,11 @@ class FlowAgentSerializerTest {
 	 */
 	private ReactAgent createMockAgent(String name, String outputKey) throws Exception {
 		return ReactAgent.builder()
-				.name(name)
-				.description("Mock agent")
-				.outputKey(outputKey)
-				.chatClient(chatClient)
-				.resolver(toolCallbackResolver)
-				.build();
+			.name(name)
+			.description("Mock agent")
+			.outputKey(outputKey)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatClient))
+			.build();
 	}
 
 }

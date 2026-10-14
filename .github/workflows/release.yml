@@ -120,12 +120,15 @@ jobs:
           path: |
             .flattened-pom.xml
             argi-*/.flattened-pom.xml
-            spring-boot-starters/*/.flattened-pom.xml
+            argi-api/*/.flattened-pom.xml
+            argi-spring-boot-starter/*/.flattened-pom.xml
             target/*.asc
             argi-*/target/*.asc
-            spring-boot-starters/*/target/*.asc
+            argi-api/*/target/*.asc
+            argi-spring-boot-starter/*/target/*.asc
             argi-*/target/*.jar
-            spring-boot-starters/*/target/*.jar
+            argi-api/*/target/*.jar
+            argi-spring-boot-starter/*/target/*.jar
             target/central-publishing/*.zip
             target/central-publishing/*.json
             argi-bom/target/central-publishing/*.zip

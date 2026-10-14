@@ -20,9 +20,9 @@ import io.github.agentic.ai.graph.skills.registry.SkillRegistry;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.util.List;
 import java.util.function.BiFunction;
@@ -37,7 +37,7 @@ public class SearchSkillsTool implements BiFunction<SearchSkillsTool.SearchSkill
 
 	public static final String DESCRIPTION = """
 			Searches the current SkillRegistry by skill name, description, or skill path.
-			
+
 			Usage:
 			- Provide a query to search the locally registered skills
 			- Matching is performed against name, description, and path
@@ -53,11 +53,11 @@ public class SearchSkillsTool implements BiFunction<SearchSkillsTool.SearchSkill
 		this.skillRegistry = skillRegistry;
 	}
 
-	public static ToolCallback createSearchSkillsToolCallback(SkillRegistry skillRegistry, String description) {
-		return FunctionToolCallback.builder(SEARCH_SKILLS, new SearchSkillsTool(skillRegistry))
-				.description(description != null ? description : DESCRIPTION)
-				.inputType(SearchSkillsRequest.class)
-				.build();
+	public static Tool createSearchSkillsTool(SkillRegistry skillRegistry, String description) {
+		return TypedTool.builder(SEARCH_SKILLS, new SearchSkillsTool(skillRegistry))
+			.description(description != null ? description : DESCRIPTION)
+			.inputType(SearchSkillsRequest.class)
+			.build();
 	}
 
 	@Override
@@ -68,13 +68,10 @@ public class SearchSkillsTool implements BiFunction<SearchSkillsTool.SearchSkill
 			return "No skills found.";
 		}
 		return skills.stream()
-				.map(skill -> "- name=%s | description=%s | skill_path=%s | source=%s | allowed_tools=%s".formatted(
-						skill.getName(),
-						skill.getDescription(),
-						skill.getSkillPath(),
-						skill.getSource(),
-						skill.getAllowedTools()))
-				.collect(Collectors.joining("\n"));
+			.map(skill -> "- name=%s | description=%s | skill_path=%s | source=%s | allowed_tools=%s".formatted(
+					skill.getName(), skill.getDescription(), skill.getSkillPath(), skill.getSource(),
+					skill.getAllowedTools()))
+			.collect(Collectors.joining("\n"));
 	}
 
 	public static class SearchSkillsRequest {
@@ -89,6 +86,7 @@ public class SearchSkillsTool implements BiFunction<SearchSkillsTool.SearchSkill
 		public SearchSkillsRequest(String query) {
 			this.query = query;
 		}
+
 	}
 
 }

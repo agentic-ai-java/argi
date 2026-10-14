@@ -26,8 +26,8 @@ import io.github.agentic.ai.graph.agent.hook.InterruptionHook;
 import io.github.agentic.ai.graph.agent.tools.PoemTool;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -48,43 +48,49 @@ import reactor.core.publisher.Flux;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static io.github.agentic.ai.graph.RunnableConfig.AGENT_HOOK_NAME_PREFIX;
 
 public class InterruptionHookTest {
 
 	private InterruptionHook hook;
+
 	private OverAllState state;
+
 	private ReactAgent mockAgent;
 
 	/**
 	 * Mock ChatModel for unit tests that don't require actual API calls.
 	 */
 	private static class MockChatModel implements ChatModel {
+
 		@Override
 		public ChatResponse call(Prompt prompt) {
-			return new ChatResponse(List.of(new Generation(new org.springframework.ai.chat.messages.AssistantMessage("Mock response"))));
+			return new ChatResponse(List
+				.of(new Generation(new org.springframework.ai.chat.messages.AssistantMessage("Mock response"))));
 		}
 
 		@Override
 		public Flux<ChatResponse> stream(Prompt prompt) {
-			return Flux.just(new ChatResponse(List.of(new Generation(new org.springframework.ai.chat.messages.AssistantMessage("Mock stream response")))));
+			return Flux.just(new ChatResponse(List.of(new Generation(
+					new org.springframework.ai.chat.messages.AssistantMessage("Mock stream response")))));
 		}
+
 	}
 
 	@BeforeEach
 	void setUp() {
 		hook = InterruptionHook.builder().build();
-		state = new OverAllState(Map.of("messages", List.of(new UserMessage("Initial message"))));
-		
+		state = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"))));
+
 		// Create a mock ReactAgent for testing
 		mockAgent = ReactAgent.builder()
-				.name("test-agent")
-				.model(new MockChatModel())
-				.saver(new MemorySaver())
-				.build();
-		
+			.name("test-agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(new MockChatModel()))
+			.saver(new MemorySaver())
+			.build();
+
 		// Set the agent to the hook
 		hook.setAgent(mockAgent);
 	}
@@ -92,14 +98,10 @@ public class InterruptionHookTest {
 	@Test
 	public void testInterrupt_EmptyList_ShouldReturnInterruptionMetadata() {
 		// Given: INTERRUPTION_FEEDBACK_KEY is set as empty list in agent thread state
-		OverAllState testState = new OverAllState(Map.of(
-				"messages", List.of(new UserMessage("Initial message"))
-		));
+		OverAllState testState = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"))));
 		String threadId = "test-thread-empty-list";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
-		
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+
 		// Set empty list in agent thread state
 		mockAgent.updateAgentState(List.of(), config);
 
@@ -107,35 +109,32 @@ public class InterruptionHookTest {
 		Optional<InterruptionMetadata> result = hook.interrupt("test-node", testState, config);
 
 		// Then: should return InterruptionMetadata
-		Assertions.assertTrue(result.isPresent(), "Should return InterruptionMetadata when INTERRUPTION_FEEDBACK_KEY is empty list");
+		Assertions.assertTrue(result.isPresent(),
+				"Should return InterruptionMetadata when INTERRUPTION_FEEDBACK_KEY is empty list");
 		InterruptionMetadata metadata = result.get();
 		Assertions.assertEquals("test-node", metadata.node(), "Node ID should match");
 		Assertions.assertNotNull(metadata.state(), "State should not be null");
-		Assertions.assertTrue(metadata.metadata("interruption_requested").isPresent(), 
+		Assertions.assertTrue(metadata.metadata("interruption_requested").isPresent(),
 				"Should have interruption_requested metadata");
-		Assertions.assertEquals(true, metadata.metadata("interruption_requested").get(), 
+		Assertions.assertEquals(true, metadata.metadata("interruption_requested").get(),
 				"interruption_requested should be true");
 	}
 
 	@Test
 	public void testInterrupt_NonEmptyList_ShouldReturnEmpty() {
 		// Given: INTERRUPTION_FEEDBACK_KEY is set as non-empty list in agent thread state
-		OverAllState testState = new OverAllState(Map.of(
-				"messages", List.of(new UserMessage("Initial message"))
-		));
+		OverAllState testState = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"))));
 		String threadId = "test-thread-non-empty-list";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
-		
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+
 		// Set non-empty list in agent thread state
-		mockAgent.updateAgentState(List.of(new UserMessage("feedback")), config);
+		mockAgent.updateAgentState(List.of(ChatMessage.user("feedback")), config);
 
 		// When: interrupt is called
 		Optional<InterruptionMetadata> result = hook.interrupt("test-node", testState, config);
 
 		// Then: should return empty (continue normal execution)
-		Assertions.assertFalse(result.isPresent(), 
+		Assertions.assertFalse(result.isPresent(),
 				"Should return empty when INTERRUPTION_FEEDBACK_KEY has non-empty list");
 	}
 
@@ -143,29 +142,23 @@ public class InterruptionHookTest {
 	public void testInterrupt_NoInterruptionFeedbackKey_ShouldReturnEmpty() {
 		// Given: No INTERRUPTION_FEEDBACK_KEY in agent thread state
 		String threadId = "test-thread-no-feedback";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
 		// When: interrupt is called
 		Optional<InterruptionMetadata> result = hook.interrupt("test-node", state, config);
 
 		// Then: should return empty
-		Assertions.assertFalse(result.isPresent(), 
+		Assertions.assertFalse(result.isPresent(),
 				"Should return empty when INTERRUPTION_FEEDBACK_KEY is not set in state");
 	}
 
 	@Test
 	public void testInterrupt_NonListValue_ShouldReturnEmpty() {
 		// Given: INTERRUPTION_FEEDBACK_KEY is set as non-list value in agent thread state
-		OverAllState testState = new OverAllState(Map.of(
-				"messages", List.of(new UserMessage("Initial message"))
-		));
+		OverAllState testState = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"))));
 		String threadId = "test-thread-non-list";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
-		
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+
 		// Set non-list value in agent thread state
 		mockAgent.updateAgentState("not a list", config);
 
@@ -173,22 +166,17 @@ public class InterruptionHookTest {
 		Optional<InterruptionMetadata> result = hook.interrupt("test-node", testState, config);
 
 		// Then: should return empty (continue normal execution)
-		Assertions.assertFalse(result.isPresent(), 
-				"Should return empty when INTERRUPTION_FEEDBACK_KEY is not a list");
+		Assertions.assertFalse(result.isPresent(), "Should return empty when INTERRUPTION_FEEDBACK_KEY is not a list");
 	}
 
 	@Test
 	public void testApply_WithStringFeedback_ShouldAddUserMessage() throws Exception {
 		// Given: INTERRUPTION_FEEDBACK_KEY is set with String value in agent thread state
 		String feedbackText = "This is feedback";
-		OverAllState testState = new OverAllState(Map.of(
-				"messages", List.of(new UserMessage("Initial message"))
-		));
+		OverAllState testState = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"))));
 		String threadId = "test-thread-string-feedback";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
-		
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+
 		// Set feedback in agent thread state
 		mockAgent.updateAgentState(feedbackText, config);
 
@@ -199,34 +187,31 @@ public class InterruptionHookTest {
 		// Then: should add UserMessage to messages list
 		Assertions.assertNotNull(result, "Result should not be null");
 		Assertions.assertTrue(result.containsKey("messages"), "Result should contain messages key");
-		
+
 		@SuppressWarnings("unchecked")
-		List<Message> messages = (List<Message>) result.get("messages");
+		List<ChatMessage> messages = (List<ChatMessage>) result.get("messages");
 		Assertions.assertNotNull(messages, "Messages list should not be null");
 		Assertions.assertEquals(1, messages.size(), "Should have 1 message (feedback only, not appending to existing)");
-		
-		Message lastMessage = messages.get(messages.size() - 1);
-		Assertions.assertInstanceOf(UserMessage.class, lastMessage, "Last message should be UserMessage");
-		Assertions.assertEquals(feedbackText, lastMessage.getText(), "Message text should match feedback");
-		
+
+		ChatMessage lastMessage = messages.get(messages.size() - 1);
+		Assertions.assertEquals(ChatRole.USER, lastMessage.role());
+		Assertions.assertEquals(feedbackText, lastMessage.text(), "ChatMessage text should match feedback");
+
 		// Verify INTERRUPTION_FEEDBACK_KEY has been removed from agent thread state
 		Map<String, Object> threadState = mockAgent.getThreadState(threadId);
-		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY), 
+		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY),
 				"INTERRUPTION_FEEDBACK_KEY should be removed from agent thread state");
 	}
 
 	@Test
 	public void testApply_WithUserMessageFeedback_ShouldAddUserMessage() throws Exception {
-		// Given: INTERRUPTION_FEEDBACK_KEY is set with UserMessage value in agent thread state
-		UserMessage feedbackMessage = new UserMessage("This is UserMessage feedback");
-		OverAllState testState = new OverAllState(Map.of(
-				"messages", List.of(new UserMessage("Initial message"))
-		));
+		// Given: INTERRUPTION_FEEDBACK_KEY is set with UserMessage value in agent thread
+		// state
+		ChatMessage feedbackMessage = ChatMessage.user("This is UserMessage feedback");
+		OverAllState testState = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"))));
 		String threadId = "test-thread-user-message-feedback";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
-		
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+
 		// Set feedback in agent thread state
 		mockAgent.updateAgentState(feedbackMessage, config);
 
@@ -237,37 +222,33 @@ public class InterruptionHookTest {
 		// Then: should add UserMessage to messages list
 		Assertions.assertNotNull(result, "Result should not be null");
 		Assertions.assertTrue(result.containsKey("messages"), "Result should contain messages key");
-		
+
 		@SuppressWarnings("unchecked")
-		List<Message> messages = (List<Message>) result.get("messages");
+		List<ChatMessage> messages = (List<ChatMessage>) result.get("messages");
 		Assertions.assertNotNull(messages, "Messages list should not be null");
 		Assertions.assertEquals(1, messages.size(), "Should have 1 message (feedback only)");
-		
-		Message lastMessage = messages.get(messages.size() - 1);
-		Assertions.assertInstanceOf(UserMessage.class, lastMessage, "Last message should be UserMessage");
-		Assertions.assertEquals(feedbackMessage.getText(), lastMessage.getText(), 
-				"Message text should match feedback");
-		
+
+		ChatMessage lastMessage = messages.get(messages.size() - 1);
+		Assertions.assertEquals(io.github.agentic.ai.api.chat.ChatRole.USER, lastMessage.role());
+		Assertions.assertEquals(feedbackMessage.text(), lastMessage.text(), "ChatMessage text should match feedback");
+
 		// Verify INTERRUPTION_FEEDBACK_KEY has been removed from agent thread state
 		Map<String, Object> threadState = mockAgent.getThreadState(threadId);
-		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY), 
+		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY),
 				"INTERRUPTION_FEEDBACK_KEY should be removed from agent thread state");
 	}
 
 	@Test
 	public void testApply_WithListMessageFeedback_ShouldAddAllMessages() throws Exception {
-		// Given: INTERRUPTION_FEEDBACK_KEY is set with List<Message> value in agent thread state
-		UserMessage feedbackMessage1 = new UserMessage("First feedback message");
-		UserMessage feedbackMessage2 = new UserMessage("Second feedback message");
-		List<Message> feedbackMessages = List.of(feedbackMessage1, feedbackMessage2);
-		OverAllState testState = new OverAllState(Map.of(
-				"messages", List.of(new UserMessage("Initial message"))
-		));
+		// Given: INTERRUPTION_FEEDBACK_KEY is set with List<ChatMessage> value in agent
+		// thread state
+		ChatMessage feedbackMessage1 = ChatMessage.user("First feedback message");
+		ChatMessage feedbackMessage2 = ChatMessage.user("Second feedback message");
+		List<ChatMessage> feedbackMessages = List.of(feedbackMessage1, feedbackMessage2);
+		OverAllState testState = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"))));
 		String threadId = "test-thread-list-message-feedback";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
-		
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+
 		// Set feedback in agent thread state
 		mockAgent.updateAgentState(feedbackMessages, config);
 
@@ -278,20 +259,20 @@ public class InterruptionHookTest {
 		// Then: should add all messages from the list
 		Assertions.assertNotNull(result, "Result should not be null");
 		Assertions.assertTrue(result.containsKey("messages"), "Result should contain messages key");
-		
+
 		@SuppressWarnings("unchecked")
-		List<Message> messages = (List<Message>) result.get("messages");
+		List<ChatMessage> messages = (List<ChatMessage>) result.get("messages");
 		Assertions.assertNotNull(messages, "Messages list should not be null");
 		Assertions.assertEquals(2, messages.size(), "Should have 2 messages from feedback list");
-		
-		Assertions.assertEquals(feedbackMessage1.getText(), messages.get(0).getText(), 
+
+		Assertions.assertEquals(feedbackMessage1.text(), messages.get(0).text(),
 				"First message should match first feedback");
-		Assertions.assertEquals(feedbackMessage2.getText(), messages.get(1).getText(), 
+		Assertions.assertEquals(feedbackMessage2.text(), messages.get(1).text(),
 				"Second message should match second feedback");
-		
+
 		// Verify INTERRUPTION_FEEDBACK_KEY has been removed from agent thread state
 		Map<String, Object> threadState = mockAgent.getThreadState(threadId);
-		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY), 
+		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY),
 				"INTERRUPTION_FEEDBACK_KEY should be removed from agent thread state");
 	}
 
@@ -299,9 +280,7 @@ public class InterruptionHookTest {
 	public void testApply_NoFeedback_ShouldReturnEmpty() throws Exception {
 		// Given: No INTERRUPTION_FEEDBACK_KEY is set in agent thread state
 		String threadId = "test-thread-no-feedback-apply";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
 		// When: apply is called
 		CompletableFuture<Map<String, Object>> future = hook.apply(state, config);
@@ -314,15 +293,12 @@ public class InterruptionHookTest {
 
 	@Test
 	public void testApply_InvalidFeedbackType_ShouldReturnEmpty() throws Exception {
-		// Given: INTERRUPTION_FEEDBACK_KEY is set with invalid type (Integer) in agent thread state
-		OverAllState testState = new OverAllState(Map.of(
-				"messages", List.of(new UserMessage("Initial message"))
-		));
+		// Given: INTERRUPTION_FEEDBACK_KEY is set with invalid type (Integer) in agent
+		// thread state
+		OverAllState testState = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"))));
 		String threadId = "test-thread-invalid-feedback-type";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
-		
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+
 		// Set invalid feedback type in agent thread state
 		mockAgent.updateAgentState(123, config);
 
@@ -333,25 +309,22 @@ public class InterruptionHookTest {
 		// Then: should return empty map (invalid type is ignored and removed)
 		Assertions.assertNotNull(result, "Result should not be null");
 		Assertions.assertTrue(result.isEmpty(), "Result should be empty when feedback type is invalid");
-		
+
 		// Verify INTERRUPTION_FEEDBACK_KEY has been removed from agent thread state
 		Map<String, Object> threadState = mockAgent.getThreadState(threadId);
-		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY), 
+		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY),
 				"INTERRUPTION_FEEDBACK_KEY should be removed from agent thread state even for invalid type");
 	}
 
 	@Test
 	public void testApply_EmptyMessagesList_ShouldAddMessage() throws Exception {
-		// Given: State with empty messages list and INTERRUPTION_FEEDBACK_KEY in agent thread state
+		// Given: State with empty messages list and INTERRUPTION_FEEDBACK_KEY in agent
+		// thread state
 		String feedbackText = "Feedback for empty list";
-		OverAllState emptyState = new OverAllState(Map.of(
-				"messages", List.of()
-		));
+		OverAllState emptyState = new OverAllState(Map.of("messages", List.of()));
 		String threadId = "test-thread-empty-messages-list";
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
-		
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+
 		// Set feedback in agent thread state
 		mockAgent.updateAgentState(feedbackText, config);
 
@@ -362,19 +335,19 @@ public class InterruptionHookTest {
 		// Then: should add UserMessage to messages list
 		Assertions.assertNotNull(result, "Result should not be null");
 		Assertions.assertTrue(result.containsKey("messages"), "Result should contain messages key");
-		
+
 		@SuppressWarnings("unchecked")
-		List<Message> messages = (List<Message>) result.get("messages");
+		List<ChatMessage> messages = (List<ChatMessage>) result.get("messages");
 		Assertions.assertNotNull(messages, "Messages list should not be null");
 		Assertions.assertEquals(1, messages.size(), "Should have 1 message (feedback)");
-		
-		Message lastMessage = messages.get(0);
-		Assertions.assertInstanceOf(UserMessage.class, lastMessage, "Message should be UserMessage");
-		Assertions.assertEquals(feedbackText, lastMessage.getText(), "Message text should match feedback");
-		
+
+		ChatMessage lastMessage = messages.get(0);
+		Assertions.assertEquals(io.github.agentic.ai.api.chat.ChatRole.USER, lastMessage.role());
+		Assertions.assertEquals(feedbackText, lastMessage.text(), "ChatMessage text should match feedback");
+
 		// Verify INTERRUPTION_FEEDBACK_KEY has been removed from agent thread state
 		Map<String, Object> threadState = mockAgent.getThreadState(threadId);
-		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY), 
+		Assertions.assertNull(threadState.get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY),
 				"INTERRUPTION_FEEDBACK_KEY should be removed from agent thread state");
 	}
 
@@ -399,32 +372,32 @@ public class InterruptionHookTest {
 	}
 
 	/**
-	 * Integration test with ReactAgent for long-running task interruption.
-	 * Tests interrupting a long-running multi-round reasoning task using agent.interrupt() in a separate thread.
-	 * Scenario 1: interrupt() without parameters (empty list)
+	 * Integration test with ReactAgent for long-running task interruption. Tests
+	 * interrupting a long-running multi-round reasoning task using agent.interrupt() in a
+	 * separate thread. Scenario 1: interrupt() without parameters (empty list)
 	 */
 	@Test
-	@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+	@EnabledForRealModel
 	public void testInterruptLongRunningTask_WithoutParameters() throws Exception {
 		// Setup: Create ChatModel
 		ChatModel chatModel = OpenAiCompatibleTestModels.chatModel();
 
-		// Setup: Create ReactAgent with InterruptionHook and tools for multi-round reasoning
+		// Setup: Create ReactAgent with InterruptionHook and tools for multi-round
+		// reasoning
 		ReactAgent agent = ReactAgent.builder()
-				.name("long_running_interruption_agent")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.hooks(InterruptionHook.builder().build())
-				.methodTools(new PoemTool())
-				.instruction("You are a helpful assistant. When asked to write, use the poem tool to create content.")
-				.build();
+			.name("long_running_interruption_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.hooks(InterruptionHook.builder().build())
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(org.springframework.ai.support.ToolCallbacks.from(new PoemTool())))
+			.instruction("You are a helpful assistant. When asked to write, use the poem tool to create content.")
+			.build();
 
 		String threadId = "test-thread-long-running-no-params";
 		String userQuery = "请帮我写一篇100字左右的现代诗，然后总结一下主要内容";
 
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
 		// Track interruption and stream outputs
 		AtomicBoolean interruptionDetected = new AtomicBoolean(false);
@@ -437,17 +410,19 @@ public class InterruptionHookTest {
 			try {
 				Flux<NodeOutput> stream = agent.stream(userQuery, config);
 				streamStarted.countDown();
-				
+
 				stream.doOnNext(output -> {
 					lastOutput.set(output);
-					System.out.println("Stream output: " + output.node() + ", type: " + output.getClass().getSimpleName());
-					
+					System.out
+						.println("Stream output: " + output.node() + ", type: " + output.getClass().getSimpleName());
+
 					if (output instanceof InterruptionMetadata) {
 						interruptionDetected.set(true);
 						interruptionComplete.countDown();
 					}
 				}).blockLast();
-			} catch (Exception e) {
+			}
+			catch (Exception e) {
 				e.printStackTrace();
 			}
 		});
@@ -465,7 +440,8 @@ public class InterruptionHookTest {
 				System.out.println("Calling agent.interrupt() without parameters...");
 				agent.interrupt(config);
 				System.out.println("Interrupt call completed");
-			} catch (Exception e) {
+			}
+			catch (Exception e) {
 				e.printStackTrace();
 			}
 		});
@@ -473,7 +449,7 @@ public class InterruptionHookTest {
 		interruptThread.join();
 
 		// Wait for interruption to be detected
-		Assertions.assertTrue(interruptionComplete.await(30, TimeUnit.SECONDS), 
+		Assertions.assertTrue(interruptionComplete.await(30, TimeUnit.SECONDS),
 				"Interruption should be detected within 30 seconds");
 
 		// Verify interruption occurred
@@ -486,35 +462,36 @@ public class InterruptionHookTest {
 	}
 
 	/**
-	 * Integration test with ReactAgent for long-running task interruption.
-	 * Tests interrupting a long-running multi-round reasoning task using agent.interrupt() in a separate thread.
-	 * Scenario 2: interrupt() with parameters (feedback message)
-	 * Note: When interrupt() is called with parameters, it sets INTERRUPTION_FEEDBACK_KEY to a non-empty list,
-	 * which means interrupt() method will return empty (no interruption), but apply() will process the feedback.
+	 * Integration test with ReactAgent for long-running task interruption. Tests
+	 * interrupting a long-running multi-round reasoning task using agent.interrupt() in a
+	 * separate thread. Scenario 2: interrupt() with parameters (feedback message) Note:
+	 * When interrupt() is called with parameters, it sets INTERRUPTION_FEEDBACK_KEY to a
+	 * non-empty list, which means interrupt() method will return empty (no interruption),
+	 * but apply() will process the feedback.
 	 */
 	@Test
-	@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+	@EnabledForRealModel
 	public void testInterruptLongRunningTask_WithParameters() throws Exception {
 		// Setup: Create ChatModel
 		ChatModel chatModel = OpenAiCompatibleTestModels.chatModel();
 
-		// Setup: Create ReactAgent with InterruptionHook and tools for multi-round reasoning
+		// Setup: Create ReactAgent with InterruptionHook and tools for multi-round
+		// reasoning
 		ReactAgent agent = ReactAgent.builder()
-				.name("long_running_interruption_agent_with_params")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.hooks(InterruptionHook.builder().build())
-				.methodTools(new PoemTool())
-				.instruction("You are a helpful assistant. When asked to write, use the poem tool to create content.")
-				.build();
+			.name("long_running_interruption_agent_with_params")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.hooks(InterruptionHook.builder().build())
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(org.springframework.ai.support.ToolCallbacks.from(new PoemTool())))
+			.instruction("You are a helpful assistant. When asked to write, use the poem tool to create content.")
+			.build();
 
 		String threadId = "test-thread-long-running-with-params";
 		String userQuery = "请帮我写一篇100字左右的现代诗，然后总结一下主要内容";
 		String feedbackMessage = "请修改为200字左右的散文";
 
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
 		// Track stream outputs and feedback processing
 		AtomicBoolean feedbackProcessed = new AtomicBoolean(false);
@@ -528,26 +505,30 @@ public class InterruptionHookTest {
 			try {
 				Flux<NodeOutput> stream = agent.stream(userQuery, config);
 				streamStarted.countDown();
-				
+
 				stream.doOnNext(output -> {
 					lastOutput.set(output);
 					allOutputs.add(output);
-					System.out.println("Stream output: " + output.node() + ", type: " + output.getClass().getSimpleName());
-					
+					System.out
+						.println("Stream output: " + output.node() + ", type: " + output.getClass().getSimpleName());
+
 					// Check if feedback message was processed (should appear in messages)
 					if (output.state() != null) {
 						@SuppressWarnings("unchecked")
-						List<Message> messages = (List<Message>) output.state().value("messages").orElse(List.of());
+						List<ChatMessage> messages = (List<ChatMessage>) output.state()
+							.value("messages")
+							.orElse(List.of());
 						boolean hasFeedback = messages.stream()
-								.filter(msg -> msg instanceof UserMessage)
-								.anyMatch(msg -> msg.getText().contains(feedbackMessage));
+							.filter(msg -> msg.role() == io.github.agentic.ai.api.chat.ChatRole.USER)
+							.anyMatch(msg -> msg.text().contains(feedbackMessage));
 						if (hasFeedback) {
 							feedbackProcessed.set(true);
 							feedbackProcessedLatch.countDown();
 						}
 					}
 				}).blockLast();
-			} catch (Exception e) {
+			}
+			catch (Exception e) {
 				e.printStackTrace();
 			}
 		});
@@ -565,7 +546,8 @@ public class InterruptionHookTest {
 				System.out.println("Calling agent.interrupt() with feedback message: " + feedbackMessage);
 				agent.interrupt(feedbackMessage, config);
 				System.out.println("Interrupt call completed - feedback should be processed in next iteration");
-			} catch (Exception e) {
+			}
+			catch (Exception e) {
 				e.printStackTrace();
 			}
 		});
@@ -573,7 +555,7 @@ public class InterruptionHookTest {
 		interruptThread.join();
 
 		// Wait for feedback to be processed (should happen in apply() method)
-		Assertions.assertTrue(feedbackProcessedLatch.await(30, TimeUnit.SECONDS), 
+		Assertions.assertTrue(feedbackProcessedLatch.await(30, TimeUnit.SECONDS),
 				"Feedback should be processed within 30 seconds");
 
 		// Verify feedback was processed
@@ -582,4 +564,5 @@ public class InterruptionHookTest {
 
 		streamThread.join(10000);
 	}
+
 }

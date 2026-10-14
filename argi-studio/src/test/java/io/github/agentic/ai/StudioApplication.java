@@ -34,7 +34,8 @@ import io.modelcontextprotocol.common.McpTransportContext;
 /**
  * Unified Studio application that supports both Graph and Agent APIs.
  * <ul>
- * <li><b>Graph</b>: Loads {@link SimpleGraphConfig} (simple_workflow) via {@link GraphTestConfig}.</li>
+ * <li><b>Graph</b>: Loads {@link SimpleGraphConfig} (simple_workflow) via
+ * {@link GraphTestConfig}.</li>
  * <li><b>Agent</b>: Loads {@link AgentStaticLoader} (single_agent, research_agent).</li>
  * </ul>
  */
@@ -50,8 +51,12 @@ public class StudioApplication {
 	public McpSyncHttpClientRequestCustomizer mcpSyncHttpClientRequestCustomizer() {
 		return new McpSyncHttpClientRequestCustomizer() {
 			@Override
-			public void customize(HttpRequest.Builder builder, String method, URI endpoint, String body, McpTransportContext context) {
-				builder.header("Authorization", "Bearer " + System.getenv("JINA_API_KEY"));
+			public void customize(HttpRequest.Builder builder, String method, URI endpoint, String body,
+					McpTransportContext context) {
+				String apiKey = System.getenv("ARGI_JINA_API_KEY");
+				if (apiKey != null && !apiKey.isBlank()) {
+					builder.header("Authorization", "Bearer " + apiKey);
+				}
 				builder.timeout(java.time.Duration.ofSeconds(120));
 			}
 		};

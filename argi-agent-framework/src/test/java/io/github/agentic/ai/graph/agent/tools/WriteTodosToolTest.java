@@ -19,7 +19,7 @@ import io.github.agentic.ai.graph.agent.interceptor.todolist.TodoListInterceptor
 import io.github.agentic.ai.graph.agent.interceptor.todolist.TodoListInterceptor.TodoStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.model.ToolContext;
+import io.github.agentic.ai.api.tool.ToolContext;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -33,7 +33,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 
 class WriteTodosToolTest {
 

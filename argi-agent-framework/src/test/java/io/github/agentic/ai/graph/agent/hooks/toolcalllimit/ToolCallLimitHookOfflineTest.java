@@ -25,8 +25,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -54,14 +54,15 @@ class ToolCallLimitHookOfflineTest {
 		OverAllState result = harness.agent.invoke("first", config("end-batch")).orElseThrow();
 		assertEquals(0, harness.executions.get());
 		assertEquals(1, harness.model.calls.get());
-		assertTrue(lastMessage(result).getText().contains("run limit (2/1)"));
+		assertTrue(lastMessage(result).text().contains("run limit (2/1)"));
 		assertRejectedCallsPaired(result);
 	}
 
 	@ParameterizedTest
 	@ValueSource(booleans = { false, true })
 	void oversizedBatchErrorsWithoutExecutingToolsOrLeavingUnpairedCalls(boolean parallel) throws Exception {
-		Harness harness = harness(runLimit(1, ToolCallLimitHook.ExitBehavior.ERROR), List.of("alpha", "beta"), parallel);
+		Harness harness = harness(runLimit(1, ToolCallLimitHook.ExitBehavior.ERROR), List.of("alpha", "beta"),
+				parallel);
 		RunnableConfig config = config("error-batch");
 		assertThrows(ToolCallLimitExceededException.class, () -> harness.agent.invoke("first", config));
 		assertEquals(0, harness.executions.get());
@@ -143,8 +144,14 @@ class ToolCallLimitHookOfflineTest {
 		BatchModel model = new BatchModel(names);
 		ToolCallback alpha = tool("alpha", executions);
 		ToolCallback beta = tool("beta", executions);
-		ReactAgent agent = ReactAgent.builder().name("tool-limit-test").model(model).tools(alpha, beta)
-				.hooks(hook).saver(new MemorySaver()).parallelToolExecution(parallel).build();
+		ReactAgent agent = ReactAgent.builder()
+			.name("tool-limit-test")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(alpha, beta))
+			.hooks(hook)
+			.saver(new MemorySaver())
+			.parallelToolExecution(parallel)
+			.build();
 		return new Harness(agent, model, executions);
 	}
 
@@ -155,17 +162,19 @@ class ToolCallLimitHookOfflineTest {
 		}).description("Count tool executions").build();
 	}
 
-	private static Message lastMessage(OverAllState state) {
+	private static ChatMessage lastMessage(OverAllState state) {
 		List<?> messages = assertInstanceOf(List.class, state.value("messages").orElseThrow());
-		return assertInstanceOf(Message.class, messages.get(messages.size() - 1));
+		return assertInstanceOf(ChatMessage.class, messages.get(messages.size() - 1));
 	}
 
 	private static void assertRejectedCallsPaired(OverAllState state) {
 		List<?> messages = assertInstanceOf(List.class, state.value("messages").orElseThrow());
-		ToolResponseMessage response = messages.stream().filter(ToolResponseMessage.class::isInstance)
-				.map(ToolResponseMessage.class::cast).reduce((first, last) -> last).orElseThrow();
-		assertEquals(List.of("call-alpha", "call-beta"), response.getResponses().stream().map(r -> r.id()).toList());
-		assertTrue(response.getResponses().stream().allMatch(r -> r.responseData().contains("limit")));
+		List<ChatMessage> responses = messages.stream()
+			.map(ChatMessage.class::cast)
+			.filter(message -> message.role() == ChatRole.TOOL)
+			.toList();
+		assertEquals(List.of("call-alpha", "call-beta"), responses.stream().map(ChatMessage::toolCallId).toList());
+		assertTrue(responses.stream().allMatch(response -> response.text().contains("limit")));
 	}
 
 	private record Harness(ReactAgent agent, BatchModel model, AtomicInteger executions) {
@@ -185,14 +194,17 @@ class ToolCallLimitHookOfflineTest {
 		public ChatResponse call(Prompt prompt) {
 			calls.incrementAndGet();
 			List<AssistantMessage.ToolCall> toolCalls = names.stream()
-					.map(name -> new AssistantMessage.ToolCall("call-" + name, "function", name, "{}"))
-					.toList();
-			return new ChatResponse(List.of(new Generation(AssistantMessage.builder().content("").toolCalls(toolCalls).build())));
+				.map(name -> new AssistantMessage.ToolCall("call-" + name, "function", name, "{}"))
+				.toList();
+			return new ChatResponse(
+					List.of(new Generation(AssistantMessage.builder().content("").toolCalls(toolCalls).build())));
 		}
 
 		@Override
 		public Flux<ChatResponse> stream(Prompt prompt) {
 			return Flux.just(call(prompt));
 		}
+
 	}
+
 }

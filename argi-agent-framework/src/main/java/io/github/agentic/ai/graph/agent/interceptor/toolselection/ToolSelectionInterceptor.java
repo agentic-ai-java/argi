@@ -19,12 +19,11 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRequest;
 
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.prompt.Prompt;
+import io.github.agentic.ai.api.chat.ChatRole;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -34,7 +33,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,36 +41,34 @@ import org.slf4j.LoggerFactory;
 /**
  * Uses an LLM to select relevant tools before calling the main model.
  *
- * When an agent has many tools available, this interceptor filters them down
- * to only the most relevant ones for the user's query. This reduces token usage
- * and helps the main model focus on the right tools.
+ * When an agent has many tools available, this interceptor filters them down to only the
+ * most relevant ones for the user's query. This reduces token usage and helps the main
+ * model focus on the right tools.
  *
- * Example:
- * ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
- *     .selectionModel(gpt4oMini)
- *     .maxTools(3)
- *     .build();
+ * Example: ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
+ * .chatClient(selectionClient) .maxTools(3) .build();
  */
 public class ToolSelectionInterceptor extends ModelInterceptor {
 
 	private static final Logger log = LoggerFactory.getLogger(ToolSelectionInterceptor.class);
 
-	private static final String DEFAULT_SYSTEM_PROMPT =
-			"Your goal is to select the most relevant tools for answering the user's query.";
+	private static final String DEFAULT_SYSTEM_PROMPT = "Your goal is to select the most relevant tools for answering the user's query.";
 
-	private final ChatModel selectionModel;
+	private final ChatClient chatClient;
+
 	private final String systemPrompt;
+
 	private final Integer maxTools;
+
 	private final Set<String> alwaysInclude;
+
 	private final ObjectMapper objectMapper;
 
 	private ToolSelectionInterceptor(Builder builder) {
-		this.selectionModel = builder.selectionModel;
+		this.chatClient = builder.chatClient;
 		this.systemPrompt = builder.systemPrompt;
 		this.maxTools = builder.maxTools;
-		this.alwaysInclude = builder.alwaysInclude != null
-				? new HashSet<>(builder.alwaysInclude)
-				: new HashSet<>();
+		this.alwaysInclude = builder.alwaysInclude != null ? new HashSet<>(builder.alwaysInclude) : new HashSet<>();
 		this.objectMapper = new ObjectMapper();
 	}
 
@@ -84,8 +81,8 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 		List<String> availableTools = request.getTools();
 
 		// If no tools or already within limit, skip selection
-		if (availableTools == null || availableTools.isEmpty() ||
-				(maxTools != null && availableTools.size() <= maxTools)) {
+		if (availableTools == null || availableTools.isEmpty()
+				|| (maxTools != null && availableTools.size() <= maxTools)) {
 			return handler.call(request);
 		}
 
@@ -99,27 +96,25 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 		// Perform tool selection
 		Set<String> selectedToolNames = selectTools(availableTools, lastUserQuery, request.getToolDescriptions());
 
-		log.info("Selected {} tools from {} available: {}",
-				selectedToolNames.size(), availableTools.size(), selectedToolNames);
+		log.info("Selected {} tools from {} available: {}", selectedToolNames.size(), availableTools.size(),
+				selectedToolNames);
 
 		// Filter tools based on selection
 		List<String> filteredTools = availableTools.stream()
-				.filter(selectedToolNames::contains)
-				.collect(Collectors.toList());
+			.filter(selectedToolNames::contains)
+			.collect(Collectors.toList());
 
 		// Create new request with filtered tools
-		ModelRequest filteredRequest = ModelRequest.builder(request)
-				.tools(filteredTools)
-				.build();
+		ModelRequest filteredRequest = ModelRequest.builder(request).tools(filteredTools).build();
 
 		return handler.call(filteredRequest);
 	}
 
-	private String findLastUserMessage(List<Message> messages) {
+	private String findLastUserMessage(List<ChatMessage> messages) {
 		for (int i = messages.size() - 1; i >= 0; i--) {
-			Message msg = messages.get(i);
-			if (msg instanceof UserMessage) {
-				return msg.getText();
+			ChatMessage msg = messages.get(i);
+			if (msg.role() == ChatRole.USER) {
+				return msg.text();
 			}
 		}
 		return null;
@@ -140,22 +135,16 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 				toolList.append("\n");
 			}
 
-			String maxToolsInstruction = maxTools != null
-					? "\nIMPORTANT: List the tool names in order of relevance. " +
-					"Select at most " + maxTools + " tools."
-					: "";
+			String maxToolsInstruction = maxTools != null ? "\nIMPORTANT: List the tool names in order of relevance. "
+					+ "Select at most " + maxTools + " tools." : "";
 
 			// Create selection prompt
-			List<Message> selectionMessages = List.of(
-					new SystemMessage(systemPrompt + maxToolsInstruction),
-					new UserMessage("Available tools:\n" + toolList +
-							"\nUser query: " + userQuery +
-							"\n\nRespond with a JSON object containing a 'tools' array with the selected tool names: {\"tools\": [\"tool1\", \"tool2\"]}")
-			);
+			List<ChatMessage> selectionMessages = List
+				.of(ChatMessage.system(systemPrompt + maxToolsInstruction), ChatMessage.user("Available tools:\n"
+						+ toolList + "\nUser query: " + userQuery
+						+ "\n\nRespond with a JSON object containing a 'tools' array with the selected tool names: {\"tools\": [\"tool1\", \"tool2\"]}"));
 
-			Prompt prompt = new Prompt(selectionMessages);
-			var response = selectionModel.call(prompt);
-			String responseText = response.getResult().getOutput().getText();
+			String responseText = chatClient.callBlocking(ChatRequest.of(selectionMessages)).text();
 
 			// Parse JSON response
 			Set<String> selected = new LinkedHashSet<>();
@@ -182,17 +171,22 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 		}
 	}
 
-	private Set<String> parseToolSelection(String responseText) {
-		try {
-			// Try to parse as JSON
-			ToolSelectionResponse response = objectMapper.readValue(responseText, ToolSelectionResponse.class);
-			return new LinkedHashSet<>(response.tools);
+	private Set<String> parseToolSelection(String responseText) throws java.io.IOException {
+		JsonNode response = objectMapper.reader()
+			.with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+			.readTree(responseText);
+		JsonNode tools = response == null ? null : response.get("tools");
+		if (tools == null || !tools.isArray()) {
+			throw new IllegalArgumentException("Tool selection must contain a tools array");
 		}
-		catch (Exception e) {
-			// Fallback: extract tool names from text
-			log.debug("Failed to parse JSON, using fallback extraction");
-			return new HashSet<>();
+		Set<String> selected = new LinkedHashSet<>();
+		for (JsonNode tool : tools) {
+			if (!tool.isTextual() || tool.textValue().isBlank()) {
+				throw new IllegalArgumentException("Selected tool names must be non-blank strings");
+			}
+			selected.add(tool.textValue());
 		}
+		return selected;
 	}
 
 	@Override
@@ -200,19 +194,19 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 		return "ToolSelection";
 	}
 
-	private static class ToolSelectionResponse {
-		@JsonProperty("tools")
-		public List<String> tools;
-	}
-
 	public static class Builder {
-		private ChatModel selectionModel;
+
+		private ChatClient chatClient;
+
 		private String systemPrompt = DEFAULT_SYSTEM_PROMPT;
+
 		private Integer maxTools;
+
 		private Set<String> alwaysInclude;
 
-		public Builder selectionModel(ChatModel selectionModel) {
-			this.selectionModel = selectionModel;
+		/** Set the provider-neutral chat client used to select tools. */
+		public Builder chatClient(ChatClient chatClient) {
+			this.chatClient = chatClient;
 			return this;
 		}
 
@@ -247,10 +241,12 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 		}
 
 		public ToolSelectionInterceptor build() {
-			if (selectionModel == null) {
-				throw new IllegalStateException("selectionModel is required");
+			if (chatClient == null) {
+				throw new IllegalStateException("Tool selection chatClient is required");
 			}
 			return new ToolSelectionInterceptor(this);
 		}
+
 	}
+
 }

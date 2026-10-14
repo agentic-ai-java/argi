@@ -16,26 +16,147 @@
 package io.github.agentic.ai.graph.agent.interceptors;
 
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
-
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ToolDefinition;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolRegistry;
 
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for ModelRequest toolDescriptions functionality.
- * Tests the new toolDescriptions field added to support enhanced tool selection.
+ * Unit tests for ModelRequest toolDescriptions functionality. Tests the new
+ * toolDescriptions field added to support enhanced tool selection.
  */
 class ModelRequestTest {
+
+	@Test
+	void absentSelectionIncludesStaticAndDynamicToolsAndCopiesRetainBindings() {
+		Tool staticTool = tool("lookup");
+		Tool dynamicTool = tool("clock");
+		List<Tool> input = new ArrayList<>(List.of(staticTool));
+		ToolRegistry registry = new ToolRegistry(input);
+		ModelRequest original = ModelRequest.builder()
+			.toolRegistry(registry)
+			.dynamicToolRegistry(new ToolRegistry(List.of(tool("lookup"), dynamicTool)))
+			.build();
+		input.clear();
+		ModelRequest copy = ModelRequest.builder(original).build();
+		assertEquals(List.of("lookup", "clock"), original.getTools());
+		assertEquals(original.getTools(), copy.getTools());
+		assertFalse(copy.hasToolSelection());
+		assertEquals(staticTool, copy.getToolRegistry().find("lookup").orElseThrow());
+		assertEquals(dynamicTool, copy.getDynamicToolRegistry().find("clock").orElseThrow());
+		assertThrows(UnsupportedOperationException.class, () -> registry.definitions().clear());
+		assertThrows(UnsupportedOperationException.class, () -> original.getTools().clear());
+		ModelRequest disabled = ModelRequest.builder(copy).tools(List.of()).build();
+		assertTrue(disabled.hasToolSelection());
+		assertTrue(disabled.getTools().isEmpty());
+		assertEquals(List.of("lookup", "clock"), original.getTools());
+	}
+
+	@Test
+	void nullRegistriesAreRejectedAndPublicSignaturesAreFrameworkNeutral() {
+		assertThrows(NullPointerException.class, () -> ModelRequest.builder().toolRegistry(null));
+		assertThrows(NullPointerException.class, () -> ModelRequest.builder().dynamicToolRegistry(null));
+		for (Class<?> type : List.of(ModelRequest.class, ModelRequest.Builder.class)) {
+			for (var method : type.getDeclaredMethods()) {
+				assertFalse(method.toGenericString().contains("org.springframework.ai"), method.toGenericString());
+			}
+			for (var constructor : type.getConstructors()) {
+				assertFalse(constructor.toGenericString().contains("org.springframework.ai"),
+						constructor.toGenericString());
+			}
+		}
+	}
+
+	private static Tool tool(String name) {
+		Tool tool = mock(Tool.class);
+		when(tool.definition()).thenReturn(new ToolDefinition(name, "Description of " + name, "{}"));
+		return tool;
+	}
+
+	@Test
+	void systemMessageMustHaveSystemRole() {
+		assertThrows(IllegalArgumentException.class,
+				() -> ModelRequest.builder().systemMessage(ChatMessage.user("not system")).build());
+	}
+
+	@Test
+	void messagesAreIsolatedAcrossInputCopiesAndBuilderReuse() {
+		List<ChatMessage> input = new ArrayList<>(List.of(ChatMessage.user("original")));
+		ModelRequest.Builder builder = ModelRequest.builder()
+			.messages(input)
+			.tools(List.of("search"))
+			.toolDescriptions(Map.of("search", "Search"));
+		ModelRequest first = builder.build();
+		input.clear();
+		assertEquals(List.of(ChatMessage.user("original")), first.getMessages());
+		ModelRequest copy = ModelRequest.builder(first).build();
+		first.getMessages().clear();
+		assertEquals(List.of(ChatMessage.user("original")), copy.getMessages());
+		builder.tools(List.of()).toolDescriptions(Map.of("search", "Changed"));
+		assertEquals(List.of("search"), first.getTools());
+		assertEquals("Search", first.getToolDescriptions().get("search"));
+		assertThrows(UnsupportedOperationException.class, () -> first.getTools().clear());
+		assertThrows(UnsupportedOperationException.class, () -> first.getToolDescriptions().clear());
+	}
+
+	@Test
+	void runtimeContextCopiesAreIsolatedButRemainEditable() {
+		ModelRequest.Builder builder = ModelRequest.builder().context(Map.of("step", 1));
+		ModelRequest first = builder.build();
+		ModelRequest second = builder.build();
+		first.getContext().put("step", 2);
+		assertEquals(1, second.getContext().get("step"));
+		ModelRequest copy = ModelRequest.builder(first).build();
+		first.getContext().clear();
+		assertEquals(2, copy.getContext().get("step"));
+	}
+
+	@Test
+	void absentToolSelectionAndExplicitEmptySelectionRemainDistinctAcrossCopies() {
+		ModelRequest absent = ModelRequest.builder().build();
+		assertFalse(absent.hasToolSelection());
+		assertFalse(ModelRequest.builder(absent).build().hasToolSelection());
+		ModelRequest empty = ModelRequest.builder(absent).tools(List.of()).build();
+		assertTrue(empty.hasToolSelection());
+		assertTrue(ModelRequest.builder(empty).build().hasToolSelection());
+		assertTrue(empty.getTools().isEmpty());
+	}
+
+	@Test
+	void runtimeContextIsNotAnInvocationAttribute() {
+		ModelRequest request = ModelRequest.builder().context(Map.of("messages", List.of("private state"))).build();
+		assertEquals(List.of("private state"), request.getContext().get("messages"));
+		assertTrue(request.getAttributes().isEmpty());
+	}
+
+	@Test
+	void explicitAttributesAreImmutableAndSurviveCopies() {
+		Map<String, Object> attributes = new HashMap<>(Map.of("correlation", "call-1"));
+		ModelRequest original = ModelRequest.builder().attributes(attributes).context(Map.of("thread", "t-1")).build();
+		attributes.clear();
+		ModelRequest copy = ModelRequest.builder(original).context(Map.of("thread", "t-2")).build();
+		assertEquals(Map.of("correlation", "call-1"), original.getAttributes());
+		assertEquals(original.getAttributes(), copy.getAttributes());
+		assertEquals("t-1", original.getContext().get("thread"));
+		assertEquals("t-2", copy.getContext().get("thread"));
+		assertThrows(UnsupportedOperationException.class, () -> copy.getAttributes().clear());
+	}
 
 	@Test
 	void testModelRequestWithToolDescriptions() {
@@ -49,7 +170,7 @@ class ModelRequestTest {
 
 		// Build ModelRequest with tool descriptions
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("What's the weather in Beijing?")))
+			.messages(List.of(ChatMessage.user("What's the weather in Beijing?")))
 			.tools(toolNames)
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -67,7 +188,7 @@ class ModelRequestTest {
 	void testModelRequestWithoutToolDescriptions() {
 		// Build ModelRequest without tool descriptions
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Hello")))
+			.messages(List.of(ChatMessage.user("Hello")))
 			.tools(List.of("tool1", "tool2"))
 			.context(new HashMap<>())
 			.build();
@@ -85,7 +206,7 @@ class ModelRequestTest {
 		toolDescriptions.put("calculate", "Perform calculations");
 
 		ModelRequest original = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Test")))
+			.messages(List.of(ChatMessage.user("Test")))
 			.tools(List.of("search", "calculate"))
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -108,7 +229,7 @@ class ModelRequestTest {
 		originalDescriptions.put("tool1", "Original description");
 
 		ModelRequest original = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Test")))
+			.messages(List.of(ChatMessage.user("Test")))
 			.tools(List.of("tool1", "tool2"))
 			.toolDescriptions(originalDescriptions)
 			.context(new HashMap<>())
@@ -119,9 +240,7 @@ class ModelRequestTest {
 		newDescriptions.put("tool1", "Modified description");
 		newDescriptions.put("tool2", "New tool description");
 
-		ModelRequest modified = ModelRequest.builder(original)
-			.toolDescriptions(newDescriptions)
-			.build();
+		ModelRequest modified = ModelRequest.builder(original).toolDescriptions(newDescriptions).build();
 
 		// Verify original is unchanged
 		assertEquals("Original description", original.getToolDescriptions().get("tool1"));
@@ -136,7 +255,7 @@ class ModelRequestTest {
 	void testModelRequestWithEmptyToolDescriptions() {
 		// Build ModelRequest with empty tool descriptions map
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Test")))
+			.messages(List.of(ChatMessage.user("Test")))
 			.tools(List.of("tool1"))
 			.toolDescriptions(new HashMap<>())
 			.context(new HashMap<>())
@@ -153,8 +272,8 @@ class ModelRequestTest {
 		toolDescriptions.put("helper", "A helpful assistant tool");
 
 		ModelRequest request = ModelRequest.builder()
-			.systemMessage(new SystemMessage("You are a helpful assistant"))
-			.messages(List.of(new UserMessage("Help me")))
+			.systemMessage(ChatMessage.system("You are a helpful assistant"))
+			.messages(List.of(ChatMessage.user("Help me")))
 			.tools(List.of("helper"))
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -162,7 +281,7 @@ class ModelRequestTest {
 
 		// Verify all fields are set correctly
 		assertNotNull(request.getSystemMessage());
-		assertEquals("You are a helpful assistant", request.getSystemMessage().getText());
+		assertEquals("You are a helpful assistant", request.getSystemMessage().text());
 		assertNotNull(request.getToolDescriptions());
 		assertEquals("A helpful assistant tool", request.getToolDescriptions().get("helper"));
 	}
@@ -176,7 +295,7 @@ class ModelRequestTest {
 		toolDescriptions.put("translate_tool", "Translate text between languages - supports 50+ languages");
 
 		ModelRequest request = ModelRequest.builder()
-			.messages(List.of(new UserMessage("Test")))
+			.messages(List.of(ChatMessage.user("Test")))
 			.tools(List.of("code_tool", "search_tool", "translate_tool"))
 			.toolDescriptions(toolDescriptions)
 			.context(new HashMap<>())
@@ -184,11 +303,10 @@ class ModelRequestTest {
 
 		// Verify descriptions with special characters are preserved
 		assertEquals("Execute code: supports Python, Java, and JavaScript",
-			request.getToolDescriptions().get("code_tool"));
-		assertEquals("Search for results (max 10 items)",
-			request.getToolDescriptions().get("search_tool"));
+				request.getToolDescriptions().get("code_tool"));
+		assertEquals("Search for results (max 10 items)", request.getToolDescriptions().get("search_tool"));
 		assertEquals("Translate text between languages - supports 50+ languages",
-			request.getToolDescriptions().get("translate_tool"));
+				request.getToolDescriptions().get("translate_tool"));
 	}
 
 }

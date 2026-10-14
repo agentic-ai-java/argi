@@ -16,18 +16,20 @@
 
 package io.github.agentic.ai.graph.executor;
 
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.FinishReason;
+import io.github.agentic.ai.api.chat.ToolCall;
+import io.github.agentic.ai.graph.stream.ScriptedChatClient;
+
 import io.github.agentic.ai.graph.CompiledGraph;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.StateGraph;
 import io.github.agentic.ai.graph.state.strategy.AppendStrategy;
 import io.github.agentic.ai.graph.stream.LLmNodeAction;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 
 import java.util.HashMap;
@@ -44,74 +46,63 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Issue #4406 reproduction test:
- * stream tool call chunks should be merged into one complete tool call.
+ * Issue #4406 reproduction test: complete neutral tool calls must survive graph streaming
+ * and state aggregation.
  */
 public class StreamFunctionCallTest {
 
-    @Test
-    void testStreamingToolCallFragmentsShouldMergeIntoSingleToolCall() throws Exception {
-        ChatModel chatModel = createMockChatModelWithSplitToolCallChunks();
+	@Test
+	void testCompleteToolCallSurvivesStreamAndStateAggregation() throws Exception {
+		ChatClient chatModel = createMockChatModelWithSplitToolCallChunks();
 
-        StateGraph stateGraph = new StateGraph(() -> {
-            Map<String, io.github.agentic.ai.graph.KeyStrategy> keyStrategyMap = new HashMap<>();
-            keyStrategyMap.put("messages", new AppendStrategy());
-            return keyStrategyMap;
-        }).addNode("llmNode", node_async(new LLmNodeAction(chatModel, "llmNode")))
-                .addEdge(START, "llmNode")
-                .addEdge("llmNode", END);
+		StateGraph stateGraph = new StateGraph(() -> {
+			Map<String, io.github.agentic.ai.graph.KeyStrategy> keyStrategyMap = new HashMap<>();
+			keyStrategyMap.put("messages", new AppendStrategy());
+			return keyStrategyMap;
+		}).addNode("llmNode", node_async(new LLmNodeAction(chatModel, "llmNode")))
+			.addEdge(START, "llmNode")
+			.addEdge("llmNode", END);
 
-        CompiledGraph compiledGraph = stateGraph.compile();
+		CompiledGraph compiledGraph = stateGraph.compile();
 
-        Map<String, Object> input = new HashMap<>();
-        input.put(OverAllState.DEFAULT_INPUT_KEY, "weather in beijing");
+		Map<String, Object> input = new HashMap<>();
+		input.put(OverAllState.DEFAULT_INPUT_KEY, "weather in beijing");
 
-        Optional<OverAllState> finalState = compiledGraph.invoke(input);
-        assertTrue(finalState.isPresent());
+		Optional<OverAllState> finalState = compiledGraph.invoke(input);
+		assertTrue(finalState.isPresent());
 
-        List<?> messages = finalState.get().value("messages", List.class).orElseThrow();
-        assertNotNull(messages);
-        assertTrue(!messages.isEmpty());
+		List<?> messages = finalState.get().value("messages", List.class).orElseThrow();
+		assertNotNull(messages);
+		assertTrue(!messages.isEmpty());
 
-        Object lastMessage = messages.get(messages.size() - 1);
-        assertInstanceOf(AssistantMessage.class, lastMessage);
+		Object lastMessage = messages.get(messages.size() - 1);
+		assertInstanceOf(ChatMessage.class, lastMessage);
 
-        AssistantMessage assistantMessage = (AssistantMessage) lastMessage;
-        assertTrue(assistantMessage.hasToolCalls());
-        assertEquals(1, assistantMessage.getToolCalls().size());
+		ChatMessage assistantMessage = (ChatMessage) lastMessage;
+		assertTrue(assistantMessage.hasToolCalls());
+		assertEquals(1, assistantMessage.toolCalls().size());
 
-        AssistantMessage.ToolCall toolCall = assistantMessage.getToolCalls().get(0);
-        assertEquals("call_1", toolCall.id());
-        assertEquals("get_weather", toolCall.name());
-        assertEquals("{\"city\":\"Beijing\"}", toolCall.arguments());
-    }
+		ToolCall toolCall = assistantMessage.toolCalls().get(0);
+		assertEquals("call_1", toolCall.id());
+		assertEquals("get_weather", toolCall.name());
+		assertEquals("{\"city\":\"Beijing\"}", toolCall.arguments());
 
-    private static ChatModel createMockChatModelWithSplitToolCallChunks() {
-        return new ChatModel() {
-            @Override
-            public ChatResponse call(Prompt prompt) {
-                return new ChatResponse(List.of(new Generation(new AssistantMessage("fallback"))));
-            }
+		var outputs = compiledGraph.stream(input).collectList().block(java.time.Duration.ofSeconds(5));
+		assertNotNull(outputs);
+		assertTrue(outputs.stream()
+			.filter(io.github.agentic.ai.graph.streaming.StreamingOutput.class::isInstance)
+			.map(output -> (io.github.agentic.ai.graph.streaming.StreamingOutput<?>) output)
+			.flatMap(output -> output.messages().stream())
+			.flatMap(message -> message.toolCalls().stream())
+			.allMatch(call -> call.id() != null && !call.id().isBlank() && call.name() != null
+					&& !call.name().isBlank()));
+	}
 
-            @Override
-            public Flux<ChatResponse> stream(Prompt prompt) {
-                AssistantMessage.ToolCall chunk1 = new AssistantMessage.ToolCall("call_1", "function", "get_weather", "");
-                AssistantMessage.ToolCall chunk2 = new AssistantMessage.ToolCall(null, "function", null, "{\"city\":\"Bei");
-                AssistantMessage.ToolCall chunk3 = new AssistantMessage.ToolCall(null, "function", null, "jing\"}");
-
-                return Flux.just(
-                        new ChatResponse(List.of(new Generation(
-                                AssistantMessage.builder().content("").toolCalls(List.of(chunk1)).build(),
-                                ChatGenerationMetadata.NULL))),
-                        new ChatResponse(List.of(new Generation(
-                                AssistantMessage.builder().content("").toolCalls(List.of(chunk2)).build(),
-                                ChatGenerationMetadata.NULL))),
-                        new ChatResponse(List.of(new Generation(
-                                AssistantMessage.builder().content("").toolCalls(List.of(chunk3)).build(),
-                                ChatGenerationMetadata.NULL)))
-                );
-            }
-        };
-    }
+	private static ChatClient createMockChatModelWithSplitToolCallChunks() {
+		ToolCall call = new ToolCall("call_1", "get_weather", "{\"city\":\"Beijing\"}");
+		ChatResponse response = new ChatResponse(null, null, List.of(ChatMessage.assistant("", List.of(call))),
+				List.of(call), FinishReason.TOOL_CALLS, null, Map.of());
+		return new ScriptedChatClient(() -> Flux.just(ChatEvent.toolCall(call), ChatEvent.response(response)));
+	}
 
 }

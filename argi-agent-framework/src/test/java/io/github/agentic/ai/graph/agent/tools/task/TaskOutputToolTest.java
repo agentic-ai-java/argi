@@ -19,7 +19,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.model.ToolContext;
+import io.github.agentic.ai.api.tool.ToolContext;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -48,18 +48,18 @@ class TaskOutputToolTest {
 		@DisplayName("Should fail when taskRepository is null")
 		void shouldFailWhenTaskRepositoryIsNull() {
 			assertThatThrownBy(() -> TaskOutputTool.builder().taskRepository(null).build())
-					.isInstanceOf(IllegalArgumentException.class)
-					.hasMessageContaining("taskRepository must not be null");
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("taskRepository must not be null");
 		}
 
 		@Test
 		@DisplayName("Should build successfully with valid config")
 		void shouldBuildSuccessfullyWithValidConfig() {
-			TaskOutputTool.Builder builder = TaskOutputTool.builder()
-					.taskRepository(taskRepository);
+			TaskOutputTool.Builder builder = TaskOutputTool.builder().taskRepository(taskRepository);
 			assertThat(builder).isNotNull();
 			assertThat(builder.build()).isNotNull();
 		}
+
 	}
 
 	@Nested
@@ -149,6 +149,7 @@ class TaskOutputToolTest {
 
 			future.complete("done");
 		}
+
 	}
 
 	@Nested
@@ -187,6 +188,7 @@ class TaskOutputToolTest {
 			assertThat(taskRepository.getTask("task_1")).isNull();
 			assertThat(taskRepository.getTask("task_2")).isNull();
 		}
+
 	}
 
 }

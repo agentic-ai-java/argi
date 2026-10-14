@@ -20,6 +20,7 @@ import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.agent.ReactAgent;
 import io.github.agentic.ai.graph.agent.interceptor.toolselection.ToolSelectionInterceptor;
+import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.graph.agent.tools.HotelTool;
 import io.github.agentic.ai.graph.agent.tools.TicketTool;
 import io.github.agentic.ai.graph.agent.tools.WeatherTool;
@@ -37,21 +38,20 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class ToolSelectionTest {
 
 	private ChatModel chatModel;
-	private ChatModel selectionModel;
+
+	private ChatClient selectionClient;
 
 	private static CompileConfig getCompileConfig() {
-		SaverConfig saverConfig = SaverConfig.builder()
-				.register(new MemorySaver())
-				.build();
+		SaverConfig saverConfig = SaverConfig.builder().register(new MemorySaver()).build();
 		CompileConfig compileConfig = CompileConfig.builder().saverConfig(saverConfig).build();
 		return compileConfig;
 	}
@@ -59,18 +59,17 @@ class ToolSelectionTest {
 	@BeforeEach
 	void setUp() {
 		this.chatModel = OpenAiCompatibleTestModels.chatModel();
-		this.selectionModel = OpenAiCompatibleTestModels.chatModel();
+		this.selectionClient = OpenAiCompatibleTestModels.chatClient();
 	}
 
 	@Test
 	public void testToolSelectionWithMaxTools() throws Exception {
-		
 
 		// Create tool selection interceptor that limits to 2 tools
 		ToolSelectionInterceptor toolSelectionInterceptor = ToolSelectionInterceptor.builder()
-				.selectionModel(selectionModel)
-				.maxTools(1)
-				.build();
+			.chatClient(selectionClient)
+			.maxTools(1)
+			.build();
 
 		// Create multiple tools
 		WeatherTool weatherTool = new WeatherTool();
@@ -82,12 +81,13 @@ class ToolSelectionTest {
 		ToolCallback hotelToolCallback = HotelTool.createHotelTool("hotel_booking_tool", hotelTool);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("tool_selection_agent")
-				.model(chatModel)
-				.tools(weatherToolCallback, ticketToolCallback, hotelToolCallback)
-				.interceptors(toolSelectionInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("tool_selection_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherToolCallback,
+					ticketToolCallback, hotelToolCallback))
+			.interceptors(toolSelectionInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("帮我查询北京天气，预订一张去北京的车票？");
@@ -99,11 +99,9 @@ class ToolSelectionTest {
 				List<Message> messages = overAllState.value("messages", new ArrayList<>());
 
 				// Verify that the agent got a response
-				boolean hasAssistantMessage = messages.stream()
-						.anyMatch(msg -> msg instanceof AssistantMessage);
+				boolean hasAssistantMessage = messages.stream().anyMatch(msg -> msg instanceof AssistantMessage);
 
-				assertTrue(hasAssistantMessage,
-						"Messages should contain at least one AssistantMessage");
+				assertTrue(hasAssistantMessage, "Messages should contain at least one AssistantMessage");
 
 			});
 
@@ -116,14 +114,13 @@ class ToolSelectionTest {
 
 	@Test
 	public void testToolSelectionWithAlwaysInclude() throws Exception {
-		
 
 		// Create tool selection interceptor with always include
 		ToolSelectionInterceptor toolSelectionInterceptor = ToolSelectionInterceptor.builder()
-				.selectionModel(selectionModel)
-				.maxTools(1)
-				.alwaysInclude("weather_tool")
-				.build();
+			.chatClient(selectionClient)
+			.maxTools(1)
+			.alwaysInclude("weather_tool")
+			.build();
 
 		WeatherTool weatherTool = new WeatherTool();
 		TicketTool ticketTool = new TicketTool();
@@ -134,12 +131,13 @@ class ToolSelectionTest {
 		ToolCallback hotelToolCallback = HotelTool.createHotelTool("hotel_booking_tool", hotelTool);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("always_include_agent")
-				.model(chatModel)
-				.tools(weatherToolCallback, ticketToolCallback, hotelToolCallback)
-				.interceptors(toolSelectionInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("always_include_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherToolCallback,
+					ticketToolCallback, hotelToolCallback))
+			.interceptors(toolSelectionInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("帮我预订一张去上海的车票");
@@ -151,11 +149,9 @@ class ToolSelectionTest {
 				List<Message> messages = overAllState.value("messages", new ArrayList<>());
 
 				// Verify assistant responded
-				boolean hasAssistantMessage = messages.stream()
-						.anyMatch(msg -> msg instanceof AssistantMessage);
+				boolean hasAssistantMessage = messages.stream().anyMatch(msg -> msg instanceof AssistantMessage);
 
-				assertTrue(hasAssistantMessage,
-						"Messages should contain at least one AssistantMessage");
+				assertTrue(hasAssistantMessage, "Messages should contain at least one AssistantMessage");
 			});
 
 		}
@@ -167,13 +163,12 @@ class ToolSelectionTest {
 
 	@Test
 	public void testToolSelectionRelevanceFiltering() throws Exception {
-		
 
 		// Create tool selection interceptor
 		ToolSelectionInterceptor toolSelectionInterceptor = ToolSelectionInterceptor.builder()
-				.selectionModel(selectionModel)
-				.maxTools(2)
-				.build();
+			.chatClient(selectionClient)
+			.maxTools(2)
+			.build();
 
 		WeatherTool weatherTool = new WeatherTool();
 		TicketTool ticketTool = new TicketTool();
@@ -184,12 +179,13 @@ class ToolSelectionTest {
 		ToolCallback hotelToolCallback = HotelTool.createHotelTool("hotel_booking_tool", hotelTool);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("relevance_agent")
-				.model(chatModel)
-				.tools(weatherToolCallback, ticketToolCallback, hotelToolCallback)
-				.interceptors(toolSelectionInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("relevance_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherToolCallback,
+					ticketToolCallback, hotelToolCallback))
+			.interceptors(toolSelectionInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			// Query that requires ticket and hotel but not weather
@@ -202,16 +198,13 @@ class ToolSelectionTest {
 				List<Message> messages = overAllState.value("messages", new ArrayList<>());
 
 				// Verify assistant responded
-				boolean hasAssistantMessage = messages.stream()
-						.anyMatch(msg -> msg instanceof AssistantMessage);
+				boolean hasAssistantMessage = messages.stream().anyMatch(msg -> msg instanceof AssistantMessage);
 
-				assertTrue(hasAssistantMessage,
-						"Messages should contain at least one AssistantMessage");
+				assertTrue(hasAssistantMessage, "Messages should contain at least one AssistantMessage");
 
 				// At least one of ticket or hotel tool should be called
 				int relevantToolCalls = ticketTool.counter + hotelTool.counter;
-				assertTrue(relevantToolCalls > 0,
-						"At least one relevant tool (ticket or hotel) should be called");
+				assertTrue(relevantToolCalls > 0, "At least one relevant tool (ticket or hotel) should be called");
 			});
 
 		}
@@ -223,13 +216,12 @@ class ToolSelectionTest {
 
 	@Test
 	public void testToolSelectionWithFewTools() throws Exception {
-		
 
 		// Create tool selection interceptor with max 5 tools
 		ToolSelectionInterceptor toolSelectionInterceptor = ToolSelectionInterceptor.builder()
-				.selectionModel(selectionModel)
-				.maxTools(5)
-				.build();
+			.chatClient(selectionClient)
+			.maxTools(5)
+			.build();
 
 		// Only provide 2 tools (less than maxTools)
 		WeatherTool weatherTool = new WeatherTool();
@@ -239,12 +231,13 @@ class ToolSelectionTest {
 		ToolCallback ticketToolCallback = TicketTool.createTicketToolCallback("ticket_booking_tool", ticketTool);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("few_tools_agent")
-				.model(chatModel)
-				.tools(weatherToolCallback, ticketToolCallback)
-				.interceptors(toolSelectionInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("few_tools_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherToolCallback,
+					ticketToolCallback))
+			.interceptors(toolSelectionInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("今天深圳的天气如何？");
@@ -254,8 +247,7 @@ class ToolSelectionTest {
 
 			// When tools count <= maxTools, selection should be skipped
 			// Both tools should be available to the model
-			assertTrue(weatherTool.counter > 0,
-					"Weather tool should be called when selection is skipped");
+			assertTrue(weatherTool.counter > 0, "Weather tool should be called when selection is skipped");
 
 		}
 		catch (java.util.concurrent.CompletionException e) {
@@ -263,5 +255,5 @@ class ToolSelectionTest {
 			fail("ReactAgent execution failed: " + e.getMessage());
 		}
 	}
-}
 
+}

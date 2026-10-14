@@ -9,7 +9,7 @@ import React, {
   useMemo,
   ReactNode,
 } from "react";
-import { createApiClient, Session } from "@/lib/spring-ai-api";
+import { createApiClient, Session } from "@/lib/argi-api";
 import { toast } from "sonner";
 
 interface GraphThreadContextType {

@@ -22,9 +22,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
@@ -33,26 +33,29 @@ import java.util.function.BiFunction;
 /**
  * Tool for reading skill content from SkillRegistry.
  *
- * This tool allows the agent to read the full content of a skill by providing
- * the skill name and path. It works with any SkillRegistry implementation.
+ * This tool allows the agent to read the full content of a skill by providing the skill
+ * name and path. It works with any SkillRegistry implementation.
  */
 public class ReadSkillTool implements BiFunction<ReadSkillTool.ReadSkillRequest, ToolContext, String> {
 
 	public static final String READ_SKILL = "read_skill";
+
 	public static final String DESCRIPTION = """
 			Reads the full content of a skill from the SkillRegistry.
 			You can use this tool to read the complete content of any skill by providing its name or path.
-			
+
 			Usage:
 			- Provide either skill_name or skill_path
 			- If both are provided, they must refer to the same skill
 			- The tool returns the full content of the skill file (e.g., SKILL.md) without frontmatter
 			- If the skill is not found, an error will be returned
-			
+
 			Example:
 			- read_skill("pdf-extractor")
 			""";
+
 	private static final Logger logger = LoggerFactory.getLogger(ReadSkillTool.class);
+
 	private final SkillRegistry skillRegistry;
 
 	public ReadSkillTool(SkillRegistry skillRegistry) {
@@ -63,13 +66,13 @@ public class ReadSkillTool implements BiFunction<ReadSkillTool.ReadSkillRequest,
 	}
 
 	/**
-	 * Create a ToolCallback for the read skill tool.
+	 * Create a neutral tool binding for reading skills.
 	 */
-	public static ToolCallback createReadSkillToolCallback(SkillRegistry skillRegistry, String description) {
-		return FunctionToolCallback.builder(READ_SKILL, new ReadSkillTool(skillRegistry))
-				.description(description != null ? description : DESCRIPTION)
-				.inputType(ReadSkillRequest.class)
-				.build();
+	public static Tool createReadSkillTool(SkillRegistry skillRegistry, String description) {
+		return TypedTool.builder(READ_SKILL, new ReadSkillTool(skillRegistry))
+			.description(description != null ? description : DESCRIPTION)
+			.inputType(ReadSkillRequest.class)
+			.build();
 	}
 
 	@Override
@@ -104,9 +107,9 @@ public class ReadSkillTool implements BiFunction<ReadSkillTool.ReadSkillRequest,
 
 		if (skillName != null && skillPath != null) {
 			SkillMetadata skillByName = skillRegistry.get(skillName)
-					.orElseThrow(() -> new IllegalStateException("Skill not found: " + skillName));
+				.orElseThrow(() -> new IllegalStateException("Skill not found: " + skillName));
 			SkillMetadata skillByPath = skillRegistry.getByPath(skillPath)
-					.orElseThrow(() -> new IllegalStateException("Skill not found: " + skillPath));
+				.orElseThrow(() -> new IllegalStateException("Skill not found: " + skillPath));
 			if (!skillByName.getName().equals(skillByPath.getName())) {
 				throw new IllegalArgumentException("skill_name and skill_path must refer to the same skill");
 			}
@@ -147,5 +150,7 @@ public class ReadSkillTool implements BiFunction<ReadSkillTool.ReadSkillRequest,
 			this.skillName = skillName;
 			this.skillPath = skillPath;
 		}
+
 	}
+
 }

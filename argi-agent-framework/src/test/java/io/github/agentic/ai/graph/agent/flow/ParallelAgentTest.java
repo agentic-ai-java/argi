@@ -26,8 +26,8 @@ import io.github.agentic.ai.graph.exception.GraphStateException;
 import io.github.agentic.ai.graph.internal.node.Node;
 import io.github.agentic.ai.graph.internal.node.ParallelNode;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
-import io.github.agentic.ai.graph.serializer.std.SpringAIStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.std.ObjectStreamStateSerializer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockitoAnnotations;
@@ -56,7 +56,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 
 /**
  * Unit tests for ParallelAgent demonstrating the refactored architecture with different
@@ -135,14 +134,14 @@ class ParallelAgentTest {
 			.name("dataAnalyzer")
 			.description("Analyzes data")
 			.outputKey("analysis_result")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		ReactAgent agent2 = ReactAgent.builder()
 			.name("dataValidator")
 			.description("Validates data")
 			.outputKey("validation_result")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		// Test fluent interface with ParallelAgent
@@ -251,50 +250,50 @@ class ParallelAgentTest {
 
 	@Test
 	void testParallelAgentWithJacksonSerializer() throws Exception {
-		StateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		StateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 		ReactAgent agent1 = createMockAgent("agent1", "output1");
 		ReactAgent agent2 = createMockAgent("agent2", "output2");
 
 		ParallelAgent parallelAgent = ParallelAgent.builder()
-				.name("parallel_agent")
-				.description("Parallel agent with Jackson serializer")
-				.stateSerializer(serializer)
-				.subAgents(List.of(agent1, agent2))
-				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-				.build();
+			.name("parallel_agent")
+			.description("Parallel agent with Jackson serializer")
+			.stateSerializer(serializer)
+			.subAgents(List.of(agent1, agent2))
+			.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+			.build();
 
 		// Verify serializer is set correctly in StateGraph
 		StateGraph stateGraph = parallelAgent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer,
-				"Serializer should be SpringAIJacksonStateSerializer");
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer,
+				"Serializer should be ArgiJacksonStateSerializer");
 	}
 
 	@Test
-	void testParallelAgentWithSpringAIStateSerializer() throws Exception {
-		StateSerializer serializer = new SpringAIStateSerializer();
+	void testParallelAgentWithObjectStreamStateSerializer() throws Exception {
+		StateSerializer serializer = new ObjectStreamStateSerializer(OverAllState::new);
 
 		ReactAgent agent1 = createMockAgent("agent1", "output1");
 		ReactAgent agent2 = createMockAgent("agent2", "output2");
 
 		ParallelAgent parallelAgent = ParallelAgent.builder()
-				.name("parallel_agent")
-				.description("Parallel agent with SpringAI serializer")
-				.stateSerializer(serializer)
-				.subAgents(List.of(agent1, agent2))
-				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-				.build();
+			.name("parallel_agent")
+			.description("Parallel agent with SpringAI serializer")
+			.stateSerializer(serializer)
+			.subAgents(List.of(agent1, agent2))
+			.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+			.build();
 
 		// Verify serializer is set correctly in StateGraph
 		StateGraph stateGraph = parallelAgent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIStateSerializer.class, graphSerializer,
-				"Serializer should be SpringAIStateSerializer");
+		assertInstanceOf(ObjectStreamStateSerializer.class, graphSerializer,
+				"Serializer should be ObjectStreamStateSerializer");
 	}
 
 	@Test
@@ -303,19 +302,19 @@ class ParallelAgentTest {
 		ReactAgent agent2 = createMockAgent("agent2", "output2");
 
 		ParallelAgent parallelAgent = ParallelAgent.builder()
-				.name("parallel_agent")
-				.description("Parallel agent with default serializer")
-				.subAgents(List.of(agent1, agent2))
-				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-				.build();
+			.name("parallel_agent")
+			.description("Parallel agent with default serializer")
+			.subAgents(List.of(agent1, agent2))
+			.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+			.build();
 
 		// Verify default serializer is used
 		StateGraph stateGraph = parallelAgent.asStateGraph();
 		assertNotNull(stateGraph, "StateGraph should not be null");
 		StateSerializer graphSerializer = stateGraph.getStateSerializer();
 		assertNotNull(graphSerializer, "Serializer should not be null");
-		assertInstanceOf(SpringAIJacksonStateSerializer.class, graphSerializer,
-				"Default serializer should be SpringAIJacksonStateSerializer");
+		assertInstanceOf(ArgiJacksonStateSerializer.class, graphSerializer,
+				"Default serializer should be ArgiJacksonStateSerializer");
 	}
 
 	@Test
@@ -326,25 +325,25 @@ class ParallelAgentTest {
 			ReactAgent agent2 = createMockAgent("agent2", "output2");
 
 			ParallelAgent parallelAgent = ParallelAgent.builder()
-					.name("parallel_agent_with_executor")
-					.description("Parallel agent with executor")
-					.subAgents(List.of(agent1, agent2))
-					.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-					.executor(customExecutor)
-					.build();
+				.name("parallel_agent_with_executor")
+				.description("Parallel agent with executor")
+				.subAgents(List.of(agent1, agent2))
+				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+				.executor(customExecutor)
+				.build();
 
 			assertNotNull(parallelAgent, "ParallelAgent should not be null");
 
 			// Verify executor is set and passed to RunnableConfig
 			RunnableConfig config = buildNonStreamConfig(parallelAgent, null);
 			assertNotNull(config, "RunnableConfig should not be null");
-			
+
 			assertTrue(config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-				"Default parallel executor should be present in metadata");
-			assertEquals(customExecutor, 
-				config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-				"Executor in metadata should match configured executor");
-		} finally {
+					"Default parallel executor should be present in metadata");
+			assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+					"Executor in metadata should match configured executor");
+		}
+		finally {
 			customExecutor.shutdown();
 		}
 	}
@@ -357,22 +356,21 @@ class ParallelAgentTest {
 		ReactAgent agent2 = createMockAgent("agent2", "output2");
 
 		ParallelAgent parallelAgent = ParallelAgent.builder()
-				.name("parallel_agent_stream")
-				.description("Parallel agent with executor for streaming")
-				.subAgents(List.of(agent1, agent2))
-				.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
-				.executor(customExecutor)
-				.build();
+			.name("parallel_agent_stream")
+			.description("Parallel agent with executor for streaming")
+			.subAgents(List.of(agent1, agent2))
+			.mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
+			.executor(customExecutor)
+			.build();
 
 		// Test with stream config
 		RunnableConfig streamConfig = buildStreamConfig(parallelAgent, null);
 		assertNotNull(streamConfig, "Stream config should not be null");
-		
+
 		assertTrue(streamConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).isPresent(),
-			"Default parallel executor should be present in stream config metadata");
-		assertEquals(customExecutor, 
-			streamConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor in stream config metadata should match configured executor");
+				"Default parallel executor should be present in stream config metadata");
+		assertEquals(customExecutor, streamConfig.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor in stream config metadata should match configured executor");
 	}
 
 	@Test
@@ -395,11 +393,10 @@ class ParallelAgentTest {
 		assertNotNull(parallelAgent);
 		assertEquals("parallel_agent_chaining", parallelAgent.name());
 		assertEquals(3, parallelAgent.maxConcurrency());
-		
+
 		RunnableConfig config = buildNonStreamConfig(parallelAgent, null);
-		assertEquals(customExecutor, 
-			config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
-			"Executor should be correctly configured through chaining");
+		assertEquals(customExecutor, config.metadata(RunnableConfig.DEFAULT_PARALLEL_EXECUTOR_KEY).get(),
+				"Executor should be correctly configured through chaining");
 	}
 
 	/**
@@ -425,7 +422,7 @@ class ParallelAgentTest {
 			.name(name)
 			.description("Mock agent")
 			.outputKey(outputKey)
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 	}
 
@@ -453,21 +450,21 @@ class ParallelAgentTest {
 			.name("dataAnalyzer")
 			.description("Analyzes data patterns and trends")
 			.outputKey("analysis_result")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		ReactAgent dataValidator = ReactAgent.builder()
 			.name("dataValidator")
 			.description("Validates data quality and integrity")
 			.outputKey("validation_result")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		ReactAgent dataCleaner = ReactAgent.builder()
 			.name("dataCleaner")
 			.description("Cleans and preprocesses data")
 			.outputKey("cleaning_result")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		// Create ParallelAgent using the improved builder with default merge strategy
@@ -491,21 +488,21 @@ class ParallelAgentTest {
 			.name("summaryGenerator")
 			.description("Generates executive summary")
 			.outputKey("summary_section")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		ReactAgent detailsGenerator = ReactAgent.builder()
 			.name("detailsGenerator")
 			.description("Generates detailed analysis")
 			.outputKey("details_section")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		ReactAgent chartsGenerator = ReactAgent.builder()
 			.name("chartsGenerator")
 			.description("Generates charts and visualizations")
 			.outputKey("charts_section")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		// Create ParallelAgent using list merge strategy
@@ -529,21 +526,21 @@ class ParallelAgentTest {
 			.name("introWriter")
 			.description("Writes introduction content")
 			.outputKey("intro_content")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		ReactAgent bodyWriter = ReactAgent.builder()
 			.name("bodyWriter")
 			.description("Writes main body content")
 			.outputKey("body_content")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		ReactAgent conclusionWriter = ReactAgent.builder()
 			.name("conclusionWriter")
 			.description("Writes conclusion content")
 			.outputKey("conclusion_content")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.build();
 
 		// Create ParallelAgent using concatenation merge strategy
@@ -557,8 +554,8 @@ class ParallelAgentTest {
 	}
 
 	/**
-	 * Test that maxConcurrency is properly passed to RunnableConfig metadata.
-	 * This test verifies the configuration propagation mechanism.
+	 * Test that maxConcurrency is properly passed to RunnableConfig metadata. This test
+	 * verifies the configuration propagation mechanism.
 	 */
 	@Test
 	void testMaxConcurrencyInRunnableConfig() throws Exception {
@@ -567,11 +564,11 @@ class ParallelAgentTest {
 		ReactAgent agent3 = createMockAgent("agent3", "output3");
 
 		ParallelAgent parallelAgent = ParallelAgent.builder()
-				.name("testParallelAgent")
-				.description("Test parallel agent with max concurrency")
-				.subAgents(List.of(agent1, agent2, agent3))
-				.maxConcurrency(2)
-				.build();
+			.name("testParallelAgent")
+			.description("Test parallel agent with max concurrency")
+			.subAgents(List.of(agent1, agent2, agent3))
+			.maxConcurrency(2)
+			.build();
 
 		// Verify maxConcurrency is set correctly
 		assertEquals(2, parallelAgent.maxConcurrency());
@@ -579,13 +576,12 @@ class ParallelAgentTest {
 		// Build config and verify maxConcurrency is in metadata
 		RunnableConfig config = buildNonStreamConfig(parallelAgent, null);
 		assertNotNull(config);
-		
+
 		// Use formatNodeId to match the actual key used by ParallelAgent
 		String maxConcurrencyKey = ParallelNode.formatMaxConcurrencyKey(ParallelNode.formatNodeId("testParallelAgent"));
-		assertTrue(config.metadata(maxConcurrencyKey).isPresent(), 
+		assertTrue(config.metadata(maxConcurrencyKey).isPresent(),
 				"MaxConcurrency should be present in config metadata");
-		assertEquals(2, config.metadata(maxConcurrencyKey).get(),
-				"MaxConcurrency value should match");
+		assertEquals(2, config.metadata(maxConcurrencyKey).get(), "MaxConcurrency value should match");
 
 		// Test with stream config as well
 		RunnableConfig streamConfig = buildStreamConfig(parallelAgent, null);
@@ -597,9 +593,9 @@ class ParallelAgentTest {
 	}
 
 	/**
-	 * Test that maxConcurrency actually limits concurrent execution.
-	 * This test uses slow-running agents and verifies that no more than
-	 * maxConcurrency agents run simultaneously.
+	 * Test that maxConcurrency actually limits concurrent execution. This test uses
+	 * slow-running agents and verifies that no more than maxConcurrency agents run
+	 * simultaneously.
 	 */
 	@Test
 	void testMaxConcurrencyLimitsExecution() throws Exception {
@@ -607,33 +603,36 @@ class ParallelAgentTest {
 		AtomicInteger currentConcurrent = new AtomicInteger(0);
 		AtomicInteger maxObservedConcurrent = new AtomicInteger(0);
 		CountDownLatch allTasksStarted = new CountDownLatch(5);
-		
+
 		// Create 5 agents that will simulate slow execution
 		List<Agent> slowAgents = new java.util.ArrayList<>();
 		for (int i = 0; i < 5; i++) {
 			final int agentIndex = i;
-			BaseAgent slowAgent = new BaseAgent("slowAgent" + i, "Slow agent " + i, false, false, 
+			BaseAgent slowAgent = new BaseAgent("slowAgent" + i, "Slow agent " + i, false, false,
 					"agent" + i + "_result", null) {
-				
+
 				@Override
 				protected Optional<OverAllState> doInvoke(Map<String, Object> input, RunnableConfig runnableConfig) {
 					int concurrent = currentConcurrent.incrementAndGet();
 					maxObservedConcurrent.updateAndGet(max -> Math.max(max, concurrent));
-					
+
 					System.out.println("Agent " + agentIndex + " started. Current concurrent: " + concurrent);
 					allTasksStarted.countDown();
-					
+
 					try {
 						// Simulate slow work
 						Thread.sleep(100);
-					} catch (InterruptedException e) {
+					}
+					catch (InterruptedException e) {
 						Thread.currentThread().interrupt();
-					} finally {
+					}
+					finally {
 						currentConcurrent.decrementAndGet();
 						System.out.println("Agent " + agentIndex + " completed");
 					}
-					
-					// Create result map (don't modify state.data() directly as it returns UnmodifiableMap)
+
+					// Create result map (don't modify state.data() directly as it returns
+					// UnmodifiableMap)
 					Map<String, Object> resultData = new HashMap<>();
 					resultData.put("agent" + agentIndex + "_result", "completed");
 					OverAllState state = new OverAllState(resultData);
@@ -647,13 +646,12 @@ class ParallelAgentTest {
 
 				@Override
 				public Node asNode(boolean includeContents, boolean returnReasoningContents) {
-					// Return a valid Node with an action factory that wraps the agent's doInvoke
+					// Return a valid Node with an action factory that wraps the agent's
+					// doInvoke
 					return new Node(this.name(), (config) -> (state, runnableConfig) -> {
 						// Execute the agent and return the result state as a map
 						Optional<OverAllState> result = this.doInvoke(state.data(), runnableConfig);
-						return CompletableFuture.completedFuture(
-							result.map(s -> s.data()).orElse(new HashMap<>())
-						);
+						return CompletableFuture.completedFuture(result.map(s -> s.data()).orElse(new HashMap<>()));
 					});
 				}
 			};
@@ -662,24 +660,24 @@ class ParallelAgentTest {
 
 		// Create ParallelAgent with maxConcurrency = 2
 		ParallelAgent parallelAgent = ParallelAgent.builder()
-				.name("concurrencyTestAgent")
-				.description("Test concurrent execution limits")
-				.subAgents(slowAgents)
-				.maxConcurrency(2)  // Only 2 agents should run concurrently
-				.build();
+			.name("concurrencyTestAgent")
+			.description("Test concurrent execution limits")
+			.subAgents(slowAgents)
+			.maxConcurrency(2) // Only 2 agents should run concurrently
+			.build();
 
 		// Execute the agent using invoke with a simple string message
 		Optional<OverAllState> result = parallelAgent.invoke("test input");
 		assertNotNull(result);
-			
+
 		// Verify that maximum observed concurrency did not exceed limit
 		System.out.println("Maximum observed concurrent execution: " + maxObservedConcurrent.get());
 		assertTrue(maxObservedConcurrent.get() <= 2,
-				"Maximum concurrent execution should not exceed maxConcurrency. Expected: 2, but was: " + maxObservedConcurrent.get());
-			
+				"Maximum concurrent execution should not exceed maxConcurrency. Expected: 2, but was: "
+						+ maxObservedConcurrent.get());
+
 		// Also verify it's greater than 1 (meaning parallel execution did happen)
-		assertTrue(maxObservedConcurrent.get() >= 1,
-				"Should have at least some concurrent execution");
+		assertTrue(maxObservedConcurrent.get() >= 1, "Should have at least some concurrent execution");
 
 	}
 
@@ -692,11 +690,11 @@ class ParallelAgentTest {
 		ReactAgent agent2 = createMockAgent("agent2", "output2");
 
 		ParallelAgent parallelAgent = ParallelAgent.builder()
-				.name("unlimitedParallelAgent")
-				.description("Parallel agent without concurrency limit")
-				.subAgents(List.of(agent1, agent2))
-				// Note: maxConcurrency is NOT set
-				.build();
+			.name("unlimitedParallelAgent")
+			.description("Parallel agent without concurrency limit")
+			.subAgents(List.of(agent1, agent2))
+			// Note: maxConcurrency is NOT set
+			.build();
 
 		// Verify maxConcurrency is null
 		assertNull(parallelAgent.maxConcurrency());
@@ -704,10 +702,11 @@ class ParallelAgentTest {
 		// Build config and verify maxConcurrency is NOT in metadata
 		RunnableConfig config = buildNonStreamConfig(parallelAgent, null);
 		assertNotNull(config);
-		
+
 		// Use formatNodeId to match the actual key used by ParallelAgent
-		String maxConcurrencyKey = ParallelNode.formatMaxConcurrencyKey(ParallelNode.formatNodeId("unlimitedParallelAgent"));
-		assertFalse(config.metadata(maxConcurrencyKey).isPresent(), 
+		String maxConcurrencyKey = ParallelNode
+			.formatMaxConcurrencyKey(ParallelNode.formatNodeId("unlimitedParallelAgent"));
+		assertFalse(config.metadata(maxConcurrencyKey).isPresent(),
 				"MaxConcurrency should NOT be present in config metadata when not set");
 	}
 

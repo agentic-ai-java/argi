@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.graph.plain_text;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -27,9 +30,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.agentic.ai.graph.GraphResponse;
 import io.github.agentic.ai.graph.OverAllState;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.UserMessage;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -39,13 +41,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class JacksonStateCloneTest {
 
-	private final SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+	private final ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 	@Test
 	void cloneMatchesPersistedRoundTripForNumbersArraysAndLargeText() throws Exception {
 		Map<String, Object> data = new HashMap<>();
-		data.put("numbers", List.of(1, 1L, Long.MAX_VALUE, 0.1F, 0.1D,
-				new BigInteger("123456789012345678901234567890"), new BigDecimal("0.12345678901234567890")));
+		data.put("numbers", List.of(1, 1L, Long.MAX_VALUE, 0.1F, 0.1D, new BigInteger("123456789012345678901234567890"),
+				new BigDecimal("0.12345678901234567890")));
 		data.put("array", new int[] { 1, 2, 3 });
 		data.put("text", "text-\u20ac\ud83d\ude00".repeat(20_000));
 		data.put("null", null);
@@ -62,7 +64,10 @@ class JacksonStateCloneTest {
 	void nestedMutableStateIsIsolated() throws Exception {
 		List<String> values = new ArrayList<>(List.of("original"));
 		Map<String, Object> nested = new HashMap<>(Map.of("values", values));
-		UserMessage message = UserMessage.builder().text("question").metadata(Map.of("source", "original")).build();
+		ChatMessage message = ChatMessage.builder(ChatRole.USER)
+			.text("question")
+			.metadata(Map.of("source", "original"))
+			.build();
 		OverAllState original = new OverAllState(Map.of("nested", nested, "message", message));
 		OverAllState cloned = serializer.cloneObject(original);
 		Map<?, ?> clonedNested = (Map<?, ?>) cloned.data().get("nested");
@@ -77,8 +82,8 @@ class JacksonStateCloneTest {
 
 	@Test
 	void specialValuesStillUseSnapshotNormalization() throws Exception {
-		Map<String, Object> data = Map.of("response", GraphResponse.done("done", Map.of("trace", "trace-1")),
-				"future", CompletableFuture.completedFuture("completed"));
+		Map<String, Object> data = Map.of("response", GraphResponse.done("done", Map.of("trace", "trace-1")), "future",
+				CompletableFuture.completedFuture("completed"));
 		var cloned = serializer.cloneObject(data).data();
 		GraphResponse<?> response = assertInstanceOf(GraphResponse.class, cloned.get("response"));
 		assertEquals("done", response.resultValue().orElseThrow());
@@ -108,7 +113,7 @@ class JacksonStateCloneTest {
 		invoice.put("id", "123");
 		Map<String, Object> knownMarkerValues = new LinkedHashMap<>();
 		knownMarkerValues.put("@type", "SYSTEM");
-		knownMarkerValues.put("@class", UserMessage.class.getName());
+		knownMarkerValues.put("@class", ChatMessage.class.getName());
 		knownMarkerValues.put("id", "456");
 
 		Map<String, Object> data = Map.of("payload", invoice, "knownMarkerValues", knownMarkerValues, "history",
@@ -125,7 +130,7 @@ class JacksonStateCloneTest {
 	@Test
 	void cloneUsesTheConfiguredStateFactoryAndRejectsNull() throws Exception {
 		AtomicInteger factoryCalls = new AtomicInteger();
-		var custom = new SpringAIJacksonStateSerializer(data -> {
+		var custom = new ArgiJacksonStateSerializer(data -> {
 			factoryCalls.incrementAndGet();
 			return new OverAllState(data);
 		});
@@ -135,6 +140,7 @@ class JacksonStateCloneTest {
 	}
 
 	public static class InvoiceMap extends LinkedHashMap<String, Object> {
+
 	}
 
 }

@@ -16,43 +16,54 @@
 package io.github.agentic.ai.graph.serializer.std;
 
 import io.github.agentic.ai.graph.OverAllState;
+import io.github.agentic.ai.api.chat.Usage;
+import io.github.agentic.ai.graph.state.AgentStateFactory;
 import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import java.util.List;
 
 import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
+import java.util.Map;
+import java.util.Objects;
 
 public class StreamingOutputSerializer implements NullableObjectSerializer<StreamingOutput> {
 
-	private final MessageSerializer messageSerializer = new MessageSerializer();
+	private final AgentStateFactory<OverAllState> stateFactory;
+
+	public StreamingOutputSerializer() {
+		this(OverAllState::new);
+	}
+
+	public StreamingOutputSerializer(AgentStateFactory<OverAllState> stateFactory) {
+		this.stateFactory = Objects.requireNonNull(stateFactory, "stateFactory must not be null");
+	}
 
 	@Override
 	public void write(StreamingOutput object, ObjectOutput out) throws IOException {
 		// Write base NodeOutput fields
 		writeNullableUTF(object.node(), out);
 		writeNullableUTF(object.agent(), out);
-		writeNullableObject(object.state(), out);
+		// Persist state data through the mapper; restore runtime services with the state
+		// factory.
+		writeNullableObject(object.state() == null ? null : object.state().data(), out);
 		out.writeBoolean(object.isSubGraph());
 
 		// Write StreamingOutput specific fields
-		writeNullableUTF(object.chunk(), out);
-		
-		// Write message using MessageSerializer if present
-		Message message = object.message();
-		if (message != null) {
-			out.writeByte(1);
-			messageSerializer.write(message, out);
-		} else {
-			out.writeByte(0);
-		}
-		
+		Object origin = object.getOriginData();
+		writeNullableObject(ArgiChatSerializers.supports(origin) || origin instanceof String ? origin : null, out);
+		out.writeObject(object.tokenUsage());
+
+		out.writeObject(object.messages());
+
 		// Write outputType if present
 		if (object.getOutputType() != null) {
 			out.writeByte(1);
 			writeNullableUTF(object.getOutputType().name(), out);
-		} else {
+		}
+		else {
 			out.writeByte(0);
 		}
 	}
@@ -63,19 +74,21 @@ public class StreamingOutputSerializer implements NullableObjectSerializer<Strea
 		// Read base NodeOutput fields
 		String node = readNullableUTF(in).orElse(null);
 		String agent = readNullableUTF(in).orElse(null);
-		OverAllState state = (OverAllState) readNullableObject(in).orElse(null);
+		Map<String, Object> data = (Map<String, Object>) readNullableObject(in).orElse(null);
+		OverAllState state = data == null ? null : stateFactory.apply(data);
 		boolean subGraph = in.readBoolean();
 
 		// Read StreamingOutput specific fields
-		String chunk = readNullableUTF(in).orElse(null);
-		
-		// Read message using MessageSerializer if present
-		Message message = null;
-		byte hasMessage = in.readByte();
-		if (hasMessage == 1) {
-			message = messageSerializer.read(in);
+		Object origin = readNullableObject(in).orElse(null);
+		Usage usage = (Usage) in.readObject();
+
+		Object restoredMessages = in.readObject();
+		if (!(restoredMessages instanceof List<?> values)
+				|| values.stream().anyMatch(value -> !(value instanceof ChatMessage))) {
+			throw new IOException("Streaming messages must be ARGI ChatMessage values");
 		}
-		
+		List<ChatMessage> messages = (List<ChatMessage>) restoredMessages;
+
 		// Read outputType if present
 		OutputType outputType = null;
 		byte hasOutputType = in.readByte();
@@ -84,25 +97,17 @@ public class StreamingOutputSerializer implements NullableObjectSerializer<Strea
 			if (outputTypeStr != null) {
 				try {
 					outputType = OutputType.valueOf(outputTypeStr);
-				} catch (IllegalArgumentException e) {
-					// If enum value is not found, outputType remains null
+				}
+				catch (IllegalArgumentException e) {
+					throw new IOException("Invalid streaming output type: " + outputTypeStr, e);
 				}
 			}
 		}
 
-		// Create StreamingOutput with all available fields
-		// Prefer constructor with message if message is present
-		StreamingOutput<?> output;
-		if (message != null) {
-			output = new StreamingOutput<>(message, node, agent, state, outputType);
-		} else {
-			// Fallback to deprecated constructor with chunk (for backward compatibility)
-			output = new StreamingOutput<>(chunk, node, agent, state);
-		}
-		
+		StreamingOutput<?> output = new StreamingOutput<>(messages, origin, node, agent, state, outputType);
+		output.setTokenUsage(usage);
 		output.setSubGraph(subGraph);
 		return output;
 	}
 
 }
-

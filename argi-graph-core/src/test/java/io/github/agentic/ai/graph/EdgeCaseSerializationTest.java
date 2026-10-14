@@ -16,7 +16,7 @@
 package io.github.agentic.ai.graph;
 
 import io.github.agentic.ai.graph.serializer.Serializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -42,11 +42,11 @@ public class EdgeCaseSerializationTest {
 	void testPrimitiveArraySerialization() throws Exception {
 		// Test that primitive arrays are handled correctly
 		OverAllState originalState = new OverAllState();
-		int[] primitiveArray = {1, 2, 3};
+		int[] primitiveArray = { 1, 2, 3 };
 		originalState.updateState(Map.of("numbers", primitiveArray));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
+
 		// This should not throw ClassCastException
 		assertDoesNotThrow(() -> {
 			serializer.cloneObject(originalState);
@@ -61,8 +61,8 @@ public class EdgeCaseSerializationTest {
 		cancelledFuture.cancel(true);
 		originalState.updateState(Map.of("cancelled", cancelledFuture));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
+
 		assertDoesNotThrow(() -> {
 			OverAllState restoredState = serializer.cloneObject(originalState);
 			assertNotNull(restoredState);
@@ -76,13 +76,13 @@ public class EdgeCaseSerializationTest {
 		GraphResponse<?> emptyResponse = GraphResponse.done(null);
 		originalState.updateState(Map.of("empty", emptyResponse));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		Object restoredValue = restoredState.value("empty").orElse(null);
 		assertNotNull(restoredValue, "Empty GraphResponse should be preserved");
 		assertTrue(restoredValue instanceof GraphResponse, "Type should be preserved");
-		
+
 		@SuppressWarnings("unchecked")
 		GraphResponse<Object> restoredResponse = (GraphResponse<Object>) restoredValue;
 		assertTrue(restoredResponse.resultValue().isEmpty(), "Null result should be preserved");
@@ -97,7 +97,7 @@ public class EdgeCaseSerializationTest {
 		}
 		originalState.updateState(largeMap);
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 
 		OverAllState restoredState = assertTimeoutPreemptively(Duration.ofSeconds(10),
 				() -> serializer.cloneObject(originalState));
@@ -110,14 +110,14 @@ public class EdgeCaseSerializationTest {
 	void testNestedGraphResponseSerialization() throws Exception {
 		// Test deeply nested GraphResponse
 		OverAllState originalState = new OverAllState();
-		
+
 		GraphResponse<?> inner = GraphResponse.of("inner value");
 		Map<String, Object> middleMap = Map.of("inner_response", inner);
 		GraphResponse<?> outer = GraphResponse.done(middleMap);
-		
+
 		originalState.updateState(Map.of("nested", outer));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		Object restoredValue = restoredState.value("nested").orElse(null);
@@ -136,11 +136,12 @@ public class EdgeCaseSerializationTest {
 			payload = stream.toByteArray();
 		}
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		Map<String, Object> restored = serializer.dataFromBytes(payload);
 
 		Object result = restored.get("result");
 		assertInstanceOf(Long.class, result, "Wrapper array Long should deserialize as Long");
 		assertEquals(300L, result, "Wrapper array Long value should be preserved");
 	}
+
 }

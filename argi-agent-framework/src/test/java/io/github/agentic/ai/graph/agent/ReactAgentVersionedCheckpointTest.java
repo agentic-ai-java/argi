@@ -189,11 +189,8 @@ class ReactAgentVersionedCheckpointTest {
 
 			assertEquals(1, fixture.tools.calls.get(), "cancellation must not replay tool side effects");
 			assertEquals(0, fixture.saver.plainPuts.get(), "stale cancellation must not blind-write over a winner");
-			assertEquals("external", fixture.saver.getVersioned(fixture.config)
-				.checkpoint()
-				.orElseThrow()
-				.getState()
-				.get("owner"));
+			assertEquals("external",
+					fixture.saver.getVersioned(fixture.config).checkpoint().orElseThrow().getState().get("owner"));
 		}
 	}
 
@@ -215,11 +212,8 @@ class ReactAgentVersionedCheckpointTest {
 			assertEquals(readsAfterFirstSubscription + 1, fixture.saver.versionedReads.get(),
 					"each cold subscription must create exactly one fresh initial versioned scope read");
 			assertEquals(0, fixture.saver.plainPuts.get(), "the cancelled first subscription must not legacy-rewind");
-			assertEquals("external", fixture.saver.getVersioned(fixture.config)
-				.checkpoint()
-				.orElseThrow()
-				.getState()
-				.get("owner"));
+			assertEquals("external",
+					fixture.saver.getVersioned(fixture.config).checkpoint().orElseThrow().getState().get("owner"));
 		}
 	}
 
@@ -259,10 +253,9 @@ class ReactAgentVersionedCheckpointTest {
 	}
 
 	private static ChatResponse toolCallResponse() {
-		AssistantMessage.ToolCall toolCall =
-				new AssistantMessage.ToolCall("call-1", "function", "count", "{}");
-		return new ChatResponse(List.of(new Generation(
-				AssistantMessage.builder().content("").toolCalls(List.of(toolCall)).build())));
+		AssistantMessage.ToolCall toolCall = new AssistantMessage.ToolCall("call-1", "function", "count", "{}");
+		return new ChatResponse(
+				List.of(new Generation(AssistantMessage.builder().content("").toolCalls(List.of(toolCall)).build())));
 	}
 
 	private static String lastUserText(Prompt prompt) {
@@ -293,17 +286,13 @@ class ReactAgentVersionedCheckpointTest {
 
 		private final AtomicInteger blockFirstAttempts = new AtomicInteger();
 
-		private final Map<String, CountDownLatch> firstCalls = Map.of(
-				BLOCK_FIRST, new CountDownLatch(1),
-				TOOL_CANCEL, new CountDownLatch(1),
-				QUEUED, new CountDownLatch(1));
+		private final Map<String, CountDownLatch> firstCalls = Map.of(BLOCK_FIRST, new CountDownLatch(1), TOOL_CANCEL,
+				new CountDownLatch(1), QUEUED, new CountDownLatch(1));
 
 		private final Map<String, CountDownLatch> secondCalls = Map.of(TOOL_CANCEL, new CountDownLatch(1));
 
-		private final Map<String, Sinks.One<ChatResponse>> blockedResponses = Map.of(
-				BLOCK_FIRST, Sinks.one(),
-				TOOL_CANCEL, Sinks.one(),
-				QUEUED, Sinks.one());
+		private final Map<String, Sinks.One<ChatResponse>> blockedResponses = Map.of(BLOCK_FIRST, Sinks.one(),
+				TOOL_CANCEL, Sinks.one(), QUEUED, Sinks.one());
 
 		@Override
 		public ChatResponse call(Prompt prompt) {
@@ -340,7 +329,8 @@ class ReactAgentVersionedCheckpointTest {
 		}
 
 		private void awaitSecondCall(String request) throws InterruptedException {
-			assertTrue(secondCalls.get(request).await(10, TimeUnit.SECONDS), "second model call must start: " + request);
+			assertTrue(secondCalls.get(request).await(10, TimeUnit.SECONDS),
+					"second model call must start: " + request);
 		}
 
 	}
@@ -408,7 +398,11 @@ class ReactAgentVersionedCheckpointTest {
 		}
 
 		private void externalWrite(RunnableConfig config, Map<String, Object> state) throws Exception {
-			Checkpoint checkpoint = Checkpoint.builder().state(state).nodeId("external").nextNodeId(StateGraph.END).build();
+			Checkpoint checkpoint = Checkpoint.builder()
+				.state(state)
+				.nodeId("external")
+				.nextNodeId(StateGraph.END)
+				.build();
 			delegate.putIfVersion(config, checkpoint, delegate.getVersioned(config).revision());
 		}
 
@@ -426,14 +420,17 @@ class ReactAgentVersionedCheckpointTest {
 
 		private final ReactAgent agent;
 
-		private final Map<String, CountDownLatch> terminated = Map.of(
-				BLOCK_FIRST, new CountDownLatch(1),
-				TOOL_CANCEL, new CountDownLatch(1),
-				QUEUED, new CountDownLatch(1));
+		private final Map<String, CountDownLatch> terminated = Map.of(BLOCK_FIRST, new CountDownLatch(1), TOOL_CANCEL,
+				new CountDownLatch(1), QUEUED, new CountDownLatch(1));
 
 		private Fixture() {
 			ToolCallback count = ToolCallbacks.from(tools)[0];
-			agent = ReactAgent.builder().name("versioned-react-agent").model(model).tools(count).saver(saver).build();
+			agent = ReactAgent.builder()
+				.name("versioned-react-agent")
+				.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(model))
+				.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(count))
+				.saver(saver)
+				.build();
 		}
 
 		private Disposable subscribe(String request) throws Exception {

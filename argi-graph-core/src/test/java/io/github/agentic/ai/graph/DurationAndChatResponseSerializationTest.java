@@ -15,253 +15,91 @@
  */
 package io.github.agentic.ai.graph;
 
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
-import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.FinishReason;
+import io.github.agentic.ai.api.chat.Usage;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Tests for Duration and ChatResponse serialization support in checkpoint.
- * 
- * These tests verify the fixes for:
- * 1. Duration serialization (JavaTimeModule support)
- * 2. ChatResponse serialization (normalization to Map, deserialization returns null)
- * 
- * Related to Issue #2702 (discovered during NPE fix testing).
- */
-public class DurationAndChatResponseSerializationTest {
+/** Neutral responses and durations must persist, rather than being discarded. */
+class DurationAndChatResponseSerializationTest {
+
+	private final ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
+
+	private static ChatResponse response(String text) {
+		return new ChatResponse("response", "model", List.of(ChatMessage.assistant(text)), List.of(), FinishReason.STOP,
+				new Usage(1L, 2L, 3L), Map.of("latency", Duration.ofMillis(1500)));
+	}
 
 	@Test
 	void testDurationSerialization() throws Exception {
-		// Test that Duration can be serialized without exception
-		OverAllState originalState = new OverAllState();
-		Duration duration = Duration.ofSeconds(30);
-		originalState.updateState(Map.of("duration", duration));
-
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		
-		assertDoesNotThrow(() -> {
-			OverAllState restoredState = serializer.cloneObject(originalState);
-			assertNotNull(restoredState, "Restored state should not be null");
-			
-			Object restoredValue = restoredState.value("duration").orElse(null);
-			assertNotNull(restoredValue, "Duration should be preserved after serialization");
-		}, "Duration serialization should work without 'Java 8 date/time type not supported' error");
+		assertEquals(Duration.ofSeconds(30), copy(Map.of("duration", Duration.ofSeconds(30))).get("duration"));
 	}
 
 	@Test
 	void testDurationInMetadata() throws Exception {
-		// Test Duration nested in metadata Map
-		OverAllState originalState = new OverAllState();
-		Map<String, Object> metadata = new HashMap<>();
-		metadata.put("execution_time", Duration.ofMillis(1500));
-		metadata.put("timeout", Duration.ofMinutes(5));
-		originalState.updateState(Map.of("metadata", metadata));
-
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		
-		assertDoesNotThrow(() -> {
-			OverAllState restoredState = serializer.cloneObject(originalState);
-			assertNotNull(restoredState, "Restored state should not be null");
-			
-			@SuppressWarnings("unchecked")
-			Map<String, Object> restoredMetadata = (Map<String, Object>) restoredState.value("metadata").orElse(null);
-			assertNotNull(restoredMetadata, "Metadata should be preserved");
-			assertNotNull(restoredMetadata.get("execution_time"), "Execution time should be preserved");
-			assertNotNull(restoredMetadata.get("timeout"), "Timeout should be preserved");
-		}, "Duration in metadata serialization should work without 'Java 8 date/time type not supported' error");
+		Map<String, Object> metadata = Map.of("execution_time", Duration.ofMillis(1500), "timeout",
+				Duration.ofMinutes(5));
+		assertEquals(metadata, copy(Map.of("metadata", metadata)).get("metadata"));
 	}
 
 	@Test
 	void testChatResponseSerialization() throws Exception {
-		// Test that ChatResponse can be serialized without exception
-		AssistantMessage message = new AssistantMessage("Test response");
-		Generation generation = new Generation(message);
-		ChatResponse chatResponse = new ChatResponse(List.of(generation));
-
-		OverAllState originalState = new OverAllState();
-		originalState.updateState(Map.of("chatResponse", chatResponse));
-
-		// Verify runtime type
-		Object runtimeValue = originalState.value("chatResponse").orElse(null);
-		assertTrue(runtimeValue instanceof ChatResponse, "Runtime value should be ChatResponse");
-
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		
-		assertDoesNotThrow(() -> {
-			OverAllState restoredState = serializer.cloneObject(originalState);
-			
-			// ChatResponse should return null after deserialization (cannot be reconstructed)
-			Object restoredValue = restoredState.value("chatResponse").orElse(null);
-			assertNull(restoredValue, 
-				"ChatResponse should return null after deserialization (cannot be reconstructed)");
-		}, "ChatResponse serialization should work without 'Cannot construct instance' error");
+		ChatResponse response = response("Test response");
+		assertEquals(response, copy(Map.of("response", response)).get("response"));
 	}
 
 	@Test
 	void testChatResponseInNestedMap() throws Exception {
-		// Test ChatResponse nested in Map structure
-		AssistantMessage message = new AssistantMessage("Nested response");
-		Generation generation = new Generation(message);
-		ChatResponse chatResponse = new ChatResponse(List.of(generation));
-
-		Map<String, Object> container = new HashMap<>();
-		container.put("response", chatResponse);
-		container.put("other", "data");
-
-		OverAllState originalState = new OverAllState();
-		originalState.updateState(Map.of("container", container));
-
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		OverAllState restoredState = serializer.cloneObject(originalState);
-
-		@SuppressWarnings("unchecked")
-		Map<String, Object> restoredContainer = (Map<String, Object>) restoredState.value("container").orElse(null);
-		assertNotNull(restoredContainer, "Container should be preserved");
-		
-		// ChatResponse should be null after deserialization
-		Object restoredResponse = restoredContainer.get("response");
-		assertNull(restoredResponse, 
-			"Nested ChatResponse should return null after deserialization");
-		
-		// Other values should be preserved
-		assertEquals("data", restoredContainer.get("other"), "Other values should be preserved");
+		Map<String, Object> nested = Map.of("response", response("nested"), "status", "complete");
+		assertEquals(nested, copy(Map.of("nested", nested)).get("nested"));
 	}
 
 	@Test
 	void testChatResponseInList() throws Exception {
-		// Test ChatResponse in List
-		AssistantMessage message1 = new AssistantMessage("Response 1");
-		AssistantMessage message2 = new AssistantMessage("Response 2");
-		ChatResponse response1 = new ChatResponse(List.of(new Generation(message1)));
-		ChatResponse response2 = new ChatResponse(List.of(new Generation(message2)));
-
-		OverAllState originalState = new OverAllState();
-		originalState.updateState(Map.of("responses", List.of(response1, response2, "string")));
-
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		OverAllState restoredState = serializer.cloneObject(originalState);
-
-		@SuppressWarnings("unchecked")
-		List<Object> restoredList = (List<Object>) restoredState.value("responses").orElse(null);
-		assertNotNull(restoredList, "List should be preserved");
-		assertEquals(3, restoredList.size(), "List size should be preserved");
-		
-		// ChatResponse items should be null
-		assertNull(restoredList.get(0), "First ChatResponse should be null");
-		assertNull(restoredList.get(1), "Second ChatResponse should be null");
-		
-		// Other items should be preserved
-		assertEquals("string", restoredList.get(2), "Non-ChatResponse items should be preserved");
+		List<?> responses = List.of(response("first"), response("second"), "string");
+		assertEquals(responses, copy(Map.of("responses", responses)).get("responses"));
 	}
 
 	@Test
 	void testDurationAndChatResponseTogether() throws Exception {
-		// Test both Duration and ChatResponse in the same state
-		Duration duration = Duration.ofSeconds(60);
-		AssistantMessage message = new AssistantMessage("Combined test");
-		ChatResponse chatResponse = new ChatResponse(List.of(new Generation(message)));
-
-		OverAllState originalState = new OverAllState();
-		Map<String, Object> data = new HashMap<>();
-		data.put("duration", duration);
-		data.put("chatResponse", chatResponse);
-		data.put("metadata", Map.of("timeout", Duration.ofMinutes(2)));
-		originalState.updateState(data);
-
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		
-		assertDoesNotThrow(() -> {
-			OverAllState restoredState = serializer.cloneObject(originalState);
-			assertNotNull(restoredState, "Restored state should not be null");
-
-			// Verify Duration is preserved
-			Object restoredDuration = restoredState.value("duration").orElse(null);
-			assertNotNull(restoredDuration, "Duration should be preserved");
-
-			// Verify ChatResponse returns null
-			Object restoredChatResponse = restoredState.value("chatResponse").orElse(null);
-			assertNull(restoredChatResponse, "ChatResponse should return null");
-
-			// Verify nested Duration in metadata
-			@SuppressWarnings("unchecked")
-			Map<String, Object> restoredMetadata = (Map<String, Object>) restoredState.value("metadata").orElse(null);
-			assertNotNull(restoredMetadata, "Metadata should be preserved");
-			assertNotNull(restoredMetadata.get("timeout"), "Nested Duration should be preserved");
-		}, "Combined Duration and ChatResponse serialization should work without errors");
+		Map<String, Object> data = Map.of("duration", Duration.ofSeconds(60), "response", response("combined"),
+				"metadata", Map.of("timeout", Duration.ofMinutes(2)));
+		assertEquals(data, copy(data));
 	}
 
 	@Test
 	void testChatResponseWithDurationInMetadata() throws Exception {
-		// Test ChatResponse that contains Duration in its metadata
-		// Note: Since ChatResponse cannot be reconstructed, the Duration inside
-		// its metadata is lost. This test verifies the serialization doesn't crash.
-		AssistantMessage message = new AssistantMessage("Response with duration metadata");
-		Generation generation = new Generation(message);
-		ChatResponse chatResponse = new ChatResponse(List.of(generation));
-
-		OverAllState originalState = new OverAllState();
-		originalState.updateState(Map.of("response", chatResponse));
-
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		OverAllState restoredState = serializer.cloneObject(originalState);
-
-		// ChatResponse itself should be null
-		Object restoredResponse = restoredState.value("response").orElse(null);
-		assertNull(restoredResponse, "ChatResponse should return null");
+		ChatResponse original = response("metadata");
+		ChatResponse restored = (ChatResponse) copy(Map.of("response", original)).get("response");
+		assertEquals(original, restored);
+		assertEquals(Duration.ofMillis(1500), restored.metadata().get("latency"));
 	}
 
 	@Test
 	void testSerializationRoundTripWithRawData() throws Exception {
-		// Test direct serialization/deserialization of data Map
-		Duration duration = Duration.ofHours(1);
-		AssistantMessage message = new AssistantMessage("Raw data test");
-		ChatResponse chatResponse = new ChatResponse(List.of(new Generation(message)));
+		Map<String, Object> data = Map.of("duration", Duration.ofHours(1), "response", response("raw"), "string",
+				"test");
+		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+		try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+			serializer.writeData(data, out);
+		}
+		try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+			assertEquals(data, serializer.readData(in));
+		}
+	}
 
-		Map<String, Object> data = new HashMap<>();
-		data.put("duration", duration);
-		data.put("chatResponse", chatResponse);
-		data.put("string", "test");
-
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		
-		assertDoesNotThrow(() -> {
-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
-			ObjectOutputStream oos = new ObjectOutputStream(baos);
-			serializer.writeData(data, oos);
-			oos.flush();
-
-			ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
-			ObjectInputStream ois = new ObjectInputStream(bais);
-			Map<String, Object> deserializedData = serializer.readData(ois);
-
-			// Verify Duration is preserved
-			Object deserializedDuration = deserializedData.get("duration");
-			assertNotNull(deserializedDuration, "Duration should be preserved");
-
-			// Verify ChatResponse returns null
-			Object deserializedChatResponse = deserializedData.get("chatResponse");
-			assertNull(deserializedChatResponse, "ChatResponse should return null after deserialization");
-
-			// Verify other data
-			assertEquals("test", deserializedData.get("string"), "Other data should be preserved");
-		}, "Raw data serialization round trip should work without errors");
+	private Map<String, Object> copy(Map<String, Object> data) throws Exception {
+		return serializer.cloneObject(new OverAllState(data)).data();
 	}
 
 }

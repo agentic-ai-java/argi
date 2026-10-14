@@ -28,7 +28,7 @@ ARGI 是 **Agent Runtime and Graph Intelligence** 的缩写，读作 **“AR-jee
 - **上下文工程**：支持上下文压缩与编辑、调用限制、工具重试、规划和动态工具选择。
 - **图工作流**：支持条件路由、并行执行、嵌套图、状态持久化和中断恢复。
 - **智能体运行时基础**：提供模型无关的智能体编排、工作流状态和可嵌入调试支持。
-- **开放集成**：支持使用 Spring AI 提供的多模型集成能力，并提供工具调用、MCP、A2A 和 Nacos。
+- **开放集成**：通过中立 ChatClient 接入 Spring AI、LangChain4j、Google ADK 和 AgentScope，并提供工具调用、MCP、A2A 和 Nacos。
 - **可视化调试**：提供可嵌入 Spring Boot 应用的 Agent Chat UI。
 
 ## 快速开始
@@ -49,7 +49,7 @@ cd argi-examples
 mvn -f examples/chatbot/pom.xml spring-boot:run
 ```
 
-示例还需要对应版本的 Extensions BOM 和模型 Starter，依赖准备方式见[示例说明](https://github.com/agentic-ai-java/argi-examples/tree/main/examples#环境与依赖)。
+示例还需要对应版本的 Extensions BOM 和模型 Starter，依赖准备方式见[示例说明](https://github.com/agentic-ai-java/argi-examples/tree/main/examples#环境与依赖)。仍使用旧 Spring AI Agent Builder 的示例需要按 [API 与 Adapter](argi-api/README.md) 中的直接替换说明迁移；本次修改不包含外部示例仓库的迁移。
 
 启动后访问 [http://localhost:8080/chatui/index.html](http://localhost:8080/chatui/index.html)。其他模型的配置方式请参阅[快速开始](https://agentic-ai-java.github.io/argi-website/docs/quick-start)。
 
@@ -57,11 +57,12 @@ mvn -f examples/chatbot/pom.xml spring-boot:run
 
 | 模块 | 说明 |
 | --- | --- |
+| [API 与 Adapter](argi-api) | 中立 ChatClient 契约及 Spring AI、LangChain4j、Google ADK、AgentScope 接入 |
 | [Agent Framework](argi-agent-framework) | 智能体开发与多智能体编排 |
 | [Graph Core](argi-graph-core) | 状态管理、持久化和工作流运行时 |
 | [Studio](argi-studio) | Agent 可视化调试界面 |
 | [Sandbox](https://github.com/agentic-ai-java/argi-extensions/tree/main/sandbox/argi-sandbox) | 工具调用的可选隔离执行环境，由 Extensions 维护 |
-| [Spring Boot Starters](spring-boot-starters) | 内置图节点和图可观测性 |
+| [Spring Boot Starters](argi-spring-boot-starter) | 内置图节点、图可观测性与四个 Adapter 的自动配置 |
 | [Extensions](https://github.com/agentic-ai-java/argi-extensions) | 模型与文档契约、A2A、Nacos、AgentScope、存储等可选扩展 |
 | [Examples](https://github.com/agentic-ai-java/argi-examples/tree/main/examples) | Chatbot、多智能体、图工程和文档示例 |
 | [Benchmark](benchmark) | [ARGI 基准测试项目](https://github.com/agentic-ai-java/argi-benchmark) |

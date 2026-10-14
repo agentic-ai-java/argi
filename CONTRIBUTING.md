@@ -4,7 +4,7 @@
 
 ## Thank you for contributing to ARGI!
 
-Since its open-source inception, ARGI has received attention from many community members. Every Issue and PR from the community helps the entire project and contributes to building a better Spring AI.
+Since its open-source inception, ARGI has received attention from many community members. Every Issue and PR from the community helps the entire project and contributes to building a better ARGI.
 
 We sincerely thank the developers who have submitted Issues and PRs for this project. We hope more community developers will join us to make this project even better.
 
@@ -67,9 +67,19 @@ To ensure code cleanliness, please remove any unused imports in your Java files.
 
 Use the `type(scope): description` format for commit messages and PR titles; `scope` is optional. Common types are `fix`, `feat`, `refactor`, `docs`, `chore`, `perf`, `infra`, `revert`, `release`, `test`, and `style`.
 
-GitHub Actions checks do not run when a pull request is opened or updated, and no welcome message or label is added automatically. Once a pull request is reviewed and merged into `main`, CI runs the build, test, lint, license, and secret checks on the `push` event; pushing directly to `main` triggers the same checks. Review requirements are managed by repository branch protection or rulesets.
+The build-and-test workflow runs on pull requests targeting `main` and pushes to
+`main`; feature-branch pushes do not trigger a second full pipeline. Job repository
+guards restrict runs to `agentic-ai-java/argi`, but do **not** exclude fork-origin
+pull requests opened against that upstream repository. Those runs execute the PR
+checkout's local actions and scripts with read-only repository permissions and
+without repository secrets. GitHub's fork-workflow approval settings still apply;
+maintainers should review untrusted workflow/script changes before approving runs.
+No welcome message or label is added automatically. Review requirements are
+managed by repository branch protection or rulesets.
 
-Because nothing runs at pull-request time, run the local checks yourself before submitting.
+Run local checks before submitting even when upstream CI is available. The CI
+test job installs the tested artifacts once, then uses
+`verify-api-contract.sh --skip-install` to compile the independent consumer.
 
 Commit format example:
 

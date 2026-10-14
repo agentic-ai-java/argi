@@ -27,11 +27,11 @@ import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
+import io.github.agentic.ai.api.chat.ChatMessage;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolRegistry;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -43,7 +43,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 public class ShellToolAgentTest {
 
 	private ChatModel chatModel;
@@ -60,44 +60,42 @@ public class ShellToolAgentTest {
 		try {
 
 			ShellTool.Builder shellToolBuilder = ShellTool.builder(tempWorkspace.toString())
-				.withCommandTimeout(30000)  // 30秒超时
+				.withCommandTimeout(30000) // 30秒超时
 				.withMaxOutputLines(500);
 
 			if (System.getProperty("os.name").toLowerCase().contains("windows")) {
 				shellToolBuilder = shellToolBuilder.withShellCommand(List.of("powershell.exe"));
 			}
 
-			ToolCallback shellToolCallback = shellToolBuilder.build();
+			Tool shellToolCallback = shellToolBuilder.build();
 
-			List<ToolCallback> tools = List.of(shellToolCallback);
+			List<Tool> tools = List.of(shellToolCallback);
 
 			ShellToolAgentHook shellToolAgentHook = ShellToolAgentHook.builder().build();
 
 			ReactAgent agent = ReactAgent.builder()
 				.name("shell-tool-agent-example")
-				.model(chatModel)
-				.instruction("You are a helpful assistant that can execute shell commands when needed. " +
-					"Use the shell tool to run commands and report the results. " +
-					"When creating files, always put them in the current directory unless specified otherwise. " +
-					"Prefer using 'ls' or 'dir' command to see the current directory contents.")
-				.tools(tools)
+				.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+				.instruction("You are a helpful assistant that can execute shell commands when needed. "
+						+ "Use the shell tool to run commands and report the results. "
+						+ "When creating files, always put them in the current directory unless specified otherwise. "
+						+ "Prefer using 'ls' or 'dir' command to see the current directory contents.")
+				.toolRegistry(new ToolRegistry(tools))
 				.hooks(List.of(shellToolAgentHook))
 				.saver(new MemorySaver())
 				.build();
 
-			GraphRepresentation representation = agent.getAndCompileGraph().stateGraph.getGraph(GraphRepresentation.Type.PLANTUML);
+			GraphRepresentation representation = agent.getAndCompileGraph().stateGraph
+				.getGraph(GraphRepresentation.Type.PLANTUML);
 			System.out.println("Agent Graph Representation:\n" + representation.content());
 
-			List<Message> messages = new ArrayList<>();
-			String testCommand = System.getProperty("os.name").toLowerCase().contains("windows") ?
-				"请帮我创建一个名为 test.txt 的文件，内容为 'Hello from ShellTool!'，然后列出当前目录的文件，最后显示 test.txt 文件的内容。请使用Windows PowerShell兼容的命令。" :
-				"请帮我完成以下任务：\n" +
-				"1. 创建一个名为 test.txt 的文件，内容为 'Hello from ShellTool!'\n" +
-				"2. 列出当前目录的文件\n" +
-				"3. 显示 test.txt 文件的内容\n" +
-				"请按步骤执行，每步执行完告诉我结果。";
+			List<ChatMessage> messages = new ArrayList<>();
+			String testCommand = System.getProperty("os.name").toLowerCase().contains("windows")
+					? "请帮我创建一个名为 test.txt 的文件，内容为 'Hello from ShellTool!'，然后列出当前目录的文件，最后显示 test.txt 文件的内容。请使用Windows PowerShell兼容的命令。"
+					: "请帮我完成以下任务：\n" + "1. 创建一个名为 test.txt 的文件，内容为 'Hello from ShellTool!'\n" + "2. 列出当前目录的文件\n"
+							+ "3. 显示 test.txt 文件的内容\n" + "请按步骤执行，每步执行完告诉我结果。";
 
-			messages.add(new UserMessage(testCommand));
+			messages.add(ChatMessage.user(testCommand));
 
 			// 执行 Agent
 			System.out.println("开始执行 Agent...");
@@ -107,8 +105,8 @@ public class ShellToolAgentTest {
 			Object messagesObj = result.get().value("messages").get();
 			assertNotNull(messagesObj, "返回的消息不应该为 null");
 
-			System.out.println("Agent 执行成功，返回消息数量: " +
-				(messagesObj instanceof List ? ((List<?>) messagesObj).size() : "未知"));
+			System.out
+				.println("Agent 执行成功，返回消息数量: " + (messagesObj instanceof List ? ((List<?>) messagesObj).size() : "未知"));
 			System.out.println("Agent 结果: " + messagesObj);
 			System.out.println("✓ ShellTool 与 ShellToolAgentHook 集成测试执行成功");
 		}
@@ -119,9 +117,7 @@ public class ShellToolAgentTest {
 	}
 
 	private static CompileConfig getCompileConfig() {
-		SaverConfig saverConfig = SaverConfig.builder()
-			.register(new MemorySaver())
-			.build();
+		SaverConfig saverConfig = SaverConfig.builder().register(new MemorySaver()).build();
 		return CompileConfig.builder().saverConfig(saverConfig).build();
 	}
 
@@ -133,4 +129,5 @@ public class ShellToolAgentTest {
 				.forEach(java.io.File::delete);
 		}
 	}
+
 }

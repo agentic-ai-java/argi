@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { useThreads } from "@/providers/Thread";
-import { Session } from "@/lib/spring-ai-api";
+import { Session } from "@/lib/argi-api";
 import { useEffect } from "react";
 
 import { getContentString } from "../utils";

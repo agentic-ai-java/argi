@@ -17,7 +17,8 @@ package io.github.agentic.ai.graph;
 
 import io.github.agentic.ai.graph.state.strategy.ReplaceStrategy;
 import io.github.agentic.ai.graph.store.Store;
-import org.springframework.ai.util.JsonHelper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.util.CollectionUtils;
 
 import java.io.Serializable;
@@ -81,6 +82,9 @@ import static java.util.Optional.ofNullable;
  * @since 1.0.0.1
  */
 public final class OverAllState implements Serializable {
+
+	private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+
 	public static final Object MARK_FOR_REMOVAL = new Object();
 
 	/**
@@ -118,8 +122,7 @@ public final class OverAllState implements Serializable {
 	 * @return the optional
 	 */
 	public Optional<OverAllState> snapShot() {
-		return Optional
-			.of(new OverAllState(new HashMap<>(this.data), new HashMap<>(this.keyStrategies), this.store));
+		return Optional.of(new OverAllState(new HashMap<>(this.data), new HashMap<>(this.keyStrategies), this.store));
 	}
 
 	/**
@@ -184,8 +187,7 @@ public final class OverAllState implements Serializable {
 	 * @param keyStrategies the key strategies
 	 * @param store the store instance
 	 */
-	protected OverAllState(Map<String, Object> data, Map<String, KeyStrategy> keyStrategies,
-			Store store) {
+	protected OverAllState(Map<String, Object> data, Map<String, KeyStrategy> keyStrategies, Store store) {
 		this.data = data != null ? new HashMap<>(data) : new HashMap<>();
 		// defensive copy, same rationale as the two-argument constructor
 		this.keyStrategies = keyStrategies != null ? new HashMap<>(keyStrategies) : new HashMap<>();
@@ -282,7 +284,8 @@ public final class OverAllState implements Serializable {
 			}
 			if (partialState.get(key) == MARK_FOR_REMOVAL) {
 				this.data.remove(key);
-			} else {
+			}
+			else {
 				this.data.put(key, strategy.apply(value(key, null), partialState.get(key)));
 			}
 		});
@@ -301,7 +304,8 @@ public final class OverAllState implements Serializable {
 	 * @param keyStrategyMap the mapping of keys to strategies; can be null, in which case
 	 * default REPLACE strategy is used
 	 */
-	public void updateStateWithKeyStrategies(Map<String, Object> partialState, Map<String, KeyStrategy> keyStrategyMap) {
+	public void updateStateWithKeyStrategies(Map<String, Object> partialState,
+			Map<String, KeyStrategy> keyStrategyMap) {
 		partialState.keySet().forEach(key -> {
 			KeyStrategy strategy = keyStrategyMap != null ? keyStrategyMap.get(key) : null;
 			// If no specific strategy is found, use the default REPLACE strategy
@@ -374,7 +378,8 @@ public final class OverAllState implements Serializable {
 		for (Map.Entry<String, Object> entry : partialState.entrySet()) {
 			if (entry.getValue() == MARK_FOR_REMOVAL) {
 				result.remove(entry.getKey());
-			} else {
+			}
+			else {
 				result.put(entry.getKey(), entry.getValue());
 			}
 		}
@@ -562,9 +567,9 @@ public final class OverAllState implements Serializable {
 		Map<String, Object> jsonView = new LinkedHashMap<>();
 		jsonView.put("OverAllState", stateView);
 		try {
-			return new JsonHelper().toJson(jsonView);
+			return JSON_MAPPER.writeValueAsString(jsonView);
 		}
-		catch (RuntimeException ex) {
+		catch (JsonProcessingException | RuntimeException ex) {
 			return "OverAllState{" + "data=" + data + '\'' + '}';
 		}
 	}

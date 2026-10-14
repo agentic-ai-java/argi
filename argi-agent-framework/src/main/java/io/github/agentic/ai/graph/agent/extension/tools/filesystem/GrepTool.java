@@ -18,9 +18,9 @@ package io.github.agentic.ai.graph.agent.extension.tools.filesystem;
 import io.github.agentic.ai.graph.agent.extension.file.FilesystemBackend;
 import io.github.agentic.ai.graph.agent.extension.file.GrepMatch;
 
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.io.IOException;
 import java.nio.file.FileSystems;
@@ -46,12 +46,12 @@ public class GrepTool implements BiFunction<GrepTool.GrepRequest, ToolContext, S
 
 	public static final String DESCRIPTION = """
 			Search for a pattern in files.
-			
+
 			Usage:
 			- The pattern parameter is the text to search for (literal string, not regex)
 			- The path parameter filters which directory to search in
 			- The glob parameter accepts a glob pattern to filter which files to search
-			
+
 			Examples:
 			- Search all files: `grep(pattern="TODO")`
 			- The search is case-sensitive by default.
@@ -72,39 +72,38 @@ public class GrepTool implements BiFunction<GrepTool.GrepRequest, ToolContext, S
 				return formatBackendGrepResult(this.backend.grepRaw(request.pattern, request.path, request.glob),
 						request.pattern, request.outputMode);
 			}
-			Path searchPath = request.path != null ?
-					Paths.get(request.path) :
-					Paths.get(System.getProperty("user.dir"));
+			Path searchPath = request.path != null ? Paths.get(request.path)
+					: Paths.get(System.getProperty("user.dir"));
 
 			List<String> results = new ArrayList<>();
-			PathMatcher globMatcher = request.glob != null ?
-					FileSystems.getDefault().getPathMatcher("glob:" + request.glob) : null;
+			PathMatcher globMatcher = request.glob != null
+					? FileSystems.getDefault().getPathMatcher("glob:" + request.glob) : null;
 
 			Files.walk(searchPath)
-					.filter(Files::isRegularFile)
-					.filter(path -> globMatcher == null || globMatcher.matches(path.getFileName()))
-					.forEach(path -> {
-						try {
-							List<String> lines = Files.readAllLines(path);
-							for (int i = 0; i < lines.size(); i++) {
-								if (lines.get(i).contains(request.pattern)) {
-									String result = switch (request.outputMode) {
-										case "files_with_matches" -> path.toString();
-										case "content" -> path + ":" + (i + 1) + ": " + lines.get(i);
-										case "count" -> path + ": matched";
-										default -> path.toString();
-									};
-									results.add(result);
-									if ("files_with_matches".equals(request.outputMode)) {
-										break; // Only need file name once
-									}
+				.filter(Files::isRegularFile)
+				.filter(path -> globMatcher == null || globMatcher.matches(path.getFileName()))
+				.forEach(path -> {
+					try {
+						List<String> lines = Files.readAllLines(path);
+						for (int i = 0; i < lines.size(); i++) {
+							if (lines.get(i).contains(request.pattern)) {
+								String result = switch (request.outputMode) {
+									case "files_with_matches" -> path.toString();
+									case "content" -> path + ":" + (i + 1) + ": " + lines.get(i);
+									case "count" -> path + ": matched";
+									default -> path.toString();
+								};
+								results.add(result);
+								if ("files_with_matches".equals(request.outputMode)) {
+									break; // Only need file name once
 								}
 							}
 						}
-						catch (IOException e) {
-							// Skip files that can't be read
-						}
-					});
+					}
+					catch (IOException e) {
+						// Skip files that can't be read
+					}
+				});
 
 			if (results.isEmpty()) {
 				return "No matches found for pattern: " + request.pattern;
@@ -117,15 +116,15 @@ public class GrepTool implements BiFunction<GrepTool.GrepRequest, ToolContext, S
 		}
 	}
 
-	public static ToolCallback createGrepToolCallback(String description) {
-		return createGrepToolCallback(description, null);
+	public static Tool createGrepTool(String description) {
+		return createGrepTool(description, null);
 	}
 
-	public static ToolCallback createGrepToolCallback(String description, FilesystemBackend backend) {
-		return FunctionToolCallback.builder("grep", new GrepTool(backend))
-				.description(description)
-				.inputType(GrepRequest.class)
-				.build();
+	public static Tool createGrepTool(String description, FilesystemBackend backend) {
+		return TypedTool.builder("grep", new GrepTool(backend))
+			.description(description)
+			.inputType(GrepRequest.class)
+			.build();
 	}
 
 	@SuppressWarnings("unchecked")
@@ -188,5 +187,7 @@ public class GrepTool implements BiFunction<GrepTool.GrepRequest, ToolContext, S
 			this.glob = glob;
 			this.outputMode = outputMode;
 		}
+
 	}
+
 }

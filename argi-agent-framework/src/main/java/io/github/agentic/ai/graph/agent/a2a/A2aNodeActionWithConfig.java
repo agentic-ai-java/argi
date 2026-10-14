@@ -15,6 +15,8 @@
  */
 package io.github.agentic.ai.graph.agent.a2a;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.GraphResponse;
 import io.github.agentic.ai.graph.NodeOutput;
@@ -34,8 +36,7 @@ import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.prompt.PromptTemplate;
+import io.github.agentic.ai.graph.utils.PromptTemplate;
 import org.springframework.util.StringUtils;
 
 import java.io.BufferedReader;
@@ -77,8 +78,8 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 
 	private CompileConfig parentCompileConfig;
 
-
-	public A2aNodeActionWithConfig(AgentCardWrapper agentCard, String agentName, boolean includeContents, String outputKeyToParent, String instruction, boolean streaming) {
+	public A2aNodeActionWithConfig(AgentCardWrapper agentCard, String agentName, boolean includeContents,
+			String outputKeyToParent, String instruction, boolean streaming) {
 		this.agentName = agentName;
 		this.agentCard = agentCard;
 		this.includeContents = includeContents;
@@ -88,7 +89,9 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		this.shareState = false;
 	}
 
-	public A2aNodeActionWithConfig(AgentCardWrapper agentCard, String agentName, boolean includeContents, String outputKeyToParent, String instruction, boolean streaming, boolean shareState, CompileConfig compileConfig) {
+	public A2aNodeActionWithConfig(AgentCardWrapper agentCard, String agentName, boolean includeContents,
+			String outputKeyToParent, String instruction, boolean streaming, boolean shareState,
+			CompileConfig compileConfig) {
 		this(agentCard, agentName, includeContents, outputKeyToParent, instruction, streaming);
 		this.parentCompileConfig = compileConfig;
 		this.shareState = shareState;
@@ -118,12 +121,12 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 			return config;
 		}
 		return RunnableConfig.builder(config)
-				.threadId(config.threadId()
-						.map(threadId -> format("%s_%s", threadId, subGraphId()))
-						.orElseGet(this::subGraphId))
-				.nextNode(null)
-				.checkPointId(null)
-				.build();
+			.threadId(config.threadId()
+				.map(threadId -> format("%s_%s", threadId, subGraphId()))
+				.orElseGet(this::subGraphId))
+			.nextNode(null)
+			.checkPointId(null)
+			.build();
 	}
 
 	public String subGraphId() {
@@ -218,7 +221,8 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	/**
 	 * Create a streaming generator.
 	 */
-	private AsyncGenerator<NodeOutput> createStreamingGenerator(OverAllState state, RunnableConfig config) throws Exception {
+	private AsyncGenerator<NodeOutput> createStreamingGenerator(OverAllState state, RunnableConfig config)
+			throws Exception {
 		final String requestPayload = buildSendStreamingMessageRequest(state, config);
 		final BlockingQueue<AsyncGenerator.Data<NodeOutput>> queue = new LinkedBlockingQueue<>(1000);
 		final String outputKey = StringUtils.hasLength(this.outputKeyToParent) ? this.outputKeyToParent : "messages";
@@ -241,7 +245,8 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 				httpClient.execute(post, response -> {
 					int statusCode = response.getCode();
 					if (statusCode != 200) {
-						StreamingOutput errorOutput = buildStreamingOutput("HTTP request failed, status: " + statusCode, state);
+						StreamingOutput errorOutput = buildStreamingOutput("HTTP request failed, status: " + statusCode,
+								state);
 						queue.add(AsyncGenerator.Data.of(errorOutput));
 						return null;
 					}
@@ -258,7 +263,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 
 					if (isEventStream) {
 						try (BufferedReader reader = new BufferedReader(
-							new InputStreamReader(entity.getContent(), StandardCharsets.UTF_8))) {
+								new InputStreamReader(entity.getContent(), StandardCharsets.UTF_8))) {
 							String line;
 							while ((line = reader.readLine()) != null) {
 								String trimmed = line.trim();
@@ -276,8 +281,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 										String text = extractResponseText(result);
 										if (text != null && !text.isEmpty()) {
 											accumulated.append(text);
-											queue.add(AsyncGenerator.Data
-												.of(buildStreamingOutput(text, state)));
+											queue.add(AsyncGenerator.Data.of(buildStreamingOutput(text, state)));
 										}
 									}
 								}
@@ -299,8 +303,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 							}
 						}
 						catch (Exception ex) {
-							queue.add(AsyncGenerator.Data
-								.of(buildStreamingOutput("Error: " + ex.getMessage(), state)));
+							queue.add(AsyncGenerator.Data.of(buildStreamingOutput("Error: " + ex.getMessage(), state)));
 						}
 					}
 
@@ -423,28 +426,23 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	/**
 	 * Build a {@link StreamingOutput} for an A2A remote response chunk.
 	 *
-	 * <p>
-	 * The plain {@code (originData, node, agentName, state)} constructor leaves {@code message},
-	 * {@code chunk} and {@code outputType} unset, so the serialized streaming event is empty
-	 * ({@code data:{}}). The studio chat UI renders streaming text from the {@code chunk} /
-	 * {@code message} fields, so A2A remote-agent replies were never displayed. Wrapping the text
-	 * in an {@link AssistantMessage} populates both {@code message} and {@code chunk}, and tagging
-	 * the event {@link OutputType#AGENT_MODEL_STREAMING} restores the metadata expected by
-	 * downstream consumers of {@link StreamingOutput#getOutputType()}. See gh-4760.
+	 * The neutral assistant message supplies visible text to Studio's SSE projection; the
+	 * output type identifies the event as a model delta rather than a final snapshot.
 	 */
 	private StreamingOutput<?> buildStreamingOutput(String text, OverAllState state) {
-		return new StreamingOutput<>(new AssistantMessage(text), text, "a2aNode", agentName, state,
-				OutputType.AGENT_MODEL_STREAMING);
+		return new StreamingOutput<>(io.github.agentic.ai.api.chat.ChatMessage.assistant(text), text, "a2aNode",
+				agentName, state, OutputType.AGENT_MODEL_STREAMING);
 	}
 
 	/**
-	 * Build the value written back to the parent graph while preserving the state key's type
-	 * contract. The {@code messages} key is managed by an append strategy and consumed as a
-	 * {@code List<Message>}; appending a raw string corrupts that list and causes routing agents to
-	 * fail on the next model call. Custom output keys retain their historical string value.
+	 * Build the value written back to the parent graph while preserving the state key's
+	 * type contract. The {@code messages} key is managed by an append strategy and
+	 * consumed as a {@code List<ChatMessage>}; appending a raw string corrupts that list
+	 * and causes routing agents to fail on the next model call. Custom output keys retain
+	 * their historical string value.
 	 */
 	private Map<String, Object> buildFinalResult(String outputKey, String text) {
-		Object value = "messages".equals(outputKey) ? new AssistantMessage(text) : text;
+		Object value = "messages".equals(outputKey) ? ChatMessage.assistant(text) : text;
 		return Map.of(outputKey, value);
 	}
 
@@ -459,38 +457,39 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		return null;
 	}
 
-//	/**
-//	 * Get the streaming generator (similar to LlmNode.stream).
-//	 */
-//	public Flux<NodeOutput> stream(OverAllState state) throws Exception {
-//		if (!this.streaming) {
-//			throw new IllegalStateException("Streaming is not enabled for this A2aNode");
-//		}
-//		AsyncGenerator<NodeOutput> generator = createStreamingGenerator(state);
-//		Flux<GraphResponse<NodeOutput>> graphResponseFlux = toFlux(generator);
-//
-//		// Convert Flux<GraphResponse<NodeOutput>> to Flux<NodeOutput>
-//		return graphResponseFlux.filter(graphResponse -> !graphResponse.isDone()) // Filter out completion signals
-//			.map(graphResponse -> {
-//				try {
-//					return graphResponse.getOutput().join();
-//				}
-//				catch (Exception e) {
-//					throw new RuntimeException("Error extracting output from GraphResponse", e);
-//				}
-//			});
-//	}
+	// /**
+	// * Get the streaming generator (similar to LlmNode.stream).
+	// */
+	// public Flux<NodeOutput> stream(OverAllState state) throws Exception {
+	// if (!this.streaming) {
+	// throw new IllegalStateException("Streaming is not enabled for this A2aNode");
+	// }
+	// AsyncGenerator<NodeOutput> generator = createStreamingGenerator(state);
+	// Flux<GraphResponse<NodeOutput>> graphResponseFlux = toFlux(generator);
+	//
+	// // Convert Flux<GraphResponse<NodeOutput>> to Flux<NodeOutput>
+	// return graphResponseFlux.filter(graphResponse -> !graphResponse.isDone()) // Filter
+	// out completion signals
+	// .map(graphResponse -> {
+	// try {
+	// return graphResponse.getOutput().join();
+	// }
+	// catch (Exception e) {
+	// throw new RuntimeException("Error extracting output from GraphResponse", e);
+	// }
+	// });
+	// }
 
-//	/**
-//	 * Get the non-streaming result (similar to LlmNode.call).
-//	 */
-//	public String call(OverAllState state) throws Exception {
-//		String requestPayload = buildSendMessageRequest(state, this.inputKeyFromParent);
-//		String resultText = sendMessageToServer(this.agentCard, requestPayload);
-//		Map<String, Object> resultMap = autoDetectAndParseResponse(resultText);
-//		Map<String, Object> result = (Map<String, Object>) resultMap.get("result");
-//		return extractResponseText(result);
-//	}
+	// /**
+	// * Get the non-streaming result (similar to LlmNode.call).
+	// */
+	// public String call(OverAllState state) throws Exception {
+	// String requestPayload = buildSendMessageRequest(state, this.inputKeyFromParent);
+	// String resultText = sendMessageToServer(this.agentCard, requestPayload);
+	// Map<String, Object> resultMap = autoDetectAndParseResponse(resultText);
+	// Map<String, Object> result = (Map<String, Object>) resultMap.get("result");
+	// return extractResponseText(result);
+	// }
 
 	/**
 	 * Auto-detect response format and parse accordingly.
@@ -587,7 +586,8 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 					return "";
 				}
 				else if ("submitted".equals(state)) {
-					// submitted is the initial state when a task is created, should be ignored
+					// submitted is the initial state when a task is created, should be
+					// ignored
 					return "";
 				}
 				else if ("canceled".equals(state)) {
@@ -766,9 +766,10 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 
 	private String getEffectiveInstruction(OverAllState state) {
 		if (StringUtils.hasLength(this.instruction)) {
-			PromptTemplate template = PromptTemplate.builder().template(this.instruction).build();
+			PromptTemplate template = PromptTemplate.of(this.instruction);
 			return template.render(state.data());
-		} else if (!shareState || (shareState && state.value("messages").isEmpty())) {
+		}
+		else if (!shareState || (shareState && state.value("messages").isEmpty())) {
 			throw new IllegalStateException("Instruction is empty and shareState is false");
 		}
 		return "";

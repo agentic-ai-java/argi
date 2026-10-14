@@ -15,11 +15,9 @@
  */
 package io.github.agentic.ai.agent.studio.dto.messages;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.Usage;
 
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.metadata.Usage;
-
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 public class AgentRunResponse {
@@ -46,12 +44,12 @@ public class AgentRunResponse {
 	}
 
 	/**
-	 * Constructor for creating response with Spring AI Message (will be converted to DTO).
+	 * Constructor for creating a response with a neutral chat message.
 	 */
-	public AgentRunResponse(String node, String agent, Message message, Usage tokenUsage, String chunk) {
+	public AgentRunResponse(String node, String agent, ChatMessage message, Usage tokenUsage, String chunk) {
 		this.node = node;
 		this.agent = agent;
-		this.message = message != null ? MessageDTO.MessageDTOFactory.fromMessage(message) : null;
+		this.message = MessageDTO.MessageDTOFactory.fromChatMessage(message);
 		this.tokenUsage = tokenUsage;
 		this.chunk = chunk;
 	}
@@ -101,14 +99,6 @@ public class AgentRunResponse {
 		this.message = message;
 	}
 
-	/**
-	 * Helper method to get Spring AI Message from DTO.
-	 */
-	@JsonIgnore
-	public Message getMessageAsSpringAI() {
-		return message != null ? MessageDTO.MessageDTOFactory.toMessage(message) : null;
-	}
-
 	public String getChunk() {
 		return chunk;
 	}
@@ -116,4 +106,5 @@ public class AgentRunResponse {
 	public void setChunk(String chunk) {
 		this.chunk = chunk;
 	}
+
 }

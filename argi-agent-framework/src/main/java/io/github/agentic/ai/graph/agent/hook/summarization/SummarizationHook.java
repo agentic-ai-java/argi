@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.graph.agent.hook.summarization;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.agent.hook.HookPosition;
 import io.github.agentic.ai.graph.agent.hook.HookPositions;
@@ -23,19 +26,13 @@ import io.github.agentic.ai.graph.agent.hook.TokenCounter;
 import io.github.agentic.ai.graph.agent.hook.messages.AgentCommand;
 import io.github.agentic.ai.graph.agent.hook.messages.UpdatePolicy;
 import io.github.agentic.ai.graph.agent.hook.messages.MessagesModelHook;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.prompt.Prompt;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatRequest;
 
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,50 +40,50 @@ import org.slf4j.LoggerFactory;
 /**
  * Hook that summarizes conversation history when token limits are approached.
  *
- * This hook monitors message token counts and automatically summarizes older
- * messages when a threshold is reached, preserving the first user message and 
- * recent messages to maintain context continuity.
+ * This hook monitors message token counts and automatically summarizes older messages
+ * when a threshold is reached, preserving the first user message and recent messages to
+ * maintain context continuity.
  *
- * Example:
- * SummarizationHook summarizer = SummarizationHook.builder()
- *     .model(chatModel)
- *     .maxTokensBeforeSummary(4000)
- *     .messagesToKeep(20)
- *     .keepFirstUserMessage(true)  // Default: true
- *     .build();
+ * Example: SummarizationHook summarizer = SummarizationHook.builder()
+ * .chatClient(summaryClient) .maxTokensBeforeSummary(4000) .messagesToKeep(20)
+ * .keepFirstUserMessage(true) // Default: true .build();
  */
-@HookPositions({HookPosition.BEFORE_MODEL})
+@HookPositions({ HookPosition.BEFORE_MODEL })
 public class SummarizationHook extends MessagesModelHook {
 
 	private static final Logger log = LoggerFactory.getLogger(SummarizationHook.class);
 
-	private static final String DEFAULT_SUMMARY_PROMPT =
-			"<role>\nContext Extraction Assistant\n</role>\n\n" +
-					"<primary_objective>\n" +
-					"Your sole objective in this task is to extract the highest quality/most relevant context " +
-					"from the conversation history below.\n</primary_objective>\n\n" +
-					"<instructions>\n" +
-					"The conversation history below will be replaced with the context you extract in this step. " +
-					"Extract and record all of the most important context from the conversation history.\n" +
-					"Respond ONLY with the extracted context. Do not include any additional information.\n" +
-					"</instructions>\n\n" +
-					"<messages>\nMessages to summarize:\n%s\n</messages>";
+	private static final String DEFAULT_SUMMARY_PROMPT = "<role>\nContext Extraction Assistant\n</role>\n\n"
+			+ "<primary_objective>\n"
+			+ "Your sole objective in this task is to extract the highest quality/most relevant context "
+			+ "from the conversation history below.\n</primary_objective>\n\n" + "<instructions>\n"
+			+ "The conversation history below will be replaced with the context you extract in this step. "
+			+ "Extract and record all of the most important context from the conversation history.\n"
+			+ "Respond ONLY with the extracted context. Do not include any additional information.\n"
+			+ "</instructions>\n\n" + "<messages>\nMessages to summarize:\n%s\n</messages>";
 
 	private static final String SUMMARY_PREFIX = "## Previous conversation summary:";
+
 	private static final int DEFAULT_MESSAGES_TO_KEEP = 20;
-	private static final int SEARCH_RANGE_FOR_TOOL_PAIRS = 5;
+
 	private static final boolean DEFAULT_KEEP_FIRST_USER_MESSAGE = true;
 
-	private final ChatModel model;
+	private final ChatClient chatClient;
+
 	private final Integer maxTokensBeforeSummary;
+
 	private final int messagesToKeep;
+
 	private final TokenCounter tokenCounter;
+
 	private final String summaryPrompt;
+
 	private final String summaryPrefix;
+
 	private final boolean keepFirstUserMessage;
 
 	private SummarizationHook(Builder builder) {
-		this.model = builder.model;
+		this.chatClient = builder.chatClient;
 		this.maxTokensBeforeSummary = builder.maxTokensBeforeSummary;
 		this.messagesToKeep = builder.messagesToKeep;
 		this.tokenCounter = builder.tokenCounter;
@@ -100,7 +97,7 @@ public class SummarizationHook extends MessagesModelHook {
 	}
 
 	@Override
-	public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
+	public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 		if (maxTokensBeforeSummary == null) {
 			return new AgentCommand(previousMessages);
 		}
@@ -111,8 +108,7 @@ public class SummarizationHook extends MessagesModelHook {
 			return new AgentCommand(previousMessages);
 		}
 
-		log.info("Token count {} exceeds threshold {}, triggering summarization",
-				totalTokens, maxTokensBeforeSummary);
+		log.info("Token count {} exceeds threshold {}, triggering summarization", totalTokens, maxTokensBeforeSummary);
 
 		int cutoffIndex = findSafeCutoff(previousMessages);
 
@@ -121,46 +117,55 @@ public class SummarizationHook extends MessagesModelHook {
 			return new AgentCommand(previousMessages);
 		}
 
-		UserMessage firstUserMessage = null;
+		ChatMessage firstUserMessage = null;
 		if (keepFirstUserMessage) {
-			for (Message msg : previousMessages) {
-				if (msg instanceof UserMessage) {
-					firstUserMessage = (UserMessage) msg;
+			for (ChatMessage msg : previousMessages) {
+				if (msg instanceof ChatMessage && ((ChatMessage) msg).role() == ChatRole.USER) {
+					firstUserMessage = (ChatMessage) msg;
 					break;
 				}
 			}
 		}
 
-		List<Message> toSummarize = new ArrayList<>();
+		List<ChatMessage> toSummarize = new ArrayList<>();
 		for (int i = 0; i < cutoffIndex; i++) {
-			Message msg = previousMessages.get(i);
+			ChatMessage msg = previousMessages.get(i);
 			if (msg != firstUserMessage) {
 				toSummarize.add(msg);
 			}
 		}
 
-		String summary = createSummary(toSummarize);
+		final String summary;
+		try {
+			summary = createSummary(toSummarize);
+		}
+		catch (Exception e) {
+			// A failed summary must never replace the original conversation with an error
+			// message.
+			log.warn("Failed to create summary; preserving conversation history", e);
+			return new AgentCommand(previousMessages);
+		}
 
-		SystemMessage summaryMessage = new SystemMessage(summaryPrefix + "\n" + summary);
+		ChatMessage summaryMessage = ChatMessage.system(summaryPrefix + "\n" + summary);
 
-		List<Message> recentMessages = new ArrayList<>();
+		List<ChatMessage> recentMessages = new ArrayList<>();
 		for (int i = cutoffIndex; i < previousMessages.size(); i++) {
 			recentMessages.add(previousMessages.get(i));
 		}
 
-		List<Message> newMessages = new ArrayList<>();
-		if (firstUserMessage != null) {
+		List<ChatMessage> newMessages = new ArrayList<>();
+		if (firstUserMessage != null && !recentMessages.contains(firstUserMessage)) {
 			newMessages.add(firstUserMessage);
 		}
 		newMessages.add(summaryMessage);
 		newMessages.addAll(recentMessages);
 
 		if (firstUserMessage != null) {
-			log.info("Summarized {} messages, keeping {} recent messages (First UserMessage preserved)",
+			log.info("Summarized {} messages, keeping {} recent messages (First ChatMessage preserved)",
 					toSummarize.size(), recentMessages.size());
-		} else {
-			log.info("Summarized {} messages, keeping {} recent messages",
-					toSummarize.size(), recentMessages.size());
+		}
+		else {
+			log.info("Summarized {} messages, keeping {} recent messages", toSummarize.size(), recentMessages.size());
 		}
 
 		return new AgentCommand(newMessages, UpdatePolicy.REPLACE);
@@ -169,108 +174,64 @@ public class SummarizationHook extends MessagesModelHook {
 	/**
 	 * Find safe cutoff point that preserves AI/Tool message pairs.
 	 *
-	 * Returns the index where messages can be safely cut without separating
-	 * related AI and Tool messages. Returns 0 if no safe cutoff is found.
+	 * Returns the index where messages can be safely cut without separating related AI
+	 * and Tool messages. Returns 0 if no safe cutoff is found.
 	 */
-	private int findSafeCutoff(List<Message> messages) {
+	private int findSafeCutoff(List<ChatMessage> messages) {
 		if (messages.size() <= messagesToKeep) {
 			return 0;
 		}
 
 		int targetCutoff = messages.size() - messagesToKeep;
 
-		// Search backwards from targetCutoff to find a safe cutoff point
-		for (int i = targetCutoff; i >= 0; i--) {
-			if (isSafeCutoffPoint(messages, i)) {
-				return i;
+		// Each call/result pair forbids cutoffs between its endpoints. Index intervals
+		// once so delayed or overlapping results do not require repeated history scans.
+		int[] forbiddenEnds = new int[messages.size() + 1];
+		Map<String, Integer> calls = new HashMap<>();
+		Map<String, Integer> pending = new HashMap<>();
+		for (int index = 0; index < messages.size(); index++) {
+			ChatMessage message = messages.get(index);
+			if (message.role() == ChatRole.ASSISTANT) {
+				for (io.github.agentic.ai.api.chat.ToolCall call : message.toolCalls()) {
+					calls.putIfAbsent(call.id(), index);
+					pending.putIfAbsent(call.id(), index);
+				}
 			}
-		}
-
-		return 0;
-	}
-
-	/**
-	 * Check if cutting at index would separate AI/Tool message pairs.
-	 */
-	private boolean isSafeCutoffPoint(List<Message> messages, int cutoffIndex) {
-		if (cutoffIndex >= messages.size()) {
-			return true;
-		}
-
-		int searchStart = Math.max(0, cutoffIndex - SEARCH_RANGE_FOR_TOOL_PAIRS);
-		int searchEnd = Math.min(messages.size(), cutoffIndex + SEARCH_RANGE_FOR_TOOL_PAIRS);
-
-		for (int i = searchStart; i < searchEnd; i++) {
-			if (!hasToolCalls(messages.get(i))) {
-				continue;
-			}
-
-			AssistantMessage aiMessage = (AssistantMessage) messages.get(i);
-			Set<String> toolCallIds = extractToolCallIds(aiMessage);
-			if (cutoffSeparatesToolPair(messages, i, cutoffIndex, toolCallIds)) {
-				return false;
-			}
-		}
-
-		return true;
-	}
-
-	/**
-	 * Check if message is an AI message with tool calls.
-	 */
-	private boolean hasToolCalls(Message message) {
-		return message instanceof AssistantMessage assistantMessage && !assistantMessage.getToolCalls().isEmpty();
-	}
-
-	/**
-	 * Extract tool call IDs from an AI message.
-	 */
-	private Set<String> extractToolCallIds(AssistantMessage aiMessage) {
-		Set<String> toolCallIds = new HashSet<>();
-		for (AssistantMessage.ToolCall toolCall : aiMessage.getToolCalls()) {
-			String callId = toolCall.id();
-			toolCallIds.add(callId);
-		}
-		return toolCallIds;
-	}
-
-	/**
-	 * Check if cutoff separates an AI message from its corresponding tool messages.
-	 */
-	private boolean cutoffSeparatesToolPair(
-			List<Message> messages,
-			int aiMessageIndex,
-			int cutoffIndex,
-			Set<String> toolCallIds) {
-		for (int j = aiMessageIndex + 1; j < messages.size(); j++) {
-			Message message = messages.get(j);
-			if (message instanceof ToolResponseMessage toolResponseMessage) {
-				// Check if any response in this ToolResponseMessage matches our tool call IDs
-				for (ToolResponseMessage.ToolResponse response : toolResponseMessage.getResponses()) {
-					if (toolCallIds.contains(response.id())) {
-						boolean aiBeforeCutoff = aiMessageIndex < cutoffIndex;
-						boolean toolBeforeCutoff = j < cutoffIndex;
-						if (aiBeforeCutoff != toolBeforeCutoff) {
-							return true;
-						}
-					}
+			else if (message.role() == ChatRole.TOOL) {
+				Integer callIndex = calls.get(message.toolCallId());
+				if (callIndex != null) {
+					int start = callIndex + 1;
+					forbiddenEnds[start] = Math.max(forbiddenEnds[start], index);
+					pending.remove(message.toolCallId());
 				}
 			}
 		}
-		return false;
+		// Unresolved calls must remain available when a paused conversation resumes.
+		for (int callIndex : pending.values()) {
+			forbiddenEnds[callIndex + 1] = messages.size();
+		}
+		int safeCutoff = 0;
+		int forbiddenUntil = 0;
+		for (int index = 1; index <= targetCutoff; index++) {
+			forbiddenUntil = Math.max(forbiddenUntil, forbiddenEnds[index]);
+			if (index > forbiddenUntil) {
+				safeCutoff = index;
+			}
+		}
+		return safeCutoff;
 	}
 
-	private String createSummary(List<Message> messages) {
+	private String createSummary(List<ChatMessage> messages) {
 		if (messages.isEmpty()) {
 			return "No previous conversation.";
 		}
 
 		StringBuilder messageText = new StringBuilder();
-		for (Message msg : messages) {
+		for (ChatMessage msg : messages) {
 			String role = getRoleName(msg);
-			messageText.append(role).append(": ").append(msg.getText() != null ? msg.getText() : "").append("\n");
-			if (msg instanceof AssistantMessage assistantMessage) {
-				for (AssistantMessage.ToolCall toolCall : assistantMessage.getToolCalls()) {
+			messageText.append(role).append(": ").append(msg.text() != null ? msg.text() : "").append("\n");
+			if (msg.role() == ChatRole.ASSISTANT) {
+				for (io.github.agentic.ai.api.chat.ToolCall toolCall : msg.toolCalls()) {
 					messageText.append("Tool call [id=")
 						.append(toolCall.id())
 						.append(", name=")
@@ -280,43 +241,37 @@ public class SummarizationHook extends MessagesModelHook {
 						.append("\n");
 				}
 			}
-			else if (msg instanceof ToolResponseMessage toolResponseMessage) {
-				for (ToolResponseMessage.ToolResponse response : toolResponseMessage.getResponses()) {
-					messageText.append("Tool result [id=")
-						.append(response.id())
-						.append(", name=")
-						.append(response.name())
-						.append("]: ")
-						.append(response.responseData())
-						.append("\n");
-				}
+			else if (msg.role() == ChatRole.TOOL) {
+				messageText.append("Tool result [id=")
+					.append(msg.toolCallId())
+					.append(", name=")
+					.append(msg.toolName())
+					.append("]: ")
+					.append(msg.text())
+					.append("\n");
 			}
 		}
 
 		String prompt = String.format(summaryPrompt, messageText.toString());
 
-		try {
-			Prompt summaryPromptObj = new Prompt(List.of(new UserMessage(prompt)));
-			var response = model.call(summaryPromptObj);
-			return response.getResult().getOutput().getText();
+		String summary = chatClient.callBlocking(ChatRequest.of(List.of(ChatMessage.user(prompt)))).text();
+		if (summary.isBlank()) {
+			throw new IllegalStateException("Summary chatClient returned an empty result");
 		}
-		catch (Exception e) {
-			log.error("Failed to create summary: {}", e.getMessage());
-			return "Summary generation failed: " + e.getMessage();
-		}
+		return summary;
 	}
 
-	private String getRoleName(Message message) {
-		if (message instanceof UserMessage) {
+	private String getRoleName(ChatMessage message) {
+		if (message instanceof ChatMessage && ((ChatMessage) message).role() == ChatRole.USER) {
 			return "Human";
 		}
-		else if (message instanceof AssistantMessage) {
+		else if (message instanceof ChatMessage && ((ChatMessage) message).role() == ChatRole.ASSISTANT) {
 			return "Assistant";
 		}
-		else if (message instanceof SystemMessage) {
+		else if (message instanceof ChatMessage && ((ChatMessage) message).role() == ChatRole.SYSTEM) {
 			return "System";
 		}
-		else if (message instanceof ToolResponseMessage) {
+		else if (message.role() == ChatRole.TOOL) {
 			return "Tool";
 		}
 		else {
@@ -335,25 +290,39 @@ public class SummarizationHook extends MessagesModelHook {
 	}
 
 	public static class Builder {
-		private ChatModel model;
+
+		private ChatClient chatClient;
+
 		private Integer maxTokensBeforeSummary;
+
 		private int messagesToKeep = DEFAULT_MESSAGES_TO_KEEP;
+
 		private TokenCounter tokenCounter = TokenCounter.approximateMsgCounter();
+
 		private String summaryPrompt = DEFAULT_SUMMARY_PROMPT;
+
 		private String summaryPrefix = SUMMARY_PREFIX;
+
 		private boolean keepFirstUserMessage = DEFAULT_KEEP_FIRST_USER_MESSAGE;
 
-		public Builder model(ChatModel model) {
-			this.model = model;
+		/** Set the provider-neutral chat client used to summarize history. */
+		public Builder chatClient(ChatClient chatClient) {
+			this.chatClient = chatClient;
 			return this;
 		}
 
 		public Builder maxTokensBeforeSummary(Integer maxTokens) {
+			if (maxTokens != null && maxTokens <= 0) {
+				throw new IllegalArgumentException("maxTokensBeforeSummary must be positive");
+			}
 			this.maxTokensBeforeSummary = maxTokens;
 			return this;
 		}
 
 		public Builder messagesToKeep(int count) {
+			if (count < 0) {
+				throw new IllegalArgumentException("messagesToKeep must be non-negative");
+			}
 			this.messagesToKeep = count;
 			return this;
 		}
@@ -379,10 +348,12 @@ public class SummarizationHook extends MessagesModelHook {
 		}
 
 		public SummarizationHook build() {
-			if (model == null) {
-				throw new IllegalArgumentException("model must be specified");
+			if (chatClient == null) {
+				throw new IllegalArgumentException("Summary chatClient must be specified");
 			}
 			return new SummarizationHook(this);
 		}
+
 	}
+
 }

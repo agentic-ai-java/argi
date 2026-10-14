@@ -15,27 +15,25 @@
  */
 package io.github.agentic.ai.graph.agent.hook;
 
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.tool.Tool;
 
 /**
- * Interface for hooks that need a specific tool injected.
- * Hooks implementing this interface can declare which tool they need,
- * and the framework will automatically inject the matching tool.
+ * Interface for hooks that need a specific tool injected. Hooks implementing this
+ * interface can declare which tool they need, and the framework will automatically inject
+ * the matching tool.
  */
 public interface ToolInjection {
 
 	/**
-	 * Inject a tool into the hook.
-	 * Only the tool matching the required tool name or type will be injected.
-	 *
-	 * @param tool the tool callback to inject
+	 * Inject a tool into the hook. Only the tool matching the required tool name or type
+	 * will be injected.
+	 * @param tool the neutral tool to inject
 	 */
-	void injectTool(ToolCallback tool);
+	void injectTool(Tool tool);
 
 	/**
-	 * Get the required tool name that this hook needs.
-	 * Return null to match by tool type instead.
-	 *
+	 * Get the required tool name that this hook needs. Return null to match by tool type
+	 * instead.
 	 * @return the tool name required by this hook, or null to match by type
 	 */
 	default String getRequiredToolName() {
@@ -43,14 +41,13 @@ public interface ToolInjection {
 	}
 
 	/**
-	 * Get the required tool type (class) that this hook needs.
-	 * Return null to match by tool name instead.
-	 * If both name and type are null, the first available tool will be injected.
-	 *
+	 * Get the required tool type (class) that this hook needs. Return null to match by
+	 * tool name instead. If both name and type are null, the first available tool will be
+	 * injected.
 	 * @return the tool class type required by this hook, or null to match by name
 	 */
-	default Class<? extends ToolCallback> getRequiredToolType() {
+	default Class<? extends Tool> getRequiredToolType() {
 		return null;
 	}
-}
 
+}

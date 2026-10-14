@@ -44,21 +44,18 @@ class StudioExecutionControllerSecurityTest {
 		AgentLoader agentLoader = mock(AgentLoader.class);
 		Agent agent = mock(Agent.class);
 		when(agentLoader.loadAgent("assistant")).thenReturn(agent);
-		when(agent.stream(any(org.springframework.ai.chat.messages.UserMessage.class), any()))
-				.thenReturn(Flux.empty());
+		when(agent.stream(any(io.github.agentic.ai.api.chat.ChatMessage.class), any())).thenReturn(Flux.empty());
 
 		standaloneSetup(new ExecutionController(agentLoader)).build()
-				.perform(post("/run_sse")
-						.contentType(APPLICATION_JSON)
-						.content("""
-								{
-								  "appName": "assistant",
-								  "userId": "alice",
-								  "threadId": "thread-1",
-								  "newMessage": { "messageType": "user", "content": "hi" }
-								}
-								"""))
-				.andExpect(status().isForbidden());
+			.perform(post("/run_sse").contentType(APPLICATION_JSON).content("""
+					{
+					  "appName": "assistant",
+					  "userId": "alice",
+					  "threadId": "thread-1",
+					  "newMessage": { "messageType": "user", "content": "hi" }
+					}
+					"""))
+			.andExpect(status().isForbidden());
 
 		verify(agentLoader, never()).loadAgent("assistant");
 	}
@@ -68,22 +65,20 @@ class StudioExecutionControllerSecurityTest {
 		AgentLoader agentLoader = mock(AgentLoader.class);
 		Agent agent = mock(Agent.class);
 		when(agentLoader.loadAgent("assistant")).thenReturn(agent);
-		when(agent.stream(any(org.springframework.ai.chat.messages.UserMessage.class), any()))
-				.thenReturn(Flux.empty());
+		when(agent.stream(any(io.github.agentic.ai.api.chat.ChatMessage.class), any())).thenReturn(Flux.empty());
 
 		standaloneSetup(new ExecutionController(agentLoader, new StudioExecutionAccess(""))).build()
-				.perform(post("/run_sse")
-						.header(StudioExecutionAccess.TOKEN_HEADER, "secret")
-						.contentType(APPLICATION_JSON)
-						.content("""
-								{
-								  "appName": "assistant",
-								  "userId": "alice",
-								  "threadId": "thread-1",
-								  "newMessage": { "messageType": "user", "content": "hi" }
-								}
-								"""))
-				.andExpect(status().isForbidden());
+			.perform(post("/run_sse").header(StudioExecutionAccess.TOKEN_HEADER, "secret")
+				.contentType(APPLICATION_JSON)
+				.content("""
+						{
+						  "appName": "assistant",
+						  "userId": "alice",
+						  "threadId": "thread-1",
+						  "newMessage": { "messageType": "user", "content": "hi" }
+						}
+						"""))
+			.andExpect(status().isForbidden());
 
 		verify(agentLoader, never()).loadAgent("assistant");
 	}
@@ -93,22 +88,20 @@ class StudioExecutionControllerSecurityTest {
 		AgentLoader agentLoader = mock(AgentLoader.class);
 		Agent agent = mock(Agent.class);
 		when(agentLoader.loadAgent("assistant")).thenReturn(agent);
-		when(agent.stream(any(org.springframework.ai.chat.messages.UserMessage.class), any()))
-				.thenReturn(Flux.empty());
+		when(agent.stream(any(io.github.agentic.ai.api.chat.ChatMessage.class), any())).thenReturn(Flux.empty());
 
 		standaloneSetup(new ExecutionController(agentLoader, new StudioExecutionAccess("secret"))).build()
-				.perform(post("/run_sse")
-						.header(StudioExecutionAccess.TOKEN_HEADER, "secret")
-						.contentType(APPLICATION_JSON)
-						.content("""
-								{
-								  "appName": "assistant",
-								  "userId": "alice",
-								  "threadId": "thread-1",
-								  "newMessage": { "messageType": "user", "content": "hi" }
-								}
-								"""))
-				.andExpect(status().isOk());
+			.perform(post("/run_sse").header(StudioExecutionAccess.TOKEN_HEADER, "secret")
+				.contentType(APPLICATION_JSON)
+				.content("""
+						{
+						  "appName": "assistant",
+						  "userId": "alice",
+						  "threadId": "thread-1",
+						  "newMessage": { "messageType": "user", "content": "hi" }
+						}
+						"""))
+			.andExpect(status().isOk());
 
 		verify(agentLoader).loadAgent("assistant");
 	}
@@ -118,16 +111,14 @@ class StudioExecutionControllerSecurityTest {
 		AgentLoader agentLoader = mock(AgentLoader.class);
 
 		standaloneSetup(new ExecutionController(agentLoader)).build()
-				.perform(post("/resume_sse")
-						.contentType(APPLICATION_JSON)
-						.content("""
-								{
-								  "appName": "assistant",
-								  "userId": "alice",
-								  "threadId": "thread-1"
-								}
-								"""))
-				.andExpect(status().isForbidden());
+			.perform(post("/resume_sse").contentType(APPLICATION_JSON).content("""
+					{
+					  "appName": "assistant",
+					  "userId": "alice",
+					  "threadId": "thread-1"
+					}
+					"""))
+			.andExpect(status().isForbidden());
 
 		verify(agentLoader, never()).loadAgent("assistant");
 	}
@@ -140,17 +131,15 @@ class StudioExecutionControllerSecurityTest {
 		when(graph.stream(any(Map.class), any())).thenReturn(Flux.empty());
 
 		standaloneSetup(new GraphExecutionController(graphLoader)).build()
-				.perform(post("/graph_run_sse")
-						.contentType(APPLICATION_JSON)
-						.content("""
-								{
-								  "graphName": "research",
-								  "userId": "alice",
-								  "threadId": "thread-1",
-								  "newMessage": { "messageType": "user", "content": "hi" }
-								}
-								"""))
-				.andExpect(status().isForbidden());
+			.perform(post("/graph_run_sse").contentType(APPLICATION_JSON).content("""
+					{
+					  "graphName": "research",
+					  "userId": "alice",
+					  "threadId": "thread-1",
+					  "newMessage": { "messageType": "user", "content": "hi" }
+					}
+					"""))
+			.andExpect(status().isForbidden());
 
 		verify(graphLoader, never()).loadGraph(eq("research"));
 	}
@@ -163,18 +152,17 @@ class StudioExecutionControllerSecurityTest {
 		when(graph.stream(any(Map.class), any())).thenReturn(Flux.empty());
 
 		standaloneSetup(new GraphExecutionController(graphLoader, new StudioExecutionAccess("secret"))).build()
-				.perform(post("/graph_run_sse")
-						.header(StudioExecutionAccess.TOKEN_HEADER, "secret")
-						.contentType(APPLICATION_JSON)
-						.content("""
-								{
-								  "graphName": "research",
-								  "userId": "alice",
-								  "threadId": "thread-1",
-								  "newMessage": { "messageType": "user", "content": "hi" }
-								}
-								"""))
-				.andExpect(status().isOk());
+			.perform(post("/graph_run_sse").header(StudioExecutionAccess.TOKEN_HEADER, "secret")
+				.contentType(APPLICATION_JSON)
+				.content("""
+						{
+						  "graphName": "research",
+						  "userId": "alice",
+						  "threadId": "thread-1",
+						  "newMessage": { "messageType": "user", "content": "hi" }
+						}
+						"""))
+			.andExpect(status().isOk());
 
 		verify(graphLoader).loadGraph(eq("research"));
 	}

@@ -24,7 +24,7 @@ import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -46,25 +46,25 @@ class ModelCallLimitHookOfflineTest {
 	@Test
 	void explicitThreadLimitIsCumulativeAcrossFreshConfigsForSameThread() throws Exception {
 		CountingChatModel chatModel = new CountingChatModel();
-		ReactAgent agent = createAgent(threadLimit(ModelCallLimitHook.ExitBehavior.ERROR), new MemorySaver(), chatModel);
+		ReactAgent agent = createAgent(threadLimit(ModelCallLimitHook.ExitBehavior.ERROR), new MemorySaver(),
+				chatModel);
 
 		assertTrue(agent.invoke("first", config("same-thread")).isPresent());
 
-		assertThrows(ModelCallLimitExceededException.class,
-				() -> agent.invoke("second", config("same-thread")));
+		assertThrows(ModelCallLimitExceededException.class, () -> agent.invoke("second", config("same-thread")));
 		assertEquals(1, chatModel.calls());
 	}
 
 	@Test
 	void explicitThreadLimitDoesNotLeakAcrossDifferentThreads() throws Exception {
 		CountingChatModel chatModel = new CountingChatModel();
-		ReactAgent agent = createAgent(threadLimit(ModelCallLimitHook.ExitBehavior.ERROR), new MemorySaver(), chatModel);
+		ReactAgent agent = createAgent(threadLimit(ModelCallLimitHook.ExitBehavior.ERROR), new MemorySaver(),
+				chatModel);
 
 		assertTrue(agent.invoke("first", config("thread-a")).isPresent());
 		assertTrue(agent.invoke("first", config("thread-b")).isPresent());
 
-		assertThrows(ModelCallLimitExceededException.class,
-				() -> agent.invoke("second", config("thread-a")));
+		assertThrows(ModelCallLimitExceededException.class, () -> agent.invoke("second", config("thread-a")));
 		assertEquals(2, chatModel.calls());
 	}
 
@@ -95,7 +95,10 @@ class ModelCallLimitHookOfflineTest {
 		Optional<OverAllState> result = agent.invoke("first", config("run-only-thread"));
 
 		assertTrue(result.isPresent());
-		assertFalse(result.get().data().keySet().stream()
+		assertFalse(result.get()
+			.data()
+			.keySet()
+			.stream()
 			.anyMatch(key -> key.contains("model_call_limit") && key.contains("thread_count")));
 		assertEquals(1, chatModel.calls());
 	}
@@ -110,8 +113,8 @@ class ModelCallLimitHookOfflineTest {
 
 		assertTrue(ended.isPresent());
 		assertEquals(1, chatModel.calls());
-		List<Message> messages = messages(ended.get());
-		assertTrue(messages.get(messages.size() - 1).getText().contains("thread limit (1/1)"));
+		List<ChatMessage> messages = messages(ended.get());
+		assertTrue(messages.get(messages.size() - 1).text().contains("thread limit (1/1)"));
 	}
 
 	@Test
@@ -134,7 +137,8 @@ class ModelCallLimitHookOfflineTest {
 	@Test
 	void unspecifiedThreadIdKeepsExistingPerInvokeThreadLimitBehavior() throws Exception {
 		CountingChatModel chatModel = new CountingChatModel();
-		ReactAgent agent = createAgent(threadLimit(ModelCallLimitHook.ExitBehavior.ERROR), new MemorySaver(), chatModel);
+		ReactAgent agent = createAgent(threadLimit(ModelCallLimitHook.ExitBehavior.ERROR), new MemorySaver(),
+				chatModel);
 
 		assertTrue(agent.invoke("first").isPresent());
 		assertTrue(agent.invoke("second").isPresent());
@@ -143,17 +147,14 @@ class ModelCallLimitHookOfflineTest {
 	}
 
 	private static ModelCallLimitHook threadLimit(ModelCallLimitHook.ExitBehavior exitBehavior) {
-		return ModelCallLimitHook.builder()
-			.threadLimit(1)
-			.exitBehavior(exitBehavior)
-			.build();
+		return ModelCallLimitHook.builder().threadLimit(1).exitBehavior(exitBehavior).build();
 	}
 
 	private static ReactAgent createAgent(ModelCallLimitHook hook, MemorySaver saver, ChatModel chatModel)
 			throws Exception {
 		return ReactAgent.builder()
 			.name("model-call-limit-offline-agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.hooks(List.of(hook))
 			.saver(saver)
 			.build();
@@ -164,8 +165,8 @@ class ModelCallLimitHookOfflineTest {
 	}
 
 	@SuppressWarnings("unchecked")
-	private static List<Message> messages(OverAllState state) {
-		return (List<Message>) state.value("messages").orElseThrow();
+	private static List<ChatMessage> messages(OverAllState state) {
+		return (List<ChatMessage>) state.value("messages").orElseThrow();
 	}
 
 	private static final class CountingChatModel implements ChatModel {
@@ -174,8 +175,8 @@ class ModelCallLimitHookOfflineTest {
 
 		@Override
 		public ChatResponse call(Prompt prompt) {
-			return new ChatResponse(List.of(new Generation(
-					new AssistantMessage("response-" + calls.incrementAndGet()))));
+			return new ChatResponse(
+					List.of(new Generation(new AssistantMessage("response-" + calls.incrementAndGet()))));
 		}
 
 		@Override

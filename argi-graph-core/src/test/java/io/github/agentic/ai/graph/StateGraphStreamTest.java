@@ -15,30 +15,22 @@
  */
 package io.github.agentic.ai.graph;
 
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.Usage;
 import io.github.agentic.ai.graph.state.strategy.AppendStrategy;
 import io.github.agentic.ai.graph.stream.LLmNodeAction;
+import io.github.agentic.ai.graph.stream.ScriptedChatClient;
 import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
-
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
-import org.springframework.ai.chat.metadata.Usage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.prompt.Prompt;
-
 import reactor.core.publisher.Flux;
-
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
 import static io.github.agentic.ai.graph.StateGraph.END;
 import static io.github.agentic.ai.graph.StateGraph.START;
 import static io.github.agentic.ai.graph.action.AsyncNodeAction.node_async;
@@ -50,146 +42,27 @@ class StateGraphStreamTest {
 
 	@Test
 	void usageOnlyChunkDoesNotAbortStreamCompletion() throws Exception {
-		CompiledGraph graph = buildGraph(new UsageOnlyStreamingChatModel());
-
+		Usage usage = new Usage(1L, 5L, 6L);
+		ChatClient client = new ScriptedChatClient(() -> Flux.just(ChatEvent.textDelta("hello"), ChatEvent.usage(usage),
+				ChatEvent.textDelta(" world"), ChatEvent.response(new ChatResponse(null, null,
+						List.of(ChatMessage.assistant("hello world")), List.of(), null, usage, Map.of()))));
+		CompiledGraph graph = new StateGraph(() -> Map.of("messages", new AppendStrategy()))
+			.addNode("llmNode", node_async(new LLmNodeAction(client, "llmNode")))
+			.addEdge(START, "llmNode")
+			.addEdge("llmNode", END)
+			.compile();
 		List<NodeOutput> outputs = graph.stream(Map.of(OverAllState.DEFAULT_INPUT_KEY, "test"))
 			.collectList()
 			.block(Duration.ofSeconds(5));
-
-		assertNotNull(outputs, "stream outputs should not be null");
-		assertTrue(outputs.stream().anyMatch(output -> output.tokenUsage().getTotalTokens() == 6),
-				"usage-only chunks should be emitted with token usage");
-		assertTrue(outputs.stream().anyMatch(StateGraphStreamTest::isFinishedOutput),
-				"stream should emit a graph-node-finished marker");
-		assertEquals("hello world", extractLastAssistantText(outputs.get(outputs.size() - 1)),
-				"final state should keep the completed assistant message");
-	}
-
-	private static CompiledGraph buildGraph(ChatModel chatModel) throws Exception {
-		StateGraph stateGraph = new StateGraph(() -> {
-			Map<String, KeyStrategy> keyStrategies = new HashMap<>();
-			keyStrategies.put("messages", new AppendStrategy());
-			return keyStrategies;
-		}).addNode("llmNode", node_async(new LLmNodeAction(chatModel, "llmNode")))
-			.addEdge(START, "llmNode")
-			.addEdge("llmNode", END);
-		return stateGraph.compile();
-	}
-
-	private static boolean isFinishedOutput(NodeOutput output) {
-		return output instanceof StreamingOutput<?> streamingOutput
-				&& streamingOutput.getOutputType() == OutputType.GRAPH_NODE_FINISHED;
-	}
-
-	private static String extractLastAssistantText(NodeOutput lastOutput) {
-		Object messages = lastOutput.state().value("messages").orElse(List.of());
-		AssistantMessage lastAssistant = null;
-		if (messages instanceof Iterable<?> iterable) {
-			for (Object message : iterable) {
-				if (message instanceof AssistantMessage assistantMessage) {
-					lastAssistant = assistantMessage;
-				}
-			}
-		}
-		return lastAssistant != null ? lastAssistant.getText() : "";
-	}
-
-	private static ChatResponse usageOnlyResponse(Usage usage) {
-		try {
-			Class<?> metadataClass = Class.forName("org.springframework.ai.chat.metadata.ChatResponseMetadata");
-			Object metadata = chatResponseMetadata(metadataClass, usage);
-			Constructor<ChatResponse> constructor = ChatResponse.class.getConstructor(List.class, metadataClass);
-			return constructor.newInstance(List.of(new Generation(null, ChatGenerationMetadata.NULL)), metadata);
-		}
-		catch (ReflectiveOperationException ex) {
-			throw new IllegalStateException("Failed to build usage-only ChatResponse", ex);
-		}
-	}
-
-	private static Object chatResponseMetadata(Class<?> metadataClass, Usage usage) throws ReflectiveOperationException {
-		try {
-			Method builderMethod = metadataClass.getMethod("builder");
-			Object builder = builderMethod.invoke(null);
-			Method usageMethod = builder.getClass().getMethod("usage", Usage.class);
-			Object builderWithUsage = usageMethod.invoke(builder, usage);
-			Method buildMethod = builderWithUsage.getClass().getMethod("build");
-			return buildMethod.invoke(builderWithUsage);
-		}
-		catch (NoSuchMethodException ignored) {
-			// Try older metadata construction styles below.
-		}
-
-		try {
-			Constructor<?> constructor = metadataClass.getConstructor(Usage.class);
-			return constructor.newInstance(usage);
-		}
-		catch (NoSuchMethodException ignored) {
-			// Try static factory methods below.
-		}
-
-		for (Method method : metadataClass.getMethods()) {
-			if (Modifier.isStatic(method.getModifiers()) && method.getParameterCount() == 1
-					&& method.getParameterTypes()[0].isAssignableFrom(Usage.class)
-					&& metadataClass.isAssignableFrom(method.getReturnType())) {
-				return method.invoke(null, usage);
-			}
-		}
-		throw new NoSuchMethodException("No ChatResponseMetadata factory for Usage");
-	}
-
-	private static ChatResponse textResponse(String text) {
-		return new ChatResponse(List.of(new Generation(new AssistantMessage(text))));
-	}
-
-	private static final class UsageOnlyStreamingChatModel implements ChatModel {
-
-		@Override
-		public ChatResponse call(Prompt prompt) {
-			return textResponse("hello world");
-		}
-
-		@Override
-		public Flux<ChatResponse> stream(Prompt prompt) {
-			return Flux.just(textResponse("hello"), usageOnlyResponse(new TestUsage(1, 5, 6)), textResponse(" world"));
-		}
-
-	}
-
-	private static final class TestUsage implements Usage {
-
-		private final Integer promptTokens;
-
-		private final Integer completionTokens;
-
-		private final Integer totalTokens;
-
-		private TestUsage(Integer promptTokens, Integer completionTokens, Integer totalTokens) {
-			this.promptTokens = promptTokens;
-			this.completionTokens = completionTokens;
-			this.totalTokens = totalTokens;
-		}
-
-		@Override
-		public Integer getPromptTokens() {
-			return this.promptTokens;
-		}
-
-		@Override
-		public Integer getCompletionTokens() {
-			return this.completionTokens;
-		}
-
-		@Override
-		public Integer getTotalTokens() {
-			return this.totalTokens;
-		}
-
-		@Override
-		public Map<String, Object> getNativeUsage() {
-			return Map.of("prompt_tokens", this.promptTokens, "completion_tokens", this.completionTokens,
-					"total_tokens", this.totalTokens);
-		}
-
+		assertNotNull(outputs);
+		assertTrue(outputs.stream().anyMatch(output -> Long.valueOf(6).equals(output.tokenUsage().totalTokens())));
+		assertTrue(outputs.stream()
+			.anyMatch(output -> output instanceof StreamingOutput<?> stream
+					&& stream.getOutputType() == OutputType.GRAPH_NODE_FINISHED));
+		List<?> messages = outputs.get(outputs.size() - 1).state().value("messages", List.class).orElseThrow();
+		ChatMessage last = (ChatMessage) messages.get(messages.size() - 1);
+		assertEquals(ChatRole.ASSISTANT, last.role());
+		assertEquals("hello world", last.text());
 	}
 
 }

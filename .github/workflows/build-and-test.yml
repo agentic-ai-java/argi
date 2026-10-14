@@ -53,7 +53,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: ./tools/github-actions/setup-deps
       - run: make tools
-      - run: make test
+      - run: ./mvnw -B install
+      - run: tools/scripts/verify-api-contract.sh --skip-install
   build:
     if: (github.repository == 'agentic-ai-java/argi')
     runs-on: ubuntu-22.04
@@ -90,7 +91,9 @@ jobs:
           path: |
             .flattened-pom.xml
             argi-*/.flattened-pom.xml
-            spring-boot-starters/*/.flattened-pom.xml
+            argi-api/*/.flattened-pom.xml
+            argi-spring-boot-starter/*/.flattened-pom.xml
             argi-*/target/*.jar
-            spring-boot-starters/*/target/*.jar
+            argi-api/*/target/*.jar
+            argi-spring-boot-starter/*/target/*.jar
           include-hidden-files: true

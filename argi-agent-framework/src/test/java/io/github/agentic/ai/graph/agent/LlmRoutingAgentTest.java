@@ -27,8 +27,7 @@ import io.github.agentic.ai.graph.agent.hook.messages.MessagesModelHook;
 import io.github.agentic.ai.graph.agent.hook.messages.UpdatePolicy;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
 import org.springframework.ai.chat.model.ChatModel;
 
 import java.util.ArrayList;
@@ -37,7 +36,7 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static io.github.agentic.ai.graph.agent.tools.PoetTool.createPoetToolCallback;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class LlmRoutingAgentTest {
 
 	private ChatModel chatModel;
@@ -59,24 +58,27 @@ class LlmRoutingAgentTest {
 	public void testLlmRoutingAgent() throws Exception {
 		ReactAgent proseWriterAgent = ReactAgent.builder()
 			.name("prose_writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("Can write prose articles.")
-			.instruction("You are a renowned writer skilled in writing prose. Please respond to the following request: {prose_writer_agent_input}")
+			.instruction(
+					"You are a renowned writer skilled in writing prose. Please respond to the following request: {prose_writer_agent_input}")
 			.outputKey("prose_article")
 			.build();
 
 		ReactAgent poemWriterAgent = ReactAgent.builder()
 			.name("poem_writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("Can write modern poetry.")
-			.instruction("You are a famous poet skilled in modern poetry. Please use tools to respond to the following request: {poem_writer_agent_input}")
+			.instruction(
+					"You are a famous poet skilled in modern poetry. Please use tools to respond to the following request: {poem_writer_agent_input}")
 			.outputKey("poem_article")
-			.tools(List.of(createPoetToolCallback()))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(List.of(createPoetToolCallback())))
 			.build();
 
 		LlmRoutingAgent blogAgent = LlmRoutingAgent.builder()
 			.name("blog_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("Can write articles or poems based on user-provided topics.")
 			.subAgents(List.of(proseWriterAgent, poemWriterAgent))
 			.build();
@@ -101,12 +103,12 @@ class LlmRoutingAgentTest {
 			assertEquals("帮我写一个100字左右的现代诗", state.value("input").get(), "Input should match the request");
 
 			assertTrue(state.value("poem_article").isPresent(), "Poem article should be present");
-			AssistantMessage poemContent = (AssistantMessage) state.value("poem_article").get();
-			assertNotNull(poemContent.getText(), "Poem content should not be null");
+			ChatMessage poemContent = (ChatMessage) state.value("poem_article").get();
+			assertNotNull(poemContent.text(), "Poem content should not be null");
 
 			assertTrue(state3.value("poem_article").isPresent(), "Poem article should be present");
-			AssistantMessage poemContent3 = (AssistantMessage) state3.value("poem_article").get();
-			assertNotNull(poemContent3.getText(), "Poem content should not be null");
+			ChatMessage poemContent3 = (ChatMessage) state3.value("poem_article").get();
+			assertNotNull(poemContent3.text(), "Poem content should not be null");
 
 			System.out.println(result.get());
 			System.out.println("------------------");
@@ -121,30 +123,35 @@ class LlmRoutingAgentTest {
 	}
 
 	/**
-	 * Test using MessageTrimmingHook directly at LlmRoutingAgent level.
-	 * This trims memory before routing decisions, reducing token consumption for the LlmRoutingAgent itself.
+	 * Test using MessageTrimmingHook directly at LlmRoutingAgent level. This trims memory
+	 * before routing decisions, reducing token consumption for the LlmRoutingAgent
+	 * itself.
 	 */
 	@Test
 	public void testLlmRoutingAgentWithHooksAtRoutingLevel() throws Exception {
-		// Create trackable MessageTrimmingHook, keeping only the last 3 messages (for routing decisions)
+		// Create trackable MessageTrimmingHook, keeping only the last 3 messages (for
+		// routing decisions)
 		TrackableMessageTrimmingHook routingLevelHook = new TrackableMessageTrimmingHook(3);
 
 		// Create regular sub-agents (without hooks)
-		// Instruction uses placeholder {agentName_input} to receive targeted sub-question from routing
+		// Instruction uses placeholder {agentName_input} to receive targeted sub-question
+		// from routing
 		ReactAgent proseWriterAgent = ReactAgent.builder()
 			.name("prose_writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("Can write prose articles.")
-			.instruction("You are a renowned writer skilled in writing prose. Please respond to the following request: {prose_writer_agent_input}")
+			.instruction(
+					"You are a renowned writer skilled in writing prose. Please respond to the following request: {prose_writer_agent_input}")
 			.saver(new MemorySaver())
 			.outputKey("prose_article")
 			.build();
 
 		ReactAgent poemWriterAgent = ReactAgent.builder()
 			.name("poem_writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("Can write modern poetry.")
-			.instruction("You are a famous poet skilled in modern poetry. Please respond to the following request: {poem_writer_agent_input}")
+			.instruction(
+					"You are a famous poet skilled in modern poetry. Please respond to the following request: {poem_writer_agent_input}")
 			.saver(new MemorySaver())
 			.outputKey("poem_article")
 			.build();
@@ -152,10 +159,10 @@ class LlmRoutingAgentTest {
 		// Configure hook at LlmRoutingAgent level
 		LlmRoutingAgent blogAgent = LlmRoutingAgent.builder()
 			.name("blog_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("Can write articles or poems based on user-provided topics.")
 			.subAgents(List.of(proseWriterAgent, poemWriterAgent))
-			.hooks(routingLevelHook)  // Configure hook at LlmRoutingAgent level
+			.hooks(routingLevelHook) // Configure hook at LlmRoutingAgent level
 			.saver(new MemorySaver())
 			.build();
 
@@ -168,27 +175,33 @@ class LlmRoutingAgentTest {
 			Optional<OverAllState> result1 = blogAgent.invoke("Write a prose about spring", config);
 			assertTrue(result1.isPresent(), "First result should be present");
 			System.out.println("First call completed");
-			
-			// Verify first call: hook should be called once, input message count=1, no trimming needed
+
+			// Verify first call: hook should be called once, input message count=1, no
+			// trimming needed
 			assertEquals(1, routingLevelHook.getCallCount(), "Hook should be called once in first call");
 			assertEquals(1, routingLevelHook.getLastInputMessageCount(), "First call has only 1 user message");
-			assertEquals(1, routingLevelHook.getLastOutputMessageCount(), "First call message count <= 3, no trimming needed");
+			assertEquals(1, routingLevelHook.getLastOutputMessageCount(),
+					"First call message count <= 3, no trimming needed");
 			System.out.println("Verification passed: First call messages not trimmed (1 message)");
 			System.out.println("------------------");
 
-			// Second call (same threadId, history now contains: user1, assistant1, user2 = 3 messages)
+			// Second call (same threadId, history now contains: user1, assistant1, user2
+			// = 3 messages)
 			routingLevelHook.reset();
 			Optional<OverAllState> result2 = blogAgent.invoke("Now write a poem about summer", config);
 			assertTrue(result2.isPresent(), "Second result should be present");
 			System.out.println("Second call completed");
-			
-			// Verify second call: hook should be called once, input ~3 messages (user1+assistant1+user2)
+
+			// Verify second call: hook should be called once, input ~3 messages
+			// (user1+assistant1+user2)
 			assertEquals(1, routingLevelHook.getCallCount(), "Hook should be called once in second call");
-			assertTrue(routingLevelHook.getLastInputMessageCount() >= 3, 
-				"Second call should have at least 3 messages (including history), actual: " + routingLevelHook.getLastInputMessageCount());
-			assertEquals(3, routingLevelHook.getLastOutputMessageCount(), 
-				"Second call should trim to 3 messages, actual: " + routingLevelHook.getLastOutputMessageCount());
-			System.out.println("Verification passed: Second call messages trimmed (from " + routingLevelHook.getLastInputMessageCount() + " to 3 messages)");
+			assertTrue(routingLevelHook.getLastInputMessageCount() >= 3,
+					"Second call should have at least 3 messages (including history), actual: "
+							+ routingLevelHook.getLastInputMessageCount());
+			assertEquals(3, routingLevelHook.getLastOutputMessageCount(),
+					"Second call should trim to 3 messages, actual: " + routingLevelHook.getLastOutputMessageCount());
+			System.out.println("Verification passed: Second call messages trimmed (from "
+					+ routingLevelHook.getLastInputMessageCount() + " to 3 messages)");
 			System.out.println("------------------");
 
 			// Third call (verify continuous trimming with more history)
@@ -196,14 +209,16 @@ class LlmRoutingAgentTest {
 			Optional<OverAllState> result3 = blogAgent.invoke("Write another poem about autumn", config);
 			assertTrue(result3.isPresent(), "Third result should be present");
 			System.out.println("Third call completed");
-			
+
 			// Verify third call: should continue trimming to 3 messages
 			assertEquals(1, routingLevelHook.getCallCount(), "Hook should be called once in third call");
-			assertTrue(routingLevelHook.getLastInputMessageCount() > 3, 
-				"Third call should have more than 3 history messages, actual: " + routingLevelHook.getLastInputMessageCount());
-			assertEquals(3, routingLevelHook.getLastOutputMessageCount(), 
-				"Third call should trim to 3 messages, actual: " + routingLevelHook.getLastOutputMessageCount());
-			System.out.println("Verification passed: Third call messages trimmed (from " + routingLevelHook.getLastInputMessageCount() + " to 3 messages)");
+			assertTrue(routingLevelHook.getLastInputMessageCount() > 3,
+					"Third call should have more than 3 history messages, actual: "
+							+ routingLevelHook.getLastInputMessageCount());
+			assertEquals(3, routingLevelHook.getLastOutputMessageCount(),
+					"Third call should trim to 3 messages, actual: " + routingLevelHook.getLastOutputMessageCount());
+			System.out.println("Verification passed: Third call messages trimmed (from "
+					+ routingLevelHook.getLastInputMessageCount() + " to 3 messages)");
 			System.out.println("------------------");
 
 			// Verify results
@@ -219,14 +234,18 @@ class LlmRoutingAgentTest {
 	}
 
 	/**
-	 * Trackable MessageTrimmingHook for test verification.
-	 * Records the input and output message counts for each call.
+	 * Trackable MessageTrimmingHook for test verification. Records the input and output
+	 * message counts for each call.
 	 */
-	@HookPositions({HookPosition.BEFORE_MODEL})
+	@HookPositions({ HookPosition.BEFORE_MODEL })
 	static class TrackableMessageTrimmingHook extends MessagesModelHook {
+
 		private final int maxMessages;
+
 		private int callCount = 0;
+
 		private int lastInputMessageCount = 0;
+
 		private int lastOutputMessageCount = 0;
 
 		public TrackableMessageTrimmingHook(int maxMessages) {
@@ -239,27 +258,25 @@ class LlmRoutingAgentTest {
 		}
 
 		@Override
-		public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
+		public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 			callCount++;
 			lastInputMessageCount = previousMessages.size();
 
 			if (previousMessages.size() <= maxMessages) {
 				// If message count is within limit, no trimming needed
 				lastOutputMessageCount = previousMessages.size();
-				System.out.println("TrackableMessageTrimmingHook [Call #" + callCount + "]: Message count=" 
-					+ lastInputMessageCount + ", no trimming needed");
+				System.out.println("TrackableMessageTrimmingHook [Call #" + callCount + "]: ChatMessage count="
+						+ lastInputMessageCount + ", no trimming needed");
 				return new AgentCommand(previousMessages);
 			}
 
 			// Keep only the last maxMessages messages
-			List<Message> trimmedMessages = previousMessages.subList(
-				previousMessages.size() - maxMessages,
-				previousMessages.size()
-			);
+			List<ChatMessage> trimmedMessages = previousMessages.subList(previousMessages.size() - maxMessages,
+					previousMessages.size());
 			lastOutputMessageCount = trimmedMessages.size();
 
-			System.out.println("TrackableMessageTrimmingHook [Call #" + callCount + "]: Trimmed messages from " 
-				+ lastInputMessageCount + " to " + lastOutputMessageCount);
+			System.out.println("TrackableMessageTrimmingHook [Call #" + callCount + "]: Trimmed messages from "
+					+ lastInputMessageCount + " to " + lastOutputMessageCount);
 
 			// Use REPLACE policy to replace all messages
 			return new AgentCommand(new ArrayList<>(trimmedMessages), UpdatePolicy.REPLACE);
@@ -283,6 +300,7 @@ class LlmRoutingAgentTest {
 			lastInputMessageCount = 0;
 			lastOutputMessageCount = 0;
 		}
+
 	}
 
 }

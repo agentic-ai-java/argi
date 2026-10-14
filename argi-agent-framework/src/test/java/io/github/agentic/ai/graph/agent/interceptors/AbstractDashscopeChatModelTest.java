@@ -16,32 +16,32 @@
 package io.github.agentic.ai.graph.agent.interceptors;
 
 import io.github.agentic.ai.graph.agent.support.OpenAiCompatibleTestModels;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.ai.chat.model.ChatModel;
 
 /**
- * Shared base class for creating a DashScope ChatModel through the OpenAI-compatible API.
- * Subclasses can use the initialized {@link #chatModel} field directly.
+ * Shared base class for creating a ChatModel through an OpenAI-compatible API. Subclasses
+ * can use the initialized {@link #chatModel} field directly.
  *
- * <p>Set the following environment variables before running these tests:
+ * <p>
+ * Set the following environment variables before running these tests:
  * <ul>
- *   <li>{@code AI_DASHSCOPE_API_KEY}  - DashScope API key (required; tests are skipped when absent)</li>
- *   <li>{@code AI_DASHSCOPE_BASE_URL} - API base URL (optional; defaults to DashScope public compatible endpoint)</li>
- *   <li>{@code AI_DASHSCOPE_MODEL}    - model name (optional; defaults to qwen-plus)</li>
+ * <li>{@code ARGI_API_KEY} - API key (required)</li>
+ * <li>{@code ARGI_MODEL} - model name (required)</li>
+ * <li>{@code ARGI_BASE_URL} - API base URL (optional; defaults to the OpenAI
+ * endpoint)</li>
  * </ul>
  */
+@EnabledForRealModel
 abstract class AbstractDashscopeChatModelTest {
 
 	protected ChatModel chatModel;
 
 	@BeforeEach
 	void initChatModel() {
-		final String apiKey = System.getenv("AI_DASHSCOPE_API_KEY");
-		Assumptions.assumeTrue(apiKey != null && !apiKey.isBlank(),
-				"Skipping: AI_DASHSCOPE_API_KEY environment variable is not set");
-
 		chatModel = OpenAiCompatibleTestModels.chatModel();
 	}
+
 }

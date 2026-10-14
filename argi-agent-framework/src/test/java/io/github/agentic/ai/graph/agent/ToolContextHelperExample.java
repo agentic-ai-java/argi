@@ -24,7 +24,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -40,19 +39,26 @@ import java.util.function.BiFunction;
 /**
  * ToolContextHelper Example - Demonstrates metadata access via ToolContextHelper.
  *
- * <p>This example validates that ToolContextHelper works correctly for accessing
- * metadata from ToolContext in a real agent scenario:</p>
+ * <p>
+ * This example validates that ToolContextHelper works correctly for accessing metadata
+ * from ToolContext in a real agent scenario:
+ * </p>
  * <ol>
- *   <li>Tool is invoked by Agent through LLM</li>
- *   <li>Tool retrieves metadata using ToolContextHelper</li>
- *   <li>Tool stores validation result in static holder</li>
- *   <li>Test code retrieves and validates the result</li>
+ * <li>Tool is invoked by Agent through LLM</li>
+ * <li>Tool retrieves metadata using ToolContextHelper</li>
+ * <li>Tool stores validation result in static holder</li>
+ * <li>Test code retrieves and validates the result</li>
  * </ol>
  *
- * <p>How to run:</p>
+ * <p>
+ * How to run:
+ * </p>
  * <pre>
- * export AI_DASHSCOPE_API_KEY=your-api-key
- * mvn compile exec:java -Dexec.mainClass="io.github.agentic.ai.examples.studiocorsconditionalit.ToolContextHelperExample"
+ * export ARGI_API_KEY=your-api-key
+ * export ARGI_MODEL=your-model
+ * # Optionally set ARGI_BASE_URL for an OpenAI-compatible endpoint.
+ * ./mvnw -pl :argi-agent-framework test-compile exec:java -Dexec.classpathScope=test \
+ *     -Dexec.mainClass="io.github.agentic.ai.graph.agent.ToolContextHelperExample"
  * </pre>
  *
  * @see ToolContextHelper
@@ -65,7 +71,9 @@ public class ToolContextHelperExample {
 	 * Internal key constants (not exposed as public API)
 	 */
 	private static final String AGENT_CONFIG_CONTEXT_KEY = "_AGENT_CONFIG_";
+
 	private static final String AGENT_STATE_CONTEXT_KEY = "_AGENT_STATE_";
+
 	private static final String AGENT_STATE_FOR_UPDATE_CONTEXT_KEY = "_AGENT_STATE_FOR_UPDATE_";
 
 	/**
@@ -98,12 +106,14 @@ public class ToolContextHelperExample {
 	/**
 	 * Metadata validation tool using both Helper and direct key access.
 	 *
-	 * <p>This tool demonstrates the dual access pattern:</p>
+	 * <p>
+	 * This tool demonstrates the dual access pattern:
+	 * </p>
 	 * <ol>
-	 *   <li>Helper way - Using ToolContextHelper (recommended)</li>
-	 *   <li>Direct key way - Using internal keys directly</li>
-	 *   <li>Compare results from both approaches</li>
-	 *   <li>Store result in static holder for test retrieval</li>
+	 * <li>Helper way - Using ToolContextHelper (recommended)</li>
+	 * <li>Direct key way - Using internal keys directly</li>
+	 * <li>Compare results from both approaches</li>
+	 * <li>Store result in static holder for test retrieval</li>
 	 * </ol>
 	 */
 	public static class MetadataValidationTool
@@ -139,7 +149,8 @@ public class ToolContextHelperExample {
 				log.info("[Method 1] Using ToolContextHelper to access metadata...");
 
 				// Get Config using Helper
-				Optional<RunnableConfig> configViaHelper = ToolContextHelper.getConfig(toolContext);
+				Optional<RunnableConfig> configViaHelper = ToolContextHelper
+					.getConfig(new io.github.agentic.ai.api.tool.ToolContext(toolContext.getContext()));
 				result.helperWayWorks = configViaHelper.isPresent();
 
 				if (configViaHelper.isPresent()) {
@@ -154,7 +165,8 @@ public class ToolContextHelperExample {
 
 				// Get custom metadata using Helper (type-safe)
 				Optional<String> customValueViaHelper = ToolContextHelper.getMetadata(
-						toolContext, "custom_test_key", String.class);
+						new io.github.agentic.ai.api.tool.ToolContext(toolContext.getContext()), "custom_test_key",
+						String.class);
 				if (customValueViaHelper.isPresent()) {
 					log.info("[Method 1] ✅ Helper way got custom key: {}", customValueViaHelper.get());
 				}
@@ -193,8 +205,8 @@ public class ToolContextHelperExample {
 						log.info("[Validation] ✅ Both methods returned consistent data: {}", result.helperConfigValue);
 					}
 					else {
-						log.error("[Validation] ❌ Data mismatch! Helper={}, Direct={}",
-								result.helperConfigValue, result.directConfigValue);
+						log.error("[Validation] ❌ Data mismatch! Helper={}, Direct={}", result.helperConfigValue,
+								result.directConfigValue);
 						result.errorMessage = "Data mismatch between helper and direct access";
 					}
 				}
@@ -246,15 +258,15 @@ public class ToolContextHelperExample {
 
 		ReactAgent agent = ReactAgent.builder()
 			.name("metadata_validation_agent")
-			.model(chatModel)
-			.tools(validationTool)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(validationTool))
 			.systemPrompt("""
-				You are a validation agent. Your task is to call the validate_metadata_access tool
-				to verify that metadata can be accessed correctly via ToolContextHelper.
+					You are a validation agent. Your task is to call the validate_metadata_access tool
+					to verify that metadata can be accessed correctly via ToolContextHelper.
 
-				When the user asks you to validate, call the tool with validate=true.
-				The tool will store the validation result for subsequent checks.
-				""")
+					When the user asks you to validate, call the tool with validate=true.
+					The tool will store the validation result for subsequent checks.
+					""")
 			.saver(new MemorySaver())
 			.build();
 
@@ -264,13 +276,15 @@ public class ToolContextHelperExample {
 	/**
 	 * Run validation test in real scenario
 	 *
-	 * <p>Test flow:</p>
+	 * <p>
+	 * Test flow:
+	 * </p>
 	 * <ol>
-	 *   <li>Create Config with custom metadata</li>
-	 *   <li>Invoke Agent to call tool (real LLM call)</li>
-	 *   <li>Tool retrieves metadata using both approaches</li>
-	 *   <li>Tool stores result in static holder</li>
-	 *   <li>Test code retrieves and validates the result</li>
+	 * <li>Create Config with custom metadata</li>
+	 * <li>Invoke Agent to call tool (real LLM call)</li>
+	 * <li>Tool retrieves metadata using both approaches</li>
+	 * <li>Tool stores result in static holder</li>
+	 * <li>Test code retrieves and validates the result</li>
 	 * </ol>
 	 */
 	public static ValidationResult runValidationTest() throws GraphRunnerException {
@@ -280,9 +294,10 @@ public class ToolContextHelperExample {
 		log.info("========================================\n");
 
 		// Create ChatModel using an OpenAI-compatible endpoint.
-		String apiKey = System.getenv("AI_DASHSCOPE_API_KEY");
-		if (apiKey == null || apiKey.isEmpty()) {
-			throw new IllegalStateException("Please set environment variable AI_DASHSCOPE_API_KEY");
+		String apiKey = System.getenv("ARGI_API_KEY");
+		String model = System.getenv("ARGI_MODEL");
+		if (apiKey == null || apiKey.isBlank() || model == null || model.isBlank()) {
+			throw new IllegalStateException("Please set both ARGI_API_KEY and ARGI_MODEL environment variables");
 		}
 
 		ChatModel chatModel = OpenAiCompatibleTestModels.chatModel();
@@ -299,24 +314,23 @@ public class ToolContextHelperExample {
 			.build();
 
 		log.info("✅ Config created: thread_id = {}", testThreadId);
-		log.info("✅ Custom metadata: test_thread_id={}, custom_test_key=custom-value-123\n",
-				testThreadId);
+		log.info("✅ Custom metadata: test_thread_id={}, custom_test_key=custom-value-123\n", testThreadId);
 
 		// Invoke Agent to trigger tool execution (real LLM call)
-		String prompt = String.format(
-				"Please call validate_metadata_access tool with validate=true to verify metadata access."
-						+ "Expected thread_id is: %s",
-				testThreadId);
+		String prompt = String
+			.format("Please call validate_metadata_access tool with validate=true to verify metadata access."
+					+ "Expected thread_id is: %s", testThreadId);
 
 		log.info("🤖 Invoking Agent, waiting for tool execution...");
-		AssistantMessage response = agent.call(prompt, config);
+		var response = agent.call(prompt, config);
 
-		log.info("✅ Agent response: {}", response.getText());
+		log.info("✅ Agent response: {}", response.text());
 
 		// ==================== Retrieve result from static holder ====================
 		log.info("\n🔍 Reading tool validation result...");
 
-		// After tool execution, result is stored in MetadataValidationTool's static holder
+		// After tool execution, result is stored in MetadataValidationTool's static
+		// holder
 		ValidationResult result = MetadataValidationTool.getLastResult();
 
 		if (result != null) {
@@ -332,11 +346,8 @@ public class ToolContextHelperExample {
 			log.info("Validation result: {}", result);
 
 			// Validate result correctness
-			boolean success = result.helperWayWorks
-					&& result.directWayWorks
-					&& result.dataConsistent
-					&& testThreadId.equals(result.helperConfigValue)
-					&& testThreadId.equals(result.directConfigValue);
+			boolean success = result.helperWayWorks && result.directWayWorks && result.dataConsistent
+					&& testThreadId.equals(result.helperConfigValue) && testThreadId.equals(result.directConfigValue);
 
 			if (success) {
 				log.info("✅ All validations passed!");
@@ -374,10 +385,7 @@ public class ToolContextHelperExample {
 			ValidationResult result = runValidationTest();
 
 			// Final assertion and exit code
-			if (result != null
-					&& result.helperWayWorks
-					&& result.directWayWorks
-					&& result.dataConsistent) {
+			if (result != null && result.helperWayWorks && result.directWayWorks && result.dataConsistent) {
 				log.info("\n🎉 Test successful! ToolContextHelper works correctly.");
 				System.exit(0);
 			}

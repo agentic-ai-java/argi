@@ -15,7 +15,7 @@
  */
 package io.github.agentic.ai.graph.agent.interceptor;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
+import io.github.agentic.ai.api.chat.ToolCall;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -27,9 +27,13 @@ import java.util.Optional;
 public class ToolCallRequest {
 
 	private final String toolName;
+
 	private final String arguments;
+
 	private final String toolCallId;
+
 	private final Map<String, Object> context;
+
 	private final ToolCallExecutionContext executionContext;
 
 	public ToolCallRequest(String toolName, String arguments, String toolCallId, Map<String, Object> context,
@@ -43,7 +47,7 @@ public class ToolCallRequest {
 	}
 
 	/**
-	 * Backward-compatible constructor.
+	 * Creates a request without a runtime execution context.
 	 * <p>
 	 * {@code executionContext} is optional and can be injected via {@link Builder}.
 	 */
@@ -56,20 +60,20 @@ public class ToolCallRequest {
 	}
 
 	/**
-	 * Creates a ToolCallRequest from an AssistantMessage.ToolCall.
+	 * Creates a ToolCallRequest from a framework-neutral tool call.
 	 * @param toolCall the tool call from the assistant message
 	 * @return a new ToolCallRequest with empty context
 	 */
-	public static ToolCallRequest from(AssistantMessage.ToolCall toolCall) {
+	public static ToolCallRequest from(ToolCall toolCall) {
 		return builder().toolCall(toolCall).context(new HashMap<>()).build();
 	}
 
 	public static Builder builder(ToolCallRequest request) {
-		return new Builder()
-				.toolName(request.toolName)
-				.arguments(request.arguments)
-				.toolCallId(request.toolCallId)
-				.context(request.context);
+		return new Builder().toolName(request.toolName)
+			.arguments(request.arguments)
+			.toolCallId(request.toolCallId)
+			.context(request.context)
+			.executionContext(request.executionContext);
 	}
 
 	public String getToolName() {
@@ -93,13 +97,18 @@ public class ToolCallRequest {
 	}
 
 	public static class Builder {
+
 		private String toolName;
+
 		private String arguments;
+
 		private String toolCallId;
+
 		private Map<String, Object> context;
+
 		private ToolCallExecutionContext executionContext;
 
-		public Builder toolCall(AssistantMessage.ToolCall toolCall) {
+		public Builder toolCall(ToolCall toolCall) {
 			this.toolName = toolCall.name();
 			this.arguments = toolCall.arguments();
 			this.toolCallId = toolCall.id();
@@ -134,6 +143,7 @@ public class ToolCallRequest {
 		public ToolCallRequest build() {
 			return new ToolCallRequest(toolName, arguments, toolCallId, context, executionContext);
 		}
-	}
-}
 
+	}
+
+}

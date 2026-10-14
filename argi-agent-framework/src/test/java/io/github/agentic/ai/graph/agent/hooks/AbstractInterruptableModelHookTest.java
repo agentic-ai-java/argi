@@ -46,10 +46,10 @@ class AbstractInterruptableModelHookTest {
 	void customInterruptableModelHookRunsAsFullGraphNode() throws Exception {
 		TestInterruptableModelHook hook = new TestInterruptableModelHook();
 		ReactAgent agent = ReactAgent.builder()
-				.name("custom-interruptable-hook-agent")
-				.model(new MockChatModel())
-				.hooks(hook)
-				.build();
+			.name("custom-interruptable-hook-agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(new MockChatModel()))
+			.hooks(hook)
+			.build();
 
 		agent.invoke("test");
 
@@ -80,6 +80,7 @@ class AbstractInterruptableModelHookTest {
 		boolean wasApplied() {
 			return applied.get();
 		}
+
 	}
 
 	private static final class MockChatModel implements ChatModel {
@@ -93,6 +94,7 @@ class AbstractInterruptableModelHookTest {
 		public Flux<ChatResponse> stream(Prompt prompt) {
 			return Flux.just(call(prompt));
 		}
+
 	}
 
 }

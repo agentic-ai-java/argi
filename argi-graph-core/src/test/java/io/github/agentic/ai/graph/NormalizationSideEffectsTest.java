@@ -15,12 +15,10 @@
  */
 package io.github.agentic.ai.graph;
 
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.api.chat.ChatMessage;
+
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.document.Document;
 
 import java.util.List;
 import java.util.Map;
@@ -35,42 +33,39 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class NormalizationSideEffectsTest {
 
 	@Test
-	void testSpringAIMessagesNotAffected() throws Exception {
-		// Test that Spring AI messages are not affected by normalization
+	void testNeutralMessagesNotAffected() throws Exception {
+		// Test that neutral messages are not affected by normalization
 		OverAllState originalState = new OverAllState();
-		List<Message> messages = List.of(
-			new UserMessage("Hello"),
-			new AssistantMessage("Hi there!")
-		);
+		List<ChatMessage> messages = List.of(ChatMessage.user("Hello"), ChatMessage.assistant("Hi there!"));
 		originalState.updateState(Map.of("messages", messages));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		Object restoredMessages = restoredState.value("messages").orElse(null);
 		assertNotNull(restoredMessages);
 		assertTrue(restoredMessages instanceof List);
-		
+
 		@SuppressWarnings("unchecked")
-		List<Message> restored = (List<Message>) restoredMessages;
+		List<ChatMessage> restored = (List<ChatMessage>) restoredMessages;
 		assertEquals(2, restored.size());
-		assertTrue(restored.get(0) instanceof UserMessage);
-		assertTrue(restored.get(1) instanceof AssistantMessage);
+		assertTrue(restored.get(0) instanceof ChatMessage);
+		assertTrue(restored.get(1) instanceof ChatMessage);
 	}
 
 	@Test
 	void testDocumentsNotAffected() throws Exception {
 		// Test that Documents are not affected
 		OverAllState originalState = new OverAllState();
-		Document doc = new Document("Test content", Map.of("source", "test.txt"));
+		Map<String, Object> doc = Map.of("text", "Test content", "metadata", Map.of("source", "test.txt"));
 		originalState.updateState(Map.of("document", doc));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		Object restoredDoc = restoredState.value("document").orElse(null);
 		assertNotNull(restoredDoc);
-		assertTrue(restoredDoc instanceof Document);
+		assertEquals(doc, restoredDoc);
 		// Document is preserved
 	}
 
@@ -81,7 +76,7 @@ public class NormalizationSideEffectsTest {
 		CustomPojo pojo = new CustomPojo("test", 42);
 		originalState.updateState(Map.of("pojo", pojo));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		Object restoredPojo = restoredState.value("pojo").orElse(null);
@@ -94,21 +89,16 @@ public class NormalizationSideEffectsTest {
 	void testNestedStructuresNotAffected() throws Exception {
 		// Test that nested structures without GraphResponse are not affected
 		OverAllState originalState = new OverAllState();
-		Map<String, Object> nested = Map.of(
-			"level1", Map.of(
-				"level2", List.of(1, 2, 3),
-				"data", "value"
-			)
-		);
+		Map<String, Object> nested = Map.of("level1", Map.of("level2", List.of(1, 2, 3), "data", "value"));
 		originalState.updateState(nested);
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		@SuppressWarnings("unchecked")
 		Map<String, Object> restoredLevel1 = (Map<String, Object>) restoredState.value("level1").orElse(null);
 		assertNotNull(restoredLevel1);
-		
+
 		// level2 is a List, not a Map
 		Object level2 = restoredLevel1.get("level2");
 		assertNotNull(level2);
@@ -120,21 +110,17 @@ public class NormalizationSideEffectsTest {
 	void testMixedContentWithGraphResponse() throws Exception {
 		// Test that mixed content (normal + GraphResponse) works correctly
 		OverAllState originalState = new OverAllState();
-		Map<String, Object> mixed = Map.of(
-			"message", "hello",
-			"number", 42,
-			"response", GraphResponse.of("result"),
-			"list", List.of("a", "b", "c")
-		);
+		Map<String, Object> mixed = Map.of("message", "hello", "number", 42, "response", GraphResponse.of("result"),
+				"list", List.of("a", "b", "c"));
 		originalState.updateState(mixed);
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Normal values should be preserved
 		assertEquals("hello", restoredState.value("message").orElse(null));
 		assertEquals(42, restoredState.value("number").orElse(null));
-		
+
 		@SuppressWarnings("unchecked")
 		List<String> list = (List<String>) restoredState.value("list").orElse(null);
 		assertEquals(3, list.size());
@@ -148,43 +134,56 @@ public class NormalizationSideEffectsTest {
 	void testUserArrayTypesPreserved() throws Exception {
 		// Critical test: User's array types should be preserved
 		OverAllState originalState = new OverAllState();
-		
-		String[] stringArray = {"a", "b", "c"};
-		Integer[] integerArray = {1, 2, 3};
-		
-		originalState.updateState(Map.of(
-			"strings", stringArray,
-			"integers", integerArray
-		));
 
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		String[] stringArray = { "a", "b", "c" };
+		Integer[] integerArray = { 1, 2, 3 };
+
+		originalState.updateState(Map.of("strings", stringArray, "integers", integerArray));
+
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
-		// Arrays should be preserved (though may be converted to Object[] if no GraphResponse found)
+		// Arrays should be preserved (though may be converted to Object[] if no
+		// GraphResponse found)
 		Object strings = restoredState.value("strings").orElse(null);
 		assertNotNull(strings);
 		assertTrue(strings.getClass().isArray(), "Should still be an array");
-		
+
 		Object integers = restoredState.value("integers").orElse(null);
 		assertNotNull(integers);
 		assertTrue(integers.getClass().isArray(), "Should still be an array");
 	}
 
 	public static class CustomPojo {
+
 		private String name;
+
 		private int value;
 
-		public CustomPojo() {}
+		public CustomPojo() {
+		}
 
 		public CustomPojo(String name, int value) {
 			this.name = name;
 			this.value = value;
 		}
 
-		public String getName() { return name; }
-		public void setName(String name) { this.name = name; }
-		public int getValue() { return value; }
-		public void setValue(int value) { this.value = value; }
-	}
-}
+		public String getName() {
+			return name;
+		}
 
+		public void setName(String name) {
+			this.name = name;
+		}
+
+		public int getValue() {
+			return value;
+		}
+
+		public void setValue(int value) {
+			this.value = value;
+		}
+
+	}
+
+}

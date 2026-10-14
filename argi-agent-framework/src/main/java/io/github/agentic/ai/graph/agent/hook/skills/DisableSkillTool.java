@@ -20,9 +20,9 @@ import io.github.agentic.ai.graph.skills.registry.SkillRegistry;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 import org.springframework.util.StringUtils;
 
 import java.util.Optional;
@@ -37,7 +37,7 @@ public class DisableSkillTool implements BiFunction<DisableSkillTool.DisableSkil
 
 	public static final String DESCRIPTION = """
 			Disables a skill in the current SkillRegistry instance without deleting any files.
-			
+
 			Usage:
 			- Provide either skill_name or skill_path
 			- If both are provided, they must refer to the same skill
@@ -53,11 +53,11 @@ public class DisableSkillTool implements BiFunction<DisableSkillTool.DisableSkil
 		this.skillRegistry = skillRegistry;
 	}
 
-	public static ToolCallback createDisableSkillToolCallback(SkillRegistry skillRegistry, String description) {
-		return FunctionToolCallback.builder(DISABLE_SKILL, new DisableSkillTool(skillRegistry))
-				.description(description != null ? description : DESCRIPTION)
-				.inputType(DisableSkillRequest.class)
-				.build();
+	public static Tool createDisableSkillTool(SkillRegistry skillRegistry, String description) {
+		return TypedTool.builder(DISABLE_SKILL, new DisableSkillTool(skillRegistry))
+			.description(description != null ? description : DESCRIPTION)
+			.inputType(DisableSkillRequest.class)
+			.build();
 	}
 
 	@Override
@@ -79,7 +79,8 @@ public class DisableSkillTool implements BiFunction<DisableSkillTool.DisableSkil
 			}
 		}
 
-		boolean disabled = skillName != null ? skillRegistry.disable(skillName) : skillRegistry.disableByPath(skillPath);
+		boolean disabled = skillName != null ? skillRegistry.disable(skillName)
+				: skillRegistry.disableByPath(skillPath);
 		if (disabled) {
 			String target = skillName != null ? skillName : skillPath;
 			return "Skill disabled in current registry: " + target;
@@ -112,6 +113,7 @@ public class DisableSkillTool implements BiFunction<DisableSkillTool.DisableSkil
 			this.skillName = skillName;
 			this.skillPath = skillPath;
 		}
+
 	}
 
 }

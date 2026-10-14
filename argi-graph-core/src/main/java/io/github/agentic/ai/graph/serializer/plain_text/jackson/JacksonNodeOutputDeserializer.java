@@ -15,8 +15,8 @@
  */
 package io.github.agentic.ai.graph.serializer.plain_text.jackson;
 
-
 import io.github.agentic.ai.graph.NodeOutput;
+import io.github.agentic.ai.api.chat.Usage;
 import io.github.agentic.ai.graph.OverAllState;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationContext;
@@ -31,24 +31,31 @@ import java.io.IOException;
  */
 public class JacksonNodeOutputDeserializer extends StdDeserializer<NodeOutput> {
 
-    protected JacksonNodeOutputDeserializer() {
-        super(NodeOutput.class);
-    }
+	protected JacksonNodeOutputDeserializer() {
+		super(NodeOutput.class);
+	}
 
-    @Override
-    public NodeOutput deserialize(JsonParser jsonParser, DeserializationContext deserializationContext) throws IOException {
-        ObjectMapper objectMapper = (ObjectMapper) deserializationContext.getParser().getCodec();
-        JsonNode treeNode = jsonParser.getCodec().readTree(jsonParser);
-        String node = treeNode.has("node") ? treeNode.get("node").asText() : null;
-        String agent = treeNode.has("agent") ? treeNode.get("agent").asText() : null;
-        // Use readValue instead of convertValue to ensure custom deserializers are triggered
-        // This is critical for types like DeepSeekAssistantMessage that may be nested in OverAllState
-        OverAllState overAllState = treeNode.has("state") && !treeNode.get("state").isNull() ?
-            objectMapper.readValue(objectMapper.treeAsTokens(treeNode.get("state")), OverAllState.class) : null;
-        boolean subGraph = treeNode.has("subGraph") && treeNode.get("subGraph").asBoolean(false);
-        
-        NodeOutput nodeOutput = NodeOutput.of(node, agent, overAllState, null);
-        nodeOutput.setSubGraph(subGraph);
-        return nodeOutput;
-    }
+	@Override
+	public NodeOutput deserialize(JsonParser jsonParser, DeserializationContext deserializationContext)
+			throws IOException {
+		ObjectMapper objectMapper = (ObjectMapper) deserializationContext.getParser().getCodec();
+		JsonNode treeNode = jsonParser.getCodec().readTree(jsonParser);
+		String node = treeNode.has("node") ? treeNode.get("node").asText() : null;
+		String agent = treeNode.has("agent") ? treeNode.get("agent").asText() : null;
+		// Use readValue instead of convertValue to ensure custom deserializers are
+		// triggered
+		// This is critical for types like DeepSeekAssistantMessage that may be nested in
+		// OverAllState
+		OverAllState overAllState = treeNode.has("state") && !treeNode.get("state").isNull()
+				? objectMapper.readValue(objectMapper.treeAsTokens(treeNode.get("state")), OverAllState.class) : null;
+		boolean subGraph = treeNode.has("subGraph") && treeNode.get("subGraph").asBoolean(false);
+
+		Usage usage = treeNode.hasNonNull("tokenUsage")
+				? objectMapper.readValue(objectMapper.treeAsTokens(treeNode.get("tokenUsage")), Usage.class)
+				: Usage.unknown();
+		NodeOutput nodeOutput = NodeOutput.of(node, agent, overAllState, usage);
+		nodeOutput.setSubGraph(subGraph);
+		return nodeOutput;
+	}
+
 }

@@ -15,7 +15,8 @@
  */
 package io.github.agentic.ai.agent.studio.dto.messages;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,8 +26,8 @@ import java.util.Map;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * Data Transfer Object for AssistantMessage.
- * Provides serialization-friendly representation with default constructor and getters/setters.
+ * Data Transfer Object for ChatMessage. Provides serialization-friendly representation
+ * with default constructor and getters/setters.
  */
 public class ToolRequestMessageDTO implements MessageDTO {
 
@@ -59,37 +60,36 @@ public class ToolRequestMessageDTO implements MessageDTO {
 	}
 
 	/**
-	 * Constructor from Spring AI AssistantMessage.
+	 * Constructor from provider-neutral ChatMessage.
 	 */
-	public ToolRequestMessageDTO(AssistantMessage message) {
+	public ToolRequestMessageDTO(ChatMessage message) {
 		this();
-		this.content = message.getText();
-		this.metadata = new HashMap<>(message.getMetadata());
+		this.content = message.text();
+		this.metadata = new HashMap<>(message.metadata());
 
 		// Convert tool calls if present
-		if (message.getToolCalls() != null && !message.getToolCalls().isEmpty()) {
+		if (message.toolCalls() != null && !message.toolCalls().isEmpty()) {
 			this.toolCalls = new ArrayList<>();
-			for (AssistantMessage.ToolCall toolCall : message.getToolCalls()) {
+			for (io.github.agentic.ai.api.chat.ToolCall toolCall : message.toolCalls()) {
 				this.toolCalls.add(new ToolCallDTO(toolCall));
 			}
 		}
 	}
 
-
 	/**
-	 * Convert to Spring AI AssistantMessage.
+	 * Convert to provider-neutral ChatMessage.
 	 */
-	public AssistantMessage toAssistantMessage() {
-		List<AssistantMessage.ToolCall> springToolCalls = new ArrayList<>();
+	public ChatMessage toAssistantMessage() {
+		List<io.github.agentic.ai.api.chat.ToolCall> springToolCalls = new ArrayList<>();
 		if (this.toolCalls != null) {
 			for (ToolCallDTO dto : this.toolCalls) {
 				springToolCalls.add(dto.toToolCall());
 			}
 		}
 
-		return AssistantMessage.builder()
-			.content(this.content)
-			.properties(this.metadata)
+		return ChatMessage.builder(ChatRole.ASSISTANT)
+			.text(this.content)
+			.metadata(this.metadata)
 			.toolCalls(springToolCalls)
 			.build();
 	}
@@ -129,9 +129,10 @@ public class ToolRequestMessageDTO implements MessageDTO {
 	}
 
 	/**
-	 * DTO for ToolCall within AssistantMessage.
+	 * DTO for ToolCall within ChatMessage.
 	 */
 	public static class ToolCallDTO {
+
 		@JsonProperty("id")
 		private String id;
 
@@ -147,15 +148,15 @@ public class ToolRequestMessageDTO implements MessageDTO {
 		public ToolCallDTO() {
 		}
 
-		public ToolCallDTO(AssistantMessage.ToolCall toolCall) {
+		public ToolCallDTO(io.github.agentic.ai.api.chat.ToolCall toolCall) {
 			this.id = toolCall.id();
-			this.type = toolCall.type();
+			this.type = "function";
 			this.name = toolCall.name();
 			this.arguments = toolCall.arguments();
 		}
 
-		public AssistantMessage.ToolCall toToolCall() {
-			return new AssistantMessage.ToolCall(this.id, this.type, this.name, this.arguments);
+		public io.github.agentic.ai.api.chat.ToolCall toToolCall() {
+			return new io.github.agentic.ai.api.chat.ToolCall(this.id, this.name, this.arguments);
 		}
 
 		// Getters and Setters
@@ -191,6 +192,7 @@ public class ToolRequestMessageDTO implements MessageDTO {
 		public void setArguments(String arguments) {
 			this.arguments = arguments;
 		}
-	}
-}
 
+	}
+
+}

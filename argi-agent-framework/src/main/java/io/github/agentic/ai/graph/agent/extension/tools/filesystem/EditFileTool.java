@@ -18,9 +18,9 @@ package io.github.agentic.ai.graph.agent.extension.tools.filesystem;
 import io.github.agentic.ai.graph.agent.extension.file.EditResult;
 import io.github.agentic.ai.graph.agent.extension.file.FilesystemBackend;
 
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -42,7 +42,7 @@ public class EditFileTool implements BiFunction<EditFileTool.EditFileRequest, To
 
 	public static final String DESCRIPTION = """
 			Performs exact string replacements in files.
-			
+
 			Usage:
 			- You must use your `read_file` tool at least once before editing.
 			- When editing text from read_file output, preserve exact indentation
@@ -80,13 +80,13 @@ public class EditFileTool implements BiFunction<EditFileTool.EditFileRequest, To
 	}
 
 	/**
-	 * Core logic for editing file content by replacing string occurrences.
-	 * This method can be reused by other classes like FileSystemTools.
-	 *
+	 * Core logic for editing file content by replacing string occurrences. This method
+	 * can be reused by other classes like FileSystemTools.
 	 * @param filePath The path to the file to edit
 	 * @param oldString The text to replace
 	 * @param newString The text to replace it with
-	 * @param replaceAll Whether to replace all occurrences (true) or only if unique (false)
+	 * @param replaceAll Whether to replace all occurrences (true) or only if unique
+	 * (false)
 	 * @return Success message with count of replacements, or error message
 	 */
 	public static String editFileContent(Path filePath, String oldString, String newString, boolean replaceAll) {
@@ -106,8 +106,8 @@ public class EditFileTool implements BiFunction<EditFileTool.EditFileRequest, To
 
 			// Check for uniqueness if not replace_all
 			if (!replaceAll && occurrences > 1) {
-				return "Error: String '" + oldString + "' appears " + occurrences +
-					" times in file. Use replaceAll=true to replace all instances, or provide a more specific string with surrounding context.";
+				return "Error: String '" + oldString + "' appears " + occurrences
+						+ " times in file. Use replaceAll=true to replace all instances, or provide a more specific string with surrounding context.";
 			}
 
 			// Perform replacement
@@ -117,12 +117,14 @@ public class EditFileTool implements BiFunction<EditFileTool.EditFileRequest, To
 			}
 			else {
 				// Replace only the first occurrence using literal string matching
-				// Note: replaceFirst() treats the first argument as a regex, which can cause issues
-				// with special characters. We use indexOf() + substring() for literal matching.
+				// Note: replaceFirst() treats the first argument as a regex, which can
+				// cause issues
+				// with special characters. We use indexOf() + substring() for literal
+				// matching.
 				int replaceIndex = content.indexOf(oldString);
 				if (replaceIndex != -1) {
 					newContent = content.substring(0, replaceIndex) + newString
-						+ content.substring(replaceIndex + oldString.length());
+							+ content.substring(replaceIndex + oldString.length());
 				}
 				else {
 					// Should not reach here as we already checked for existence
@@ -131,9 +133,7 @@ public class EditFileTool implements BiFunction<EditFileTool.EditFileRequest, To
 			}
 
 			// Write the modified content back
-			Files.writeString(filePath, newContent,
-				StandardOpenOption.TRUNCATE_EXISTING,
-				StandardOpenOption.WRITE);
+			Files.writeString(filePath, newContent, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
 
 			return String.format("Successfully edited file: %s (replaced %d occurrence(s))", filePath, occurrences);
 		}
@@ -155,15 +155,15 @@ public class EditFileTool implements BiFunction<EditFileTool.EditFileRequest, To
 		return count;
 	}
 
-	public static ToolCallback createEditFileToolCallback(String description) {
-		return createEditFileToolCallback(description, null);
+	public static Tool createEditFileTool(String description) {
+		return createEditFileTool(description, null);
 	}
 
-	public static ToolCallback createEditFileToolCallback(String description, FilesystemBackend backend) {
-		return FunctionToolCallback.builder("edit_file", new EditFileTool(backend))
-				.description(description)
-				.inputType(EditFileRequest.class)
-				.build();
+	public static Tool createEditFileTool(String description, FilesystemBackend backend) {
+		return TypedTool.builder("edit_file", new EditFileTool(backend))
+			.description(description)
+			.inputType(EditFileRequest.class)
+			.build();
 	}
 
 	/**
@@ -196,5 +196,7 @@ public class EditFileTool implements BiFunction<EditFileTool.EditFileRequest, To
 			this.newString = newString;
 			this.replaceAll = replaceAll;
 		}
+
 	}
+
 }

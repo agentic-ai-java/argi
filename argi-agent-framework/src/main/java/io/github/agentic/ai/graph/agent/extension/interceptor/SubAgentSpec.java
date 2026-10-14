@@ -17,33 +17,39 @@ package io.github.agentic.ai.graph.agent.extension.interceptor;
 
 import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.tool.Tool;
 
 import java.util.List;
 
 /**
  * Specification for creating a subagent.
  *
- * This class defines the configuration for a custom subagent that can be used
- * with the SubAgentInterceptor. Each subagent has its own name, description,
- * system prompt, and optionally custom tools and interceptors.
+ * This class defines the configuration for a custom subagent that can be used with the
+ * SubAgentInterceptor. Each subagent has its own name, description, system prompt, and
+ * optionally custom tools and interceptors.
  */
 public class SubAgentSpec {
 
 	private final String name;
+
 	private final String description;
+
 	private final String systemPrompt;
-	private final ChatModel model;
-	private final List<ToolCallback> tools;
+
+	private final ChatClient chatClient;
+
+	private final List<Tool> tools;
+
 	private final List<ModelInterceptor> interceptors;
+
 	private final boolean enableLoopingLog;
 
 	private SubAgentSpec(Builder builder) {
 		this.name = builder.name;
 		this.description = builder.description;
 		this.systemPrompt = builder.systemPrompt;
-		this.model = builder.model;
+		this.chatClient = builder.chatClient;
 		this.tools = builder.tools;
 		this.interceptors = builder.interceptors;
 		this.enableLoopingLog = builder.enableLoopingLog;
@@ -65,11 +71,11 @@ public class SubAgentSpec {
 		return systemPrompt;
 	}
 
-	public ChatModel getModel() {
-		return model;
+	public ChatClient getChatClient() {
+		return chatClient;
 	}
 
-	public List<ToolCallback> getTools() {
+	public List<Tool> getTools() {
 		return tools;
 	}
 
@@ -82,12 +88,19 @@ public class SubAgentSpec {
 	}
 
 	public static class Builder {
+
 		private String name;
+
 		private String description;
+
 		private String systemPrompt;
-		private ChatModel model;
-		private List<ToolCallback> tools;
+
+		private ChatClient chatClient;
+
+		private List<Tool> tools;
+
 		private List<ModelInterceptor> interceptors;
+
 		private boolean enableLoopingLog;
 
 		/**
@@ -99,8 +112,8 @@ public class SubAgentSpec {
 		}
 
 		/**
-		 * Set the description of the subagent (required).
-		 * This is used by the main agent to decide whether to call the subagent.
+		 * Set the description of the subagent (required). This is used by the main agent
+		 * to decide whether to call the subagent.
 		 */
 		public Builder description(String description) {
 			this.description = description;
@@ -108,8 +121,8 @@ public class SubAgentSpec {
 		}
 
 		/**
-		 * Set the system prompt for the subagent (required).
-		 * This is used as the instruction when the subagent is invoked.
+		 * Set the system prompt for the subagent (required). This is used as the
+		 * instruction when the subagent is invoked.
 		 */
 		public Builder systemPrompt(String systemPrompt) {
 			this.systemPrompt = systemPrompt;
@@ -117,26 +130,26 @@ public class SubAgentSpec {
 		}
 
 		/**
-		 * Set a custom model for this subagent.
-		 * If not set, the default model from SubAgentInterceptor will be used.
+		 * Set a custom client for this subagent. If not set, the default client from
+		 * SubAgentInterceptor will be used.
 		 */
-		public Builder model(ChatModel model) {
-			this.model = model;
+		public Builder chatClient(ChatClient chatClient) {
+			this.chatClient = chatClient;
 			return this;
 		}
 
 		/**
-		 * Set custom tools for this subagent.
-		 * If not set, the default tools from SubAgentInterceptor will be used.
+		 * Set custom tools for this subagent. If not set, the default tools from
+		 * SubAgentInterceptor will be used.
 		 */
-		public Builder tools(List<ToolCallback> tools) {
-			this.tools = tools;
+		public Builder tools(List<Tool> tools) {
+			this.tools = List.copyOf(tools);
 			return this;
 		}
 
 		/**
-		 * Set custom interceptors for this subagent.
-		 * These will be applied after the default interceptors from SubAgentInterceptor.
+		 * Set custom interceptors for this subagent. These will be applied after the
+		 * default interceptors from SubAgentInterceptor.
 		 */
 		public Builder interceptors(List<ModelInterceptor> interceptors) {
 			this.interceptors = interceptors;
@@ -160,6 +173,7 @@ public class SubAgentSpec {
 			}
 			return new SubAgentSpec(this);
 		}
-	}
-}
 
+	}
+
+}

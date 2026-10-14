@@ -15,42 +15,41 @@
  */
 package io.github.agentic.ai.graph.agent;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.tool.execution.ToolCallResultConverter;
-import org.springframework.ai.util.JsonHelper;
-
-import org.springframework.lang.Nullable;
-import org.springframework.util.StringUtils;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.tool.ToolResult;
+import io.github.agentic.ai.graph.agent.internal.JsonCodec;
+import io.github.agentic.ai.graph.agent.tool.multimodal.ToolMultimodalResult;
 
 import java.lang.reflect.Type;
 
-import org.apache.commons.collections4.CollectionUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.List;
+import java.util.Map;
 
-public class MessageToolCallResultConverter implements ToolCallResultConverter {
-
-	private static final Logger logger = LoggerFactory.getLogger(MessageToolCallResultConverter.class);
+/** Converts typed tool output without discarding structured or multimodal content. */
+public class MessageToolCallResultConverter {
 
 	/**
-	 * Currently Spring AI ToolResponseMessage only supports text type, that's why the return type of this method is String.
-	 * More types like image/audio/video/file can be supported in the future.
+	 * Message metadata and media are preserved for adapters that support multimodal
+	 * tools.
 	 */
-	public String convert(@Nullable Object result, @Nullable Type returnType) {
-		if (returnType == Void.TYPE) {
-			logger.debug("The tool has no return type. Converting to conventional response.");
-			return new JsonHelper().toJson("Done");
-		} else if (result instanceof AssistantMessage assistantMessage) {
-			if (StringUtils.hasLength(assistantMessage.getText())) {
-				return assistantMessage.getText();
-			} else if (CollectionUtils.isNotEmpty(assistantMessage.getMedia())) {
-				throw new UnsupportedOperationException("Currently Spring AI ToolResponseMessage only supports text type, that's why the return type of this method is String. More types like image/audio/video/file can be supported in the future.");
-			}
-			logger.warn("The tool returned an empty AssistantMessage. Converting to conventional response.");
-			return new JsonHelper().toJson("Done");
-		} else {
-			logger.debug("Converting tool result to JSON.");
-			return new JsonHelper().toJson(result);
+	public ToolResult convert(Object result, Type returnType) {
+		if (result instanceof ToolResult toolResult) {
+			return toolResult;
 		}
+		if (result instanceof ChatMessage message) {
+			return new ToolResult(message.content(), false, message.metadata());
+		}
+		if (result instanceof ToolMultimodalResult multimodal) {
+			return multimodal.toToolResult();
+		}
+		if (returnType == Void.TYPE || result == null) {
+			return ToolResult.text("Done");
+		}
+		if (result instanceof String text) {
+			return ToolResult.text(text);
+		}
+		return new ToolResult(List.of(ContentPart.json(new JsonCodec().toJson(result))), false, Map.of());
 	}
+
 }

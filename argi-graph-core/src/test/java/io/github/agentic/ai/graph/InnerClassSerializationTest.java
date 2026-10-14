@@ -15,7 +15,7 @@
  */
 package io.github.agentic.ai.graph;
 
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -28,10 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for non-static inner class serialization handling.
- * 
- * Issue: Non-static inner classes cannot be deserialized by Jackson because they
- * require an outer class instance. This test verifies that the framework handles
- * this gracefully by degrading to Map instead of throwing exceptions.
+ *
+ * Issue: Non-static inner classes cannot be deserialized by Jackson because they require
+ * an outer class instance. This test verifies that the framework handles this gracefully
+ * by degrading to Map instead of throwing exceptions.
  */
 public class InnerClassSerializationTest {
 
@@ -46,14 +46,14 @@ public class InnerClassSerializationTest {
 		originalState.updateState(Map.of("config", config));
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Verify type is preserved
 		Object restoredValue = restoredState.value("config").orElse(null);
 		assertNotNull(restoredValue, "Restored value should not be null");
-		assertTrue(restoredValue instanceof StaticConfig, 
-			"Static nested class should preserve type, but was: " + restoredValue.getClass().getName());
+		assertTrue(restoredValue instanceof StaticConfig,
+				"Static nested class should preserve type, but was: " + restoredValue.getClass().getName());
 
 		StaticConfig restoredConfig = (StaticConfig) restoredValue;
 		assertEquals("gpt-4", restoredConfig.model, "Model should be preserved");
@@ -71,24 +71,24 @@ public class InnerClassSerializationTest {
 		originalState.updateState(Map.of("config", config));
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
-		
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
+
 		// Should NOT throw exception
 		assertDoesNotThrow(() -> {
 			OverAllState restoredState = serializer.cloneObject(originalState);
-			
+
 			// Verify data is accessible (degraded to Map)
 			Object restoredValue = restoredState.value("config").orElse(null);
 			assertNotNull(restoredValue, "Restored value should not be null");
-			assertTrue(restoredValue instanceof Map, 
-				"Non-static inner class should degrade to Map, but was: " + restoredValue.getClass().getName());
+			assertTrue(restoredValue instanceof Map,
+					"Non-static inner class should degrade to Map, but was: " + restoredValue.getClass().getName());
 
 			// Verify data integrity
 			@SuppressWarnings("unchecked")
 			Map<String, Object> restoredConfig = (Map<String, Object>) restoredValue;
 			assertEquals("gpt-4", restoredConfig.get("model"), "Model should be preserved");
 			assertEquals(1, restoredConfig.get("temperature"), "Temperature should be preserved");
-			
+
 		}, "Non-static inner class serialization should not throw exception");
 	}
 
@@ -107,25 +107,24 @@ public class InnerClassSerializationTest {
 		originalState.updateState(Map.of("nested", nestedMap));
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Verify nested structure is preserved
 		Object restoredValue = restoredState.value("nested").orElse(null);
 		assertNotNull(restoredValue, "Nested map should not be null");
 		assertTrue(restoredValue instanceof Map, "Nested structure should be a Map");
-		
+
 		@SuppressWarnings("unchecked")
 		Map<String, Object> restoredNested = (Map<String, Object>) restoredValue;
-		
+
 		// Verify nested values
 		assertEquals("test", restoredNested.get("someValue"), "Nested value should be preserved");
 		assertNotNull(restoredNested.get("innerConfig"), "Inner config should not be null");
-		
+
 		// Inner class should degrade to Map
-		assertTrue(restoredNested.get("innerConfig") instanceof Map, 
-			"Inner class in nested map should degrade to Map");
-		
+		assertTrue(restoredNested.get("innerConfig") instanceof Map, "Inner class in nested map should degrade to Map");
+
 		@SuppressWarnings("unchecked")
 		Map<String, Object> restoredConfig = (Map<String, Object>) restoredNested.get("innerConfig");
 		assertEquals("gpt-4", restoredConfig.get("model"), "Inner config data should be preserved");
@@ -142,14 +141,14 @@ public class InnerClassSerializationTest {
 		originalState.updateState(Map.of("config", config));
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Verify type is preserved
 		Object restoredValue = restoredState.value("config").orElse(null);
 		assertNotNull(restoredValue, "Restored value should not be null");
 		assertTrue(restoredValue instanceof TopLevelConfig,
-			"Regular serializable class should preserve type, but was: " + restoredValue.getClass().getName());
+				"Regular serializable class should preserve type, but was: " + restoredValue.getClass().getName());
 
 		TopLevelConfig restoredConfig = (TopLevelConfig) restoredValue;
 		assertEquals("gpt-4", restoredConfig.model, "Model should be preserved");
@@ -175,7 +174,7 @@ public class InnerClassSerializationTest {
 		originalState.updateState(Map.of("mixed", mixedMap));
 
 		// Serialize and deserialize
-		SpringAIJacksonStateSerializer serializer = new SpringAIJacksonStateSerializer(OverAllState::new);
+		ArgiJacksonStateSerializer serializer = new ArgiJacksonStateSerializer(OverAllState::new);
 		OverAllState restoredState = serializer.cloneObject(originalState);
 
 		// Verify mixed structure
@@ -202,23 +201,29 @@ public class InnerClassSerializationTest {
 	 * Static nested class - should work normally with Jackson
 	 */
 	public static class StaticConfig {
+
 		public String model;
+
 		public int temperature;
 
 		public StaticConfig() {
 		}
+
 	}
 
 	/**
-	 * Non-static inner class - cannot be deserialized by Jackson
-	 * (requires outer class instance)
+	 * Non-static inner class - cannot be deserialized by Jackson (requires outer class
+	 * instance)
 	 */
 	public class InnerConfig {
+
 		public String model;
+
 		public int temperature;
 
 		public InnerConfig() {
 		}
+
 	}
 
 	/**
@@ -226,10 +231,14 @@ public class InnerClassSerializationTest {
 	 * Defined as static nested class to keep all test classes within the test file.
 	 */
 	public static class TopLevelConfig {
+
 		public String model;
+
 		public int temperature;
 
 		public TopLevelConfig() {
 		}
+
 	}
+
 }

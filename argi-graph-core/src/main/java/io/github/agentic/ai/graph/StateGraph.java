@@ -33,8 +33,7 @@ import io.github.agentic.ai.graph.internal.node.SubCompiledGraphNode;
 import io.github.agentic.ai.graph.internal.node.SubStateGraphNode;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
 import io.github.agentic.ai.graph.serializer.plain_text.PlainTextStateSerializer;
-import io.github.agentic.ai.graph.serializer.plain_text.jackson.SpringAIJacksonStateSerializer;
-import io.github.agentic.ai.graph.serializer.std.SpringAIStateSerializer;
+import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import io.github.agentic.ai.graph.state.AgentStateFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -109,7 +108,8 @@ public class StateGraph {
 	/**
 	 * Default Jackson serializer instance.
 	 */
-	public static final StateSerializer DEFAULT_JACKSON_SERIALIZER = new SpringAIJacksonStateSerializer(OverAllState::new, new ObjectMapper());
+	public static final StateSerializer DEFAULT_JACKSON_SERIALIZER = new ArgiJacksonStateSerializer(OverAllState::new,
+			new ObjectMapper());
 
 	/**
 	 * Constructs a StateGraph with the specified name, key strategy factory, and state
@@ -117,7 +117,8 @@ public class StateGraph {
 	 * @param name the name of the graph
 	 * @param keyStrategyFactory the factory for providing key strategies
 	 * @param stateSerializer the plain text state serializer to use
-	 * @deprecated Use {@link #StateGraph(String, KeyStrategyFactory, StateSerializer)} instead
+	 * @deprecated Use {@link #StateGraph(String, KeyStrategyFactory, StateSerializer)}
+	 * instead
 	 */
 	@Deprecated
 	public StateGraph(String name, KeyStrategyFactory keyStrategyFactory, PlainTextStateSerializer stateSerializer) {
@@ -125,7 +126,8 @@ public class StateGraph {
 	}
 
 	/**
-	 * Constructs a StateGraph with the specified key strategy factory and plain text state serializer.
+	 * Constructs a StateGraph with the specified key strategy factory and plain text
+	 * state serializer.
 	 * @param keyStrategyFactory the factory for providing key strategies
 	 * @param stateSerializer the plain text state serializer to use
 	 * @deprecated Use {@link #StateGraph(KeyStrategyFactory, StateSerializer)} instead
@@ -135,34 +137,10 @@ public class StateGraph {
 		this(keyStrategyFactory, (StateSerializer) stateSerializer);
 	}
 
-	/**
-	 * Constructs a StateGraph with the specified name, key strategy factory, and SpringAI
-	 * state serializer.
-	 * @param name the name of the graph
-	 * @param keyStrategyFactory the factory for providing key strategies
-	 * @param stateSerializer the SpringAI state serializer to use
-	 * @deprecated Use {@link #StateGraph(String, KeyStrategyFactory, StateSerializer)} instead
-	 */
-	@Deprecated
-	public StateGraph(String name, KeyStrategyFactory keyStrategyFactory, SpringAIStateSerializer stateSerializer) {
-		this(name, keyStrategyFactory, (StateSerializer) stateSerializer);
-	}
-
-	/**
-	 * Constructs a StateGraph with the specified key strategy factory and SpringAI state
-	 * serializer.
-	 * @param keyStrategyFactory the factory for providing key strategies
-	 * @param stateSerializer the SpringAI state serializer to use
-	 * @deprecated Use {@link #StateGraph(KeyStrategyFactory, StateSerializer)} instead
-	 */
-	@Deprecated
-	public StateGraph(KeyStrategyFactory keyStrategyFactory, SpringAIStateSerializer stateSerializer) {
-		this(keyStrategyFactory, (StateSerializer) stateSerializer);
-	}
-
 	public StateGraph(String name, KeyStrategyFactory keyStrategyFactory) {
 		this(name, keyStrategyFactory, DEFAULT_JACKSON_SERIALIZER);
 	}
+
 	/**
 	 * Constructs a StateGraph with the provided key strategy factory.
 	 * @param keyStrategyFactory the factory for providing key strategies
@@ -180,7 +158,8 @@ public class StateGraph {
 	}
 
 	/**
-	 * Constructs a StateGraph with the specified key strategy factory and state serializer.
+	 * Constructs a StateGraph with the specified key strategy factory and state
+	 * serializer.
 	 * @param keyStrategyFactory the factory for providing key strategies
 	 * @param stateSerializer the state serializer to use
 	 */
@@ -297,12 +276,12 @@ public class StateGraph {
 	}
 
 	/**
-	 * Adds node that behave as parallel conditional edges.
-	 * This method allows routing to multiple nodes in parallel based on the multi-command action.
-	 * All nodes referenced by the mappings must have outgoing edges to the same
-	 * immediate convergence node.
+	 * Adds node that behave as parallel conditional edges. This method allows routing to
+	 * multiple nodes in parallel based on the multi-command action. All nodes referenced
+	 * by the mappings must have outgoing edges to the same immediate convergence node.
 	 * @param id the identifier of the node
-	 * @param action multi-command action to determine multiple target nodes for parallel execution
+	 * @param action multi-command action to determine multiple target nodes for parallel
+	 * execution
 	 * @param mappings the mappings of conditions to target nodes
 	 * @return this state graph instance
 	 * @throws GraphStateException if the node identifier is invalid, the mappings are
@@ -311,7 +290,8 @@ public class StateGraph {
 	public StateGraph addNode(String id, AsyncMultiCommandAction action, Map<String, String> mappings)
 			throws GraphStateException {
 		// SIMPLER IMPLEMENTATION
-		return addNode(id, (state, config) -> completedFuture(Map.of())).addParallelConditionalEdges(id, action, mappings);
+		return addNode(id, (state, config) -> completedFuture(Map.of())).addParallelConditionalEdges(id, action,
+				mappings);
 	}
 
 	/**
@@ -459,28 +439,27 @@ public class StateGraph {
 		return addConditionalEdges(sourceId, AsyncCommandAction.of(condition), mappings);
 	}
 
-
 	/**
-	 * Adds conditional edges to the graph based on the provided edge action with configuration and mappings.
+	 * Adds conditional edges to the graph based on the provided edge action with
+	 * configuration and mappings.
 	 * @param sourceId the identifier of the source node
-	 * @param asyncEdgeActionWithConfig the edge action with configuration used to determine the target node
+	 * @param asyncEdgeActionWithConfig the edge action with configuration used to
+	 * determine the target node
 	 * @param mappings the mappings of conditions to target nodes
 	 * @return this state graph instance
 	 * @throws GraphStateException if the edge identifier is invalid, the mappings are
 	 * empty, or the edge already exists
 	 */
-	public StateGraph addConditionalEdges(String sourceId, AsyncEdgeActionWithConfig asyncEdgeActionWithConfig, Map<String, String> mappings)
-			throws GraphStateException {
+	public StateGraph addConditionalEdges(String sourceId, AsyncEdgeActionWithConfig asyncEdgeActionWithConfig,
+			Map<String, String> mappings) throws GraphStateException {
 		return addConditionalEdges(sourceId, AsyncCommandAction.of(asyncEdgeActionWithConfig), mappings);
 	}
 
 	/**
 	 * Adds conditional edges to the graph that can route to multiple nodes in parallel.
-	 * This method is used when the condition action can return multiple target nodes
-	 * that should be executed in parallel.
-	 * All mapped target nodes must have outgoing edges to the same immediate
-	 * convergence node.
-	 *
+	 * This method is used when the condition action can return multiple target nodes that
+	 * should be executed in parallel. All mapped target nodes must have outgoing edges to
+	 * the same immediate convergence node.
 	 * @param sourceId the identifier of the source node
 	 * @param condition the multi-command action used to determine multiple target nodes
 	 * @param mappings the mappings of conditions to target nodes
@@ -488,8 +467,8 @@ public class StateGraph {
 	 * @throws GraphStateException if the edge identifier is invalid, the mappings are
 	 * empty, or the edge already exists
 	 */
-	public StateGraph addParallelConditionalEdges(String sourceId, AsyncMultiCommandAction condition, Map<String, String> mappings)
-			throws GraphStateException {
+	public StateGraph addParallelConditionalEdges(String sourceId, AsyncMultiCommandAction condition,
+			Map<String, String> mappings) throws GraphStateException {
 		if (Objects.equals(sourceId, END)) {
 			throw Errors.invalidEdgeIdentifier.exception(END);
 		}
@@ -547,9 +526,7 @@ public class StateGraph {
 	 * @throws GraphStateException if there are errors related to the graph state
 	 */
 	public CompiledGraph compile() throws GraphStateException {
-		SaverConfig saverConfig = SaverConfig.builder()
-			.register(new MemorySaver())
-			.build();
+		SaverConfig saverConfig = SaverConfig.builder().register(new MemorySaver()).build();
 		return compile(CompileConfig.builder().saverConfig(saverConfig).build());
 	}
 

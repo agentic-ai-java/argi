@@ -15,19 +15,26 @@
  */
 package io.github.agentic.ai.graph.agent.support;
 
+import io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter;
+import io.github.agentic.ai.api.chat.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 
+import java.util.Map;
 import java.util.function.Consumer;
+
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public final class OpenAiCompatibleTestModels {
 
-	private static final String DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode";
-
-	private static final String DEFAULT_MODEL = "qwen-plus";
+	private static final String DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
 	private OpenAiCompatibleTestModels() {
+	}
+
+	public static ChatClient chatClient() {
+		return new SpringAiChatClientAdapter(chatModel());
 	}
 
 	public static ChatModel chatModel() {
@@ -36,12 +43,21 @@ public final class OpenAiCompatibleTestModels {
 	}
 
 	public static ChatModel chatModel(Consumer<OpenAiChatOptions.Builder> optionsCustomizer) {
-		OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
-			.baseUrl(System.getenv().getOrDefault("AI_DASHSCOPE_BASE_URL", DEFAULT_BASE_URL))
-			.apiKey(System.getenv("AI_DASHSCOPE_API_KEY"))
-			.model(System.getenv().getOrDefault("AI_DASHSCOPE_MODEL", DEFAULT_MODEL));
+		OpenAiChatOptions.Builder optionsBuilder = options(System.getenv());
 		optionsCustomizer.accept(optionsBuilder);
 		return OpenAiChatModel.builder().options(optionsBuilder.build()).build();
+	}
+
+	static OpenAiChatOptions.Builder options(Map<String, String> environment) {
+		String model = environment.get("ARGI_MODEL");
+		String apiKey = environment.get("ARGI_API_KEY");
+		// Also guard mixed suites that use this helper without a class-level condition.
+		assumeTrue(model != null && !model.isBlank() && apiKey != null && !apiKey.isBlank(),
+				"Real model tests require both ARGI_MODEL and ARGI_API_KEY");
+		return OpenAiChatOptions.builder()
+			.baseUrl(environment.getOrDefault("ARGI_BASE_URL", DEFAULT_BASE_URL))
+			.apiKey(apiKey)
+			.model(model);
 	}
 
 }

@@ -28,13 +28,13 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.adapter.springai.SpringAiToolAdapter;
+import io.github.agentic.ai.api.tool.Tool;
 import org.springframework.ai.tool.ToolCallbackProvider;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -44,13 +44,15 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Static Agent Loader for programmatically provided agents.
  *
- * <p>This loader takes a static list of pre-created agent instances and makes them available
- * through the AgentLoader interface. Perfect for cases where you already have agent instances and
- * just need a convenient way to wrap them in an AgentLoader.
+ * <p>
+ * This loader takes a static list of pre-created agent instances and makes them available
+ * through the AgentLoader interface. Perfect for cases where you already have agent
+ * instances and just need a convenient way to wrap them in an AgentLoader.
  *
- * <p>Works with or without MCP: when {@link ToolCallbackProvider} is absent (e.g. graph-only profile),
- * only {@code single_agent} (with PoetTool) is registered; when present, both {@code single_agent}
- * and {@code research_agent} are available.
+ * <p>
+ * Works with or without MCP: when {@link ToolCallbackProvider} is absent (e.g. graph-only
+ * profile), only {@code single_agent} (with PoetTool) is registered; when present, both
+ * {@code single_agent} and {@code research_agent} are available.
  */
 @Component
 public class AgentStaticLoader implements AgentLoader {
@@ -61,28 +63,30 @@ public class AgentStaticLoader implements AgentLoader {
 		ChatModel chatModel = new FixedResponseChatModel("test response");
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("single_agent")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.tools(PoetTool.createPoetToolCallback())
-				.build();
+			.name("single_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.toolRegistry(SpringAiToolAdapter.fromCallbacks(PoetTool.createPoetToolCallback()))
+			.build();
 
 		this.agents.put("single_agent", agent);
 
-		List<ToolCallback> toolCallbacks = toolCallbackProvider != null
-				? new ArrayList<>(List.of(toolCallbackProvider.getToolCallbacks()))
+		List<Tool> tools = toolCallbackProvider != null
+				? java.util.Arrays.stream(toolCallbackProvider.getToolCallbacks())
+					.<Tool>map(SpringAiToolAdapter::new)
+					.toList()
 				: Collections.emptyList();
 
-		if (!toolCallbacks.isEmpty()) {
-			ReactAgent researchAgent = new DeepResearchAgent().getResearchAgent(toolCallbacks);
-			GraphRepresentation representation = researchAgent.getAndCompileGraph().stateGraph.getGraph(GraphRepresentation.Type.PLANTUML);
+		if (!tools.isEmpty()) {
+			ReactAgent researchAgent = new DeepResearchAgent().getResearchAgent(tools);
+			GraphRepresentation representation = researchAgent.getAndCompileGraph().stateGraph
+				.getGraph(GraphRepresentation.Type.PLANTUML);
 			this.agents.put("research_agent", researchAgent);
 		}
 	}
 
 	@Override
-	@NonNull
-	public List<String> listAgents() {
+	@NonNull public List<String> listAgents() {
 		return agents.keySet().stream().toList();
 	}
 
@@ -114,4 +118,5 @@ public class AgentStaticLoader implements AgentLoader {
 		}
 
 	}
+
 }

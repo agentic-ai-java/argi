@@ -15,24 +15,21 @@
  */
 package io.github.agentic.ai.graph.streaming;
 
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.Usage;
 import io.github.agentic.ai.graph.NodeOutput;
 import io.github.agentic.ai.graph.OverAllState;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.metadata.Usage;
-import org.springframework.ai.chat.model.ChatResponse;
-
 import com.fasterxml.jackson.annotation.JsonIgnore;
-
+import java.util.List;
+import java.util.stream.Collectors;
 import static java.lang.String.format;
 
 public class StreamingOutput<T> extends NodeOutput {
 
-	@Deprecated
-	private final String chunk;
-
-	private final Message message;
+	private final List<ChatMessage> messages;
 
 	@JsonIgnore
 	private final T originData;
@@ -40,138 +37,87 @@ public class StreamingOutput<T> extends NodeOutput {
 	private OutputType outputType;
 
 	public StreamingOutput(T originData, String node, OverAllState state) {
-		super(node, state);
-		this.chunk = null;
-		this.message = null;
-		this.originData = originData;
-		trySetTokenUsage(originData);
+		this(originData, node, null, state, null);
 	}
 
 	// agentName is for graph and node working on Agent mode
 	public StreamingOutput(T originData, String node, String agentName, OverAllState state) {
-		super(node, agentName, state);
-		this.chunk = null;
-		this.message = null;
-		this.originData = originData;
-		trySetTokenUsage(originData);
+		this(originData, node, agentName, state, null);
 	}
 
 	public StreamingOutput(T originData, String node, String agentName, OverAllState state, OutputType outputType) {
+		this(messagesFrom(originData), originData, node, agentName, state, outputType);
+	}
+
+	public StreamingOutput(ChatMessage message, T originData, String node, String agentName, OverAllState state,
+			OutputType outputType) {
+		this(List.of(message), originData, node, agentName, state, outputType);
+	}
+
+	/** A tool turn may contain multiple independent result messages. */
+	public StreamingOutput(List<ChatMessage> messages, T originData, String node, String agentName, OverAllState state,
+			OutputType outputType) {
 		super(node, agentName, state);
-		this.chunk = null;
-		this.message = null;
+		this.messages = List.copyOf(messages);
 		this.originData = originData;
 		this.outputType = outputType;
 		trySetTokenUsage(originData);
 	}
 
-	// new constructor to support Message
-	public StreamingOutput(Message message, T originData, String node, String agentName, OverAllState state) {
-		super(node, agentName, state);
-		this.message = message;
-		this.originData = originData;
-		this.chunk = extractChunkFromMessage(message);
-		trySetTokenUsage(originData);
-	}
-
-	public StreamingOutput(Message message, T originData, String node, String agentName, OverAllState state, OutputType outputType) {
-		super(node, agentName, state);
-		this.message = message;
-		this.originData = originData;
-		this.chunk = extractChunkFromMessage(message);
-		this.outputType = outputType;
-		trySetTokenUsage(originData);
-	}
-
-	public StreamingOutput(Message message, String node, String agentName, OverAllState state) {
-		super(node, agentName, state);
-		this.message = message;
-		this.chunk = extractChunkFromMessage(message);
-		this.originData = null;
-	}
-
-	public StreamingOutput(Message message, String node, String agentName, OverAllState state, OutputType outputType) {
-		super(node, agentName, state);
-		this.message = message;
-		this.chunk = extractChunkFromMessage(message);
-		this.originData = null;
-		this.outputType = outputType;
-	}
-
-	// Constructor for Message with OverAllState and Usage (for buildNodeOutput)
-	public StreamingOutput(Message message, String node, String agentName, OverAllState state, Usage usage) {
-		super(node, agentName, state);
-		this.message = message;
-		this.chunk = extractChunkFromMessage(message);
-		this.originData = null;
-		setTokenUsage(usage);
-	}
-
-	public StreamingOutput(Message message, String node, String agentName, OverAllState state, Usage usage, OutputType outputType) {
-		super(node, agentName, state);
-		this.message = message;
-		this.chunk = extractChunkFromMessage(message);
-		this.originData = null;
-		this.outputType = outputType;
-		setTokenUsage(usage);
-	}
-
-	// Constructor for node output without Message but with Usage
-	public StreamingOutput(String node, String agentName, OverAllState state, Usage usage) {
-		super(node, agentName, state);
-		this.message = null;
-		this.chunk = null;
-		this.originData = null;
+	public StreamingOutput(List<ChatMessage> messages, String node, String agentName, OverAllState state, Usage usage,
+			OutputType outputType) {
+		this(messages, null, node, agentName, state, outputType);
 		setTokenUsage(usage);
 	}
 
 	public StreamingOutput(String node, String agentName, OverAllState state, Usage usage, OutputType outputType) {
-		super(node, agentName, state);
-		this.message = null;
-		this.chunk = null;
-		this.originData = null;
-		this.outputType = outputType;
-		setTokenUsage(usage);
+		this(List.of(), node, agentName, state, usage, outputType);
 	}
 
-	@Deprecated
-	public StreamingOutput(String chunk, T originData, String node, String agentName, OverAllState state) {
-		super(node, agentName, state);
-		this.chunk = chunk;
-		this.message = null;
-		this.originData = originData;
-		trySetTokenUsage(originData);
-	}
-
-	@Deprecated
-	public StreamingOutput(String chunk, String node, String agentName, OverAllState state) {
-		super(node, agentName, state);
-		this.chunk = chunk;
-		this.message = null;
-		this.originData = null;
-	}
-
-	private static String extractChunkFromMessage(Message message) {
-		if (message instanceof AssistantMessage assistantMessage) {
-			if (!assistantMessage.hasToolCalls()) {
-				return assistantMessage.getText();
-			}
+	private static List<ChatMessage> messagesFrom(Object origin) {
+		if (origin instanceof ChatMessage message) {
+			return List.of(message);
 		}
-		return null;
+		if (origin instanceof ChatResponse response) {
+			return response.messages();
+		}
+		if (origin instanceof ChatEvent event) {
+			return switch (event.type()) {
+				case TEXT_DELTA -> event.text() == null ? List.of() : List.of(new ChatMessage(ChatRole.ASSISTANT,
+						List.of(io.github.agentic.ai.api.chat.ContentPart.text(event.text())), event.metadata()));
+				case RESPONSE -> event.response() == null ? List.of() : event.response().messages();
+				case TOOL_CALL, USAGE -> List.of();
+			};
+		}
+		if (origin instanceof String text) {
+			return List.of(ChatMessage.assistant(text));
+		}
+		return List.of();
 	}
-
 
 	private void trySetTokenUsage(T originData) {
 		if (originData instanceof ChatResponse chatResponse) {
-			setTokenUsage(chatResponse.getMetadata().getUsage());
-		} else if (originData instanceof Usage usage) {
+			setTokenUsage(chatResponse.usage());
+		}
+		else if (originData instanceof ChatEvent event) {
+			if (event.usage() != null) {
+				setTokenUsage(event.usage());
+			}
+			else if (event.response() != null) {
+				setTokenUsage(event.response().usage());
+			}
+		}
+		else if (originData instanceof Usage usage) {
 			setTokenUsage(usage);
 		}
 	}
 
-	@Deprecated
-	public String chunk() {
-		return chunk;
+	/** Visible assistant text only, excluding tool requests and results. */
+	public String text() {
+		return messages.stream()
+			.filter(message -> message.role() == ChatRole.ASSISTANT && message.toolCalls().isEmpty())
+			.map(ChatMessage::text)
+			.collect(Collectors.joining());
 	}
 
 	@JsonIgnore
@@ -179,21 +125,22 @@ public class StreamingOutput<T> extends NodeOutput {
 		return originData;
 	}
 
-	public Message message() {
-		return message;
+	public List<ChatMessage> messages() {
+		return messages;
 	}
 
 	public OutputType getOutputType() {
 		return outputType;
 	}
 
+	public void setOutputType(OutputType outputType) {
+		this.outputType = outputType;
+	}
+
 	@Override
 	public String toString() {
-		if (node() == null) {
-			return format("StreamingOutput{message=%s, chunk=%s}", message(), chunk());
-		}
-		return format("StreamingOutput{node=%s, agent=%s, message=%s, chunk=%s, tokenUsage=%s, state=%s, subGraph=%s}",
-				node(), agent(), message(), chunk(), tokenUsage(), state(), isSubGraph());
+		return format("StreamingOutput{node=%s, agent=%s, messages=%s, tokenUsage=%s, state=%s, subGraph=%s}", node(),
+				agent(), messages(), tokenUsage(), state(), isSubGraph());
 	}
 
 }

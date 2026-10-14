@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.graph.agent.hook.toolcalllimit;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+
 import io.github.agentic.ai.graph.KeyStrategy;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
@@ -22,9 +25,7 @@ import io.github.agentic.ai.graph.agent.hook.HookPosition;
 import io.github.agentic.ai.graph.agent.hook.HookPositions;
 import io.github.agentic.ai.graph.agent.hook.JumpTo;
 import io.github.agentic.ai.graph.agent.hook.ModelHook;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.tool.ToolResult;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -35,22 +36,27 @@ import java.util.concurrent.CompletableFuture;
 /**
  * Hook that tracks and limits tool call counts.
  *
- * This hook monitors the number of tool calls made during agent execution
- * and can terminate the agent when specified limits are reached. A batch that
- * would exceed a limit is rejected in full before any of its tools execute.
- * Thread counts are checkpointed when an explicit thread ID is provided;
- * run counts remain invocation-local.
+ * This hook monitors the number of tool calls made during agent execution and can
+ * terminate the agent when specified limits are reached. A batch that would exceed a
+ * limit is rejected in full before any of its tools execute. Thread counts are
+ * checkpointed when an explicit thread ID is provided; run counts remain
+ * invocation-local.
  */
-@HookPositions({HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL})
+@HookPositions({ HookPosition.BEFORE_MODEL, HookPosition.AFTER_MODEL })
 public class ToolCallLimitHook extends ModelHook {
 
 	private static final String THREAD_COUNT_KEY_PREFIX = "__tool_call_limit_thread_count__";
+
 	private static final String RUN_COUNT_KEY_PREFIX = "__tool_call_limit_run_count__";
+
 	private static final String PENDING_ERROR_KEY_PREFIX = "__tool_call_limit_pending_error__";
 
 	private final String toolName; // null means track all tools
+
 	private final Integer threadLimit;
+
 	private final Integer runLimit;
+
 	private final ExitBehavior exitBehavior;
 
 	private ToolCallLimitHook(Builder builder) {
@@ -88,21 +94,15 @@ public class ToolCallLimitHook extends ModelHook {
 
 		if (threadLimitExceeded || runLimitExceeded) {
 			if (exitBehavior == ExitBehavior.ERROR) {
-				throw new ToolCallLimitExceededException(
-						threadCount,
-						runCount,
-						threadLimit,
-						runLimit,
-						toolName
-				);
+				throw new ToolCallLimitExceededException(threadCount, runCount, threadLimit, runLimit, toolName);
 			}
 			else if (exitBehavior == ExitBehavior.END) {
 				String message = buildLimitExceededMessage(threadCount, runCount, threadLimit, runLimit, toolName);
 
 				// Do not copy old messages
-				List<Message> messages = new ArrayList<>();
+				List<ChatMessage> messages = new ArrayList<>();
 				// This new message will be appended to the messages list
-				messages.add(new AssistantMessage(message));
+				messages.add(ChatMessage.assistant(message));
 
 				Map<String, Object> updates = new HashMap<>();
 				updates.put("messages", messages);
@@ -117,24 +117,25 @@ public class ToolCallLimitHook extends ModelHook {
 	@Override
 	public CompletableFuture<Map<String, Object>> afterModel(OverAllState state, RunnableConfig config) {
 		// Count new tool calls from the latest AI message
-		List<Message> messages = (List<Message>) state.value("messages").orElse(List.of());
+		List<ChatMessage> messages = (List<ChatMessage>) state.value("messages").orElse(List.of());
 		if (messages.isEmpty()) {
 			return CompletableFuture.completedFuture(Map.of());
 		}
 
-		// Get the last message (should be an AssistantMessage with tool calls)
-		Message lastMessage = messages.get(messages.size() - 1);
+		// Get the last message (should be an ChatMessage with tool calls)
+		ChatMessage lastMessage = messages.get(messages.size() - 1);
 		int newCalls = 0;
 
-		if (lastMessage instanceof AssistantMessage) {
-			AssistantMessage aiMessage = (AssistantMessage) lastMessage;
-			if (aiMessage.getToolCalls() != null) {
+		if (lastMessage instanceof ChatMessage && ((ChatMessage) lastMessage).role() == ChatRole.ASSISTANT) {
+			ChatMessage aiMessage = (ChatMessage) lastMessage;
+			if (aiMessage.toolCalls() != null) {
 				if (toolName == null) {
 					// Count all tool calls
-					newCalls = aiMessage.getToolCalls().size();
-				} else {
+					newCalls = aiMessage.toolCalls().size();
+				}
+				else {
 					// Count only calls to the specified tool
-					for (AssistantMessage.ToolCall toolCall : aiMessage.getToolCalls()) {
+					for (io.github.agentic.ai.api.chat.ToolCall toolCall : aiMessage.toolCalls()) {
 						if (toolName.equals(toolCall.name())) {
 							newCalls++;
 						}
@@ -148,7 +149,7 @@ public class ToolCallLimitHook extends ModelHook {
 			int runCount = countFrom(config.context().get(getRunCountKey()));
 			if ((threadLimit != null && (long) threadCount + newCalls > threadLimit)
 					|| (runLimit != null && (long) runCount + newCalls > runLimit)) {
-				return rejectBatch((AssistantMessage) lastMessage, config, threadCount + newCalls, runCount + newCalls);
+				return rejectBatch((ChatMessage) lastMessage, config, threadCount + newCalls, runCount + newCalls);
 			}
 
 			config.context().put(getRunCountKey(), runCount + newCalls);
@@ -163,23 +164,27 @@ public class ToolCallLimitHook extends ModelHook {
 		return CompletableFuture.completedFuture(Map.of());
 	}
 
-	private CompletableFuture<Map<String, Object>> rejectBatch(AssistantMessage message, RunnableConfig config,
+	private CompletableFuture<Map<String, Object>> rejectBatch(ChatMessage message, RunnableConfig config,
 			int threadCount, int runCount) {
 		String reason = buildLimitExceededMessage(threadCount, runCount, threadLimit, runLimit, toolName);
-		List<ToolResponseMessage.ToolResponse> responses = message.getToolCalls().stream()
-				.map(call -> new ToolResponseMessage.ToolResponse(call.id(), call.name(), reason)).toList();
-		List<Message> messages = new ArrayList<>();
-		messages.add(ToolResponseMessage.builder().responses(responses).build());
+		List<ChatMessage> responses = message.toolCalls()
+			.stream()
+			.map(call -> ToolResult.error(reason).toMessage(call))
+			.toList();
+		List<ChatMessage> messages = new ArrayList<>();
+		messages.addAll(responses);
 		Map<String, Object> updates = new HashMap<>();
 		updates.put("messages", messages);
 		if (exitBehavior == ExitBehavior.ERROR) {
-			// Checkpoint paired responses before raising the error in the next before-model hook.
-			config.context().put(getPendingErrorKey(), new ToolCallLimitExceededException(
-					threadCount, runCount, threadLimit, runLimit, toolName));
+			// Checkpoint paired responses before raising the error in the next
+			// before-model hook.
+			config.context()
+				.put(getPendingErrorKey(),
+						new ToolCallLimitExceededException(threadCount, runCount, threadLimit, runLimit, toolName));
 			updates.put("jump_to", JumpTo.model);
 		}
 		else {
-			messages.add(new AssistantMessage(reason));
+			messages.add(ChatMessage.assistant(reason));
 			updates.put("jump_to", JumpTo.end);
 		}
 		return CompletableFuture.completedFuture(updates);
@@ -201,8 +206,8 @@ public class ToolCallLimitHook extends ModelHook {
 		return value instanceof Number number ? number.intValue() : 0;
 	}
 
-	private String buildLimitExceededMessage(int threadCount, int runCount,
-			Integer threadLimit, Integer runLimit, String toolName) {
+	private String buildLimitExceededMessage(int threadCount, int runCount, Integer threadLimit, Integer runLimit,
+			String toolName) {
 		String toolDesc = toolName != null ? "'" + toolName + "' tool call" : "Tool call";
 		List<String> exceededLimits = new ArrayList<>();
 
@@ -235,14 +240,19 @@ public class ToolCallLimitHook extends ModelHook {
 	}
 
 	public enum ExitBehavior {
-		END,
-		ERROR
+
+		END, ERROR
+
 	}
 
 	public static class Builder {
+
 		private String toolName;
+
 		private Integer threadLimit;
+
 		private Integer runLimit;
+
 		private ExitBehavior exitBehavior = ExitBehavior.END;
 
 		public Builder toolName(String toolName) {
@@ -271,5 +281,7 @@ public class ToolCallLimitHook extends ModelHook {
 			}
 			return new ToolCallLimitHook(this);
 		}
+
 	}
+
 }

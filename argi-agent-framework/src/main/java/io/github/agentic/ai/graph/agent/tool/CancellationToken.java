@@ -16,14 +16,18 @@
 package io.github.agentic.ai.graph.agent.tool;
 
 /**
- * Token for cooperative cancellation of tool execution.
- * Tools should periodically check {@link #isCancelled()} and stop gracefully.
+ * Token for cooperative cancellation of tool execution. Tools should periodically check
+ * {@link #isCancelled()} and stop gracefully.
  *
- * <p>This interface follows the cooperative cancellation pattern, where the tool
- * is responsible for checking the cancellation status and responding appropriately.
- * This allows tools to clean up resources and complete partial work before stopping.</p>
+ * <p>
+ * This interface follows the cooperative cancellation pattern, where the tool is
+ * responsible for checking the cancellation status and responding appropriately. This
+ * allows tools to clean up resources and complete partial work before stopping.
+ * </p>
  *
- * <p>Example usage:</p>
+ * <p>
+ * Example usage:
+ * </p>
  * <pre>{@code
  * public CompletableFuture<String> callAsync(String args, ToolContext ctx, CancellationToken token) {
  *     return CompletableFuture.supplyAsync(() -> {
@@ -39,7 +43,7 @@ package io.github.agentic.ai.graph.agent.tool;
  * @author disaster
  * @since 1.0.0
  * @see DefaultCancellationToken
- * @see CancellableAsyncToolCallback
+ * @see io.github.agentic.ai.api.tool.Tool
  */
 public interface CancellationToken {
 
@@ -62,9 +66,10 @@ public interface CancellationToken {
 	/**
 	 * Registers a callback to be invoked when cancellation is requested.
 	 *
-	 * <p>If cancellation has already been requested, the callback may be invoked
-	 * immediately (implementation-dependent).</p>
-	 *
+	 * <p>
+	 * If cancellation has already been requested, the callback may be invoked immediately
+	 * (implementation-dependent).
+	 * </p>
 	 * @param callback the callback to run on cancellation
 	 */
 	void onCancel(Runnable callback);
@@ -72,11 +77,15 @@ public interface CancellationToken {
 	/**
 	 * A no-op cancellation token that is never cancelled.
 	 *
-	 * <p>This instance is used as a default when cancellation support is not needed.
-	 * Since this token can never be cancelled, {@link #onCancel(Runnable)} is a no-op
-	 * and callbacks registered with it will never be invoked.</p>
+	 * <p>
+	 * This instance is used as a default when cancellation support is not needed. Since
+	 * this token can never be cancelled, {@link #onCancel(Runnable)} is a no-op and
+	 * callbacks registered with it will never be invoked.
+	 * </p>
 	 *
-	 * <p>Use {@link DefaultCancellationToken} if you need actual cancellation support.</p>
+	 * <p>
+	 * Use {@link DefaultCancellationToken} if you need actual cancellation support.
+	 * </p>
 	 */
 	CancellationToken NONE = new CancellationToken() {
 		@Override

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * https://www.apache.org/licenses/LICENSE-2.0
+ *     https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,189 +15,121 @@
  */
 package io.github.agentic.ai.graph.agent.tool.multimodal;
 
-import org.springframework.ai.content.Media;
-
-import org.springframework.core.io.ByteArrayResource;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.tool.ToolResult;
 import org.springframework.core.io.Resource;
 import org.springframework.util.MimeType;
-
+import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
- * Generic result type for tools that return multimodal content (image, audio, etc.).
- *
- * <p>Reuses {@link Media} from Spring AI to support both URL references and raw byte data.
- * A custom {@link MultimodalToolCallResultConverter} converts this to a structured string
- * for the LLM and for frontend parsing.
- *
- * <p>Usage example:
- *
- * <pre>{@code
- * // From URL
- * return ToolMultimodalResult.builder()
- *         .text("Image generated.")
- *         .media(ToolMultimodalResult.mediaFromUrl(url, MimeTypeUtils.IMAGE_PNG))
- *         .build();
- *
- * // From URL and base64 (when model returns both - converter picks by OutputFormat)
- * return ToolMultimodalResult.builder()
- *         .text("Image generated.")
- *         .media(ToolMultimodalResult.mediaFromUrlAndBase64(url, b64Json, MimeTypeUtils.IMAGE_PNG))
- *         .build();
- *
- * // From byte data
- * return ToolMultimodalResult.builder()
- *         .text("Audio generated.")
- *         .media(ToolMultimodalResult.mediaFromBytes(audioBytes, MimeTypeUtils.parseMimeType("audio/mpeg")))
- *         .build();
- * }</pre>
+ * Tool media expressed as neutral content parts, retaining references and inline bytes.
  */
 public final class ToolMultimodalResult {
 
 	private final String text;
 
-	private final List<Media> media;
+	private final List<ContentPart> media;
 
-	private ToolMultimodalResult(String text, List<Media> media) {
+	private ToolMultimodalResult(String text, List<ContentPart> media) {
 		this.text = text;
-		this.media = media != null ? List.copyOf(media) : List.of();
+		this.media = List.copyOf(media);
 	}
 
 	public String text() {
 		return text;
 	}
 
-	public List<Media> media() {
+	public List<ContentPart> media() {
 		return media;
+	}
+
+	public ToolResult toToolResult() {
+		List<ContentPart> content = new ArrayList<>();
+		if (text != null && !text.isEmpty()) {
+			content.add(ContentPart.text(text));
+		}
+		content.addAll(media);
+		return new ToolResult(content, false, Map.of());
 	}
 
 	public static Builder builder() {
 		return new Builder();
 	}
 
-	public static ToolMultimodalResult of(String text) {
-		return builder().text(text).build();
+	public static ToolMultimodalResult of(String text, ContentPart... media) {
+		return builder().text(text).media(media).build();
 	}
 
-	public static ToolMultimodalResult of(String text, Media... mediaItems) {
-		return builder().text(text).media(mediaItems).build();
+	private static ContentPart.Type type(MimeType mimeType) {
+		return switch (mimeType.getType()) {
+			case "image" -> ContentPart.Type.IMAGE;
+			case "audio" -> ContentPart.Type.AUDIO;
+			default -> ContentPart.Type.OTHER;
+		};
 	}
 
-	/**
-	 * Create Media from a URL/URI string.
-	 */
-	public static Media mediaFromUrl(String url, MimeType mimeType) {
-		return Media.builder().mimeType(mimeType).data(URI.create(url)).build();
+	public static ContentPart mediaFromUrl(String url, MimeType mimeType) {
+		return mediaFromUri(URI.create(url), mimeType);
 	}
 
-	/**
-	 * Create Media from a URI.
-	 */
-	public static Media mediaFromUri(URI uri, MimeType mimeType) {
-		return Media.builder().mimeType(mimeType).data(uri).build();
+	public static ContentPart mediaFromUri(URI uri, MimeType mimeType) {
+		Objects.requireNonNull(uri, "uri must not be null");
+		return new ContentPart(type(mimeType), null, mimeType.toString(), null, Map.of("uri", uri.toString()));
 	}
 
-	/**
-	 * Create Media from raw byte data.
-	 */
-	public static Media mediaFromBytes(byte[] data, MimeType mimeType) {
-		return Media.builder().mimeType(mimeType).data(new ByteArrayResource(data)).build();
+	public static ContentPart mediaFromBytes(byte[] data, MimeType mimeType) {
+		return ContentPart.binary(type(mimeType), mimeType.toString(), Objects.requireNonNull(data));
 	}
 
-	/**
-	 * Create Media from a Spring Resource.
-	 */
-	public static Media mediaFromResource(Resource resource, MimeType mimeType) {
-		return Media.builder().mimeType(mimeType).data(resource).build();
-	}
-
-	/**
-	 * Create Media when both URL and base64 are available (e.g. from model response).
-	 * The converter will choose the appropriate format based on OutputFormat, avoiding
-	 * unnecessary fetch when base64 is already present.
-	 *
-	 * @param url    URL reference (may be null)
-	 * @param base64 Base64-encoded data (raw string, not data URL; may be null)
-	 */
-	public static Media mediaFromUrlAndBase64(String url, String base64, MimeType mimeType) {
-		return Media.builder().mimeType(mimeType).data(new MediaFormats(url, base64).serialize()).build();
-	}
-
-	/**
-	 * Create Media from base64 string only (when model returns b64_json directly).
-	 *
-	 * @param base64 Base64-encoded data (raw string, not data URL)
-	 */
-	public static Media mediaFromBase64(String base64, MimeType mimeType) {
-		return Media.builder().mimeType(mimeType).data(new MediaFormats(null, base64).serialize()).build();
-	}
-
-	/**
-	 * Holds both URL and Base64 data so {@link MultimodalToolCallResultConverter}
-	 * can select the requested output format without unnecessary downloads or encoding.
-	 *
-	 * <p>The length-prefixed string representation is accepted and preserved by Spring AI
-	 * 2.0.1 while avoiding another Base64 encoding pass for potentially large payloads.
-	 */
-	public record MediaFormats(String url, String base64) {
-
-		private static final String PREFIX = "agentic-media-formats:";
-
-		private String serialize() {
-			String serializedUrl = this.url != null ? this.url : "";
-			String serializedBase64 = this.base64 != null ? this.base64 : "";
-			return PREFIX + serializedUrl.length() + ":" + serializedUrl + serializedBase64;
+	public static ContentPart mediaFromResource(Resource resource, MimeType mimeType) {
+		try {
+			return mediaFromBytes(resource.getContentAsByteArray(), mimeType);
 		}
-
-		static MediaFormats deserialize(String data) {
-			if (data == null || !data.startsWith(PREFIX)) {
-				return null;
-			}
-			int lengthEnd = data.indexOf(':', PREFIX.length());
-			if (lengthEnd < 0) {
-				return null;
-			}
-			try {
-				int urlLength = Integer.parseInt(data.substring(PREFIX.length(), lengthEnd));
-				int urlStart = lengthEnd + 1;
-				int base64Start = urlStart + urlLength;
-				if (urlLength < 0 || base64Start > data.length()) {
-					return null;
-				}
-				String url = data.substring(urlStart, base64Start);
-				String base64 = data.substring(base64Start);
-				return new MediaFormats(url.isEmpty() ? null : url, base64.isEmpty() ? null : base64);
-			}
-			catch (NumberFormatException ex) {
-				return null;
-			}
+		catch (IOException exception) {
+			throw new IllegalArgumentException("Cannot read tool media resource", exception);
 		}
 	}
 
-	public static class Builder {
+	public static ContentPart mediaFromBase64(String base64, MimeType mimeType) {
+		return mediaFromBytes(Base64.getDecoder().decode(base64), mimeType);
+	}
+
+	public static ContentPart mediaFromUrlAndBase64(String url, String base64, MimeType mimeType) {
+		if (base64 == null || base64.isBlank()) {
+			return mediaFromUrl(url, mimeType);
+		}
+		return new ContentPart(type(mimeType), null, mimeType.toString(), Base64.getDecoder().decode(base64),
+				url == null ? Map.of() : Map.of("uri", URI.create(url).toString()));
+	}
+
+	public static final class Builder {
 
 		private String text;
 
-		private final List<Media> media = new ArrayList<>();
+		private final List<ContentPart> media = new ArrayList<>();
 
 		public Builder text(String text) {
 			this.text = text;
 			return this;
 		}
 
-		public Builder media(Media... items) {
+		public Builder media(ContentPart... items) {
 			if (items != null) {
-				Collections.addAll(this.media, items);
+				media.addAll(Arrays.asList(items));
 			}
 			return this;
 		}
 
-		public Builder media(List<Media> items) {
+		public Builder media(List<ContentPart> items) {
 			if (items != null) {
-				this.media.addAll(items);
+				media.addAll(items);
 			}
 			return this;
 		}
@@ -205,5 +137,7 @@ public final class ToolMultimodalResult {
 		public ToolMultimodalResult build() {
 			return new ToolMultimodalResult(text, media);
 		}
+
 	}
+
 }

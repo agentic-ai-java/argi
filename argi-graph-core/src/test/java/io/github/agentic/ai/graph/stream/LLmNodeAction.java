@@ -15,36 +15,39 @@
  */
 package io.github.agentic.ai.graph.stream;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.action.NodeAction;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.Prompt;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatRequest;
+import reactor.adapter.JdkFlowAdapter;
 import reactor.core.publisher.Flux;
 
 import java.util.Map;
 
 public class LLmNodeAction implements NodeAction {
 
-	private ChatModel chatModel;
+	private ChatClient chatClient;
 
 	private String nodeId;
 
-	public LLmNodeAction(ChatModel chatModel) {
-		this.chatModel = chatModel;
+	public LLmNodeAction(ChatClient chatClient) {
+		this.chatClient = chatClient;
 	}
 
-	public LLmNodeAction(ChatModel chatModel, String nodeId) {
-		this.chatModel = chatModel;
+	public LLmNodeAction(ChatClient chatClient, String nodeId) {
+		this.chatClient = chatClient;
 		this.nodeId = nodeId;
 	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		// Create prompt with user message
-		UserMessage message = new UserMessage((String) state.value(OverAllState.DEFAULT_INPUT_KEY).get());
-		Flux<ChatResponse> stream = chatModel.stream(new Prompt(message));
+		ChatMessage message = ChatMessage.user((String) state.value(OverAllState.DEFAULT_INPUT_KEY).get());
+		Flux<ChatEvent> stream = JdkFlowAdapter
+			.flowPublisherToFlux(chatClient.stream(ChatRequest.of(java.util.List.of(message))));
 		return Map.of("messages", stream);
 	}
 

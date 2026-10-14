@@ -15,10 +15,9 @@
  */
 package io.github.agentic.ai.agent.studio.dto.messages;
 
+import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.action.InterruptionMetadata;
-
-import org.springframework.ai.chat.messages.AssistantMessage;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -28,8 +27,8 @@ import java.util.Map;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * Data Transfer Object for AssistantMessage.
- * Provides serialization-friendly representation with default constructor and getters/setters.
+ * Data transfer object for framework-neutral tool approvals. Provides
+ * serialization-friendly representation with default constructor and getters/setters.
  */
 public class ToolRequestConfirmMessageDTO implements MessageDTO {
 
@@ -96,7 +95,7 @@ public class ToolRequestConfirmMessageDTO implements MessageDTO {
 		if (interruptionMetadata.getToolsAutomaticallyApproved() != null
 				&& !interruptionMetadata.getToolsAutomaticallyApproved().isEmpty()) {
 			this.toolsAutomaticallyApproved = new ArrayList<>();
-			for (AssistantMessage.ToolCall toolCall : interruptionMetadata.getToolsAutomaticallyApproved()) {
+			for (ToolCall toolCall : interruptionMetadata.getToolsAutomaticallyApproved()) {
 				this.toolsAutomaticallyApproved.add(new ToolCallDTO(toolCall));
 			}
 		}
@@ -120,19 +119,12 @@ public class ToolRequestConfirmMessageDTO implements MessageDTO {
 		// Convert ToolFeedback to InterruptionMetadata.ToolFeedback
 		if (this.toolFeedback != null && !this.toolFeedback.isEmpty()) {
 			for (ToolFeedback feedback : this.toolFeedback) {
-				InterruptionMetadata.ToolFeedback.FeedbackResult result =
-						feedback.getResult() != null
-								? InterruptionMetadata.ToolFeedback.FeedbackResult.valueOf(feedback.getResult().name())
-								: InterruptionMetadata.ToolFeedback.FeedbackResult.APPROVED;
+				InterruptionMetadata.ToolFeedback.FeedbackResult result = feedback.getResult() != null
+						? InterruptionMetadata.ToolFeedback.FeedbackResult.valueOf(feedback.getResult().name()) : null;
 
-				InterruptionMetadata.ToolFeedback interruptionToolFeedback =
-						new InterruptionMetadata.ToolFeedback(
-								feedback.getId(),
-								feedback.getName(),
-								feedback.getArguments(),
-								result,
-								feedback.getDescription()
-						);
+				InterruptionMetadata.ToolFeedback interruptionToolFeedback = new InterruptionMetadata.ToolFeedback(
+						feedback.getId(), feedback.getName(), feedback.getArguments(), result,
+						feedback.getDescription());
 
 				builder.addToolFeedback(interruptionToolFeedback);
 			}
@@ -140,11 +132,11 @@ public class ToolRequestConfirmMessageDTO implements MessageDTO {
 
 		// Convert toolsAutomaticallyApproved
 		if (this.toolsAutomaticallyApproved != null && !this.toolsAutomaticallyApproved.isEmpty()) {
-			List<AssistantMessage.ToolCall> springToolCalls = new ArrayList<>();
+			List<ToolCall> toolCalls = new ArrayList<>();
 			for (ToolCallDTO toolCallDTO : this.toolsAutomaticallyApproved) {
-				springToolCalls.add(toolCallDTO.toToolCall());
+				toolCalls.add(toolCallDTO.toToolCall());
 			}
-			builder.toolsAutomaticallyApproved(springToolCalls);
+			builder.toolsAutomaticallyApproved(toolCalls);
 		}
 
 		return builder.build();
@@ -196,6 +188,7 @@ public class ToolRequestConfirmMessageDTO implements MessageDTO {
 	 * DTO for ToolFeedback.
 	 */
 	public static class ToolFeedback {
+
 		@JsonProperty("id")
 		private String id;
 
@@ -260,21 +253,20 @@ public class ToolRequestConfirmMessageDTO implements MessageDTO {
 		 * Enum for ToolFeedback result.
 		 */
 		public enum FeedbackResult {
-			APPROVED,
-			REJECTED,
-			EDITED;
+
+			APPROVED, REJECTED, EDITED;
+
 		}
+
 	}
 
 	/**
-	 * DTO for ToolCall within AssistantMessage.
+	 * DTO for a framework-neutral tool call.
 	 */
 	public static class ToolCallDTO {
+
 		@JsonProperty("id")
 		private String id;
-
-		@JsonProperty("type")
-		private String type;
 
 		@JsonProperty("name")
 		private String name;
@@ -285,15 +277,14 @@ public class ToolRequestConfirmMessageDTO implements MessageDTO {
 		public ToolCallDTO() {
 		}
 
-		public ToolCallDTO(AssistantMessage.ToolCall toolCall) {
+		public ToolCallDTO(ToolCall toolCall) {
 			this.id = toolCall.id();
-			this.type = toolCall.type();
 			this.name = toolCall.name();
 			this.arguments = toolCall.arguments();
 		}
 
-		public AssistantMessage.ToolCall toToolCall() {
-			return new AssistantMessage.ToolCall(this.id, this.type, this.name, this.arguments);
+		public ToolCall toToolCall() {
+			return new ToolCall(this.id, this.name, this.arguments);
 		}
 
 		// Getters and Setters
@@ -304,14 +295,6 @@ public class ToolRequestConfirmMessageDTO implements MessageDTO {
 
 		public void setId(String id) {
 			this.id = id;
-		}
-
-		public String getType() {
-			return type;
-		}
-
-		public void setType(String type) {
-			this.type = type;
 		}
 
 		public String getName() {
@@ -329,6 +312,7 @@ public class ToolRequestConfirmMessageDTO implements MessageDTO {
 		public void setArguments(String arguments) {
 			this.arguments = arguments;
 		}
-	}
-}
 
+	}
+
+}

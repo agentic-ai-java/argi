@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.agentic;
 
+import io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.api.tool.ToolRegistry;
 import io.github.agentic.ai.graph.agent.ReactAgent;
 import io.github.agentic.ai.graph.agent.extension.interceptor.FilesystemInterceptor;
 import io.github.agentic.ai.graph.agent.extension.interceptor.LargeResultEvictionInterceptor;
@@ -36,7 +39,6 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.tool.ToolCallback;
 
 import java.util.List;
 
@@ -45,28 +47,37 @@ import static io.github.agentic.ai.agentic.Prompts.subCritiquePrompt;
 import static io.github.agentic.ai.agentic.Prompts.subResearchPrompt;
 
 public class DeepResearchAgent {
-	private static final String BASE_AGENT_PROMPT =
-			"In order to complete the objective that the user asks of you, " +
-					"you have access to a number of standard tools.";
+
+	private static final String BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, "
+			+ "you have access to a number of standard tools.";
 
 	private String systemPrompt;
+
 	private ChatModel chatModel;
 
 	// Interceptors
 	private LargeResultEvictionInterceptor largeResultEvictionInterceptor;
+
 	private FilesystemInterceptor filesystemInterceptor;
+
 	private TodoListInterceptor todoListInterceptor;
+
 	private PatchToolCallsInterceptor patchToolCallsInterceptor;
+
 	private ContextEditingInterceptor contextEditingInterceptor;
+
 	private ToolRetryInterceptor toolRetryInterceptor;
 
 	// Hooks
 	private SummarizationHook summarizationHook;
+
 	private HumanInTheLoopHook humanInTheLoopHook;
+
 	private ToolCallLimitHook toolCallLimitHook;
+
 	private ShellToolAgentHook shellToolAgent;
 
-//	private ShellTool shellTool = ShellTool.builder().build();
+	// private ShellTool shellTool = ShellTool.builder().build();
 
 	public DeepResearchAgent() {
 		this.chatModel = new FixedResponseChatModel("test response");
@@ -74,109 +85,97 @@ public class DeepResearchAgent {
 		this.systemPrompt = researchInstructions + "\n\n" + BASE_AGENT_PROMPT;
 
 		// Initialize interceptors
-		this.largeResultEvictionInterceptor = LargeResultEvictionInterceptor
-				.builder()
-				.excludeFilesystemTools()
-				.toolTokenLimitBeforeEvict(5000)
-				.build();
+		this.largeResultEvictionInterceptor = LargeResultEvictionInterceptor.builder()
+			.excludeFilesystemTools()
+			.toolTokenLimitBeforeEvict(5000)
+			.build();
 
-		this.filesystemInterceptor = FilesystemInterceptor.builder()
-				.readOnly(false)
-				.build();
+		this.filesystemInterceptor = FilesystemInterceptor.builder().readOnly(false).build();
 
 		this.todoListInterceptor = TodoListInterceptor.builder().build();
 
 		this.patchToolCallsInterceptor = PatchToolCallsInterceptor.builder().build();
 
 		this.toolRetryInterceptor = ToolRetryInterceptor.builder()
-				.maxRetries(1).onFailure(ToolRetryInterceptor.OnFailureBehavior.RETURN_MESSAGE)
-				.build();
+			.maxRetries(1)
+			.onFailure(ToolRetryInterceptor.OnFailureBehavior.RETURN_MESSAGE)
+			.build();
 
 		// Initialize hooks
 		this.summarizationHook = SummarizationHook.builder()
-				.model(chatModel) // should use another model for summarization
-				.maxTokensBeforeSummary(120000)
-				.messagesToKeep(6)
-				.build();
+			.chatClient(new SpringAiChatClientAdapter(chatModel))
+			.maxTokensBeforeSummary(120000)
+			.messagesToKeep(6)
+			.build();
 
 		this.humanInTheLoopHook = HumanInTheLoopHook.builder()
-				.approvalOn("search_web", "Please approve the todos tool.")
-				.build();
+			.approvalOn("search_web", "Please approve the todos tool.")
+			.build();
 
-		this.toolCallLimitHook = ToolCallLimitHook.builder()
-				.runLimit(25)
-				.build();
+		this.toolCallLimitHook = ToolCallLimitHook.builder().runLimit(25).build();
 
 		this.shellToolAgent = ShellToolAgentHook.builder().build();
 
 		this.contextEditingInterceptor = ContextEditingInterceptor.builder()
-				.trigger(10000)
-				.clearAtLeast(6000)
-				.keep(4)
-				.build();
+			.trigger(10000)
+			.clearAtLeast(6000)
+			.keep(4)
+			.build();
 
 	}
 
 	private static SubAgentSpec createCritiqueAgent(String subCritiquePrompt) {
 		return SubAgentSpec.builder()
-				.name("critique-agent")
-				.description("Used to critique the final report. Provide information about " +
-						"how you want the report to be critiqued.")
-				.systemPrompt(subCritiquePrompt)
-				.enableLoopingLog(true)
-				.build();
+			.name("critique-agent")
+			.description("Used to critique the final report. Provide information about "
+					+ "how you want the report to be critiqued.")
+			.systemPrompt(subCritiquePrompt)
+			.enableLoopingLog(true)
+			.build();
 	}
 
-	private static SubAgentSpec createResearchAgent(List<ToolCallback> toolsFromMcp, String subResearchPrompt) {
+	private static SubAgentSpec createResearchAgent(List<Tool> toolsFromMcp, String subResearchPrompt) {
 		return SubAgentSpec.builder()
-				.name("research-agent")
-				.description("Used to research in-depth questions. Only give one topic at a time. " +
-						"Break down large topics into components and call multiple research agents " +
-						"in parallel for each sub-question.")
-				.systemPrompt(subResearchPrompt)
-				.tools(toolsFromMcp)
-				.enableLoopingLog(true)
-				.build();
+			.name("research-agent")
+			.description("Used to research in-depth questions. Only give one topic at a time. "
+					+ "Break down large topics into components and call multiple research agents "
+					+ "in parallel for each sub-question.")
+			.systemPrompt(subResearchPrompt)
+			.tools(toolsFromMcp)
+			.enableLoopingLog(true)
+			.build();
 	}
 
-	public ReactAgent getResearchAgent(List<ToolCallback> toolsFromMcp) {
+	public ReactAgent getResearchAgent(List<Tool> toolsFromMcp) {
 		// Build the ReactAgent with all interceptors
 		return ReactAgent.builder()
-				.name("DeepResearchAgent")
-				.model(chatModel)
-				.tools(toolsFromMcp)
-				.systemPrompt(systemPrompt)
-				.enableLogging(true)
-				.interceptors(todoListInterceptor,
-						filesystemInterceptor,
-						largeResultEvictionInterceptor,
-						patchToolCallsInterceptor,
-						contextEditingInterceptor,
-//						toolRetryInterceptor,
-						subAgentAsInterceptors(toolsFromMcp))
-				.hooks(humanInTheLoopHook, summarizationHook, toolCallLimitHook)
-				.saver(new MemorySaver())
-				.build();
+			.name("DeepResearchAgent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(new ToolRegistry(toolsFromMcp))
+			.systemPrompt(systemPrompt)
+			.enableLogging(true)
+			.interceptors(todoListInterceptor, filesystemInterceptor, largeResultEvictionInterceptor,
+					patchToolCallsInterceptor, contextEditingInterceptor,
+					// toolRetryInterceptor,
+					subAgentAsInterceptors(toolsFromMcp))
+			.hooks(humanInTheLoopHook, summarizationHook, toolCallLimitHook)
+			.saver(new MemorySaver())
+			.build();
 
 	}
 
-	private Interceptor subAgentAsInterceptors(List<ToolCallback> toolsFromMcp) {
+	private Interceptor subAgentAsInterceptors(List<Tool> toolsFromMcp) {
 		SubAgentSpec researchAgent = createResearchAgent(toolsFromMcp, subResearchPrompt);
 		SubAgentSpec critiqueAgent = createCritiqueAgent(subCritiquePrompt);
 
 		SubAgentInterceptor.Builder subAgentBuilder = SubAgentInterceptor.builder()
-				.defaultModel(chatModel)
-				.defaultInterceptors(
-						todoListInterceptor,
-						filesystemInterceptor,
-						contextEditingInterceptor,
-						patchToolCallsInterceptor,
-						largeResultEvictionInterceptor
-				)
-				.defaultHooks(summarizationHook, toolCallLimitHook)
-				.addSubAgent(researchAgent)
-				.includeGeneralPurpose(true)
-				.addSubAgent(critiqueAgent);
+			.defaultChatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.defaultInterceptors(todoListInterceptor, filesystemInterceptor, contextEditingInterceptor,
+					patchToolCallsInterceptor, largeResultEvictionInterceptor)
+			.defaultHooks(summarizationHook, toolCallLimitHook)
+			.addSubAgent(researchAgent)
+			.includeGeneralPurpose(true)
+			.addSubAgent(critiqueAgent);
 		return subAgentBuilder.build();
 	}
 

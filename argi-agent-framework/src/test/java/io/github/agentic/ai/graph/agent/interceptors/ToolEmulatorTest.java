@@ -20,6 +20,7 @@ import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.agent.ReactAgent;
 import io.github.agentic.ai.graph.agent.interceptor.toolemulator.ToolEmulatorInterceptor;
+import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.graph.agent.tools.WeatherTool;
 import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
@@ -35,22 +36,21 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class ToolEmulatorTest {
 
 	private ChatModel chatModel;
-	private ChatModel emulatorModel;
+
+	private ChatClient emulatorClient;
 
 	private static CompileConfig getCompileConfig() {
-		SaverConfig saverConfig = SaverConfig.builder()
-				.register(new MemorySaver())
-				.build();
+		SaverConfig saverConfig = SaverConfig.builder().register(new MemorySaver()).build();
 		CompileConfig compileConfig = CompileConfig.builder().saverConfig(saverConfig).build();
 		return compileConfig;
 	}
@@ -58,29 +58,28 @@ class ToolEmulatorTest {
 	@BeforeEach
 	void setUp() {
 		this.chatModel = OpenAiCompatibleTestModels.chatModel();
-		this.emulatorModel = OpenAiCompatibleTestModels.chatModel();
+		this.emulatorClient = OpenAiCompatibleTestModels.chatClient();
 	}
 
 	@Test
 	public void testToolEmulatorWithWeatherTool() throws Exception {
-		
 
 		// Create tool emulator interceptor that emulates the weather tool
 		ToolEmulatorInterceptor toolEmulatorInterceptor = ToolEmulatorInterceptor.builder()
-				.model(emulatorModel)
-				.addTool("weather_tool")
-				.build();
+			.chatClient(emulatorClient)
+			.addTool("weather_tool")
+			.build();
 
 		WeatherTool weatherTool = new WeatherTool();
 		ToolCallback weatherToolCallback = WeatherTool.createWeatherTool("weather_tool", weatherTool);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("emulator_test_agent")
-				.model(chatModel)
-				.tools(weatherToolCallback)
-				.interceptors(toolEmulatorInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("emulator_test_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherToolCallback))
+			.interceptors(toolEmulatorInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("今天杭州的天气怎么样？");
@@ -91,19 +90,20 @@ class ToolEmulatorTest {
 			result.ifPresent(overAllState -> {
 				List<Message> messages = overAllState.value("messages", new ArrayList<>());
 
-				// Assert that messages contain at least one ToolResponseMessage with name "weather_tool"
+				// Assert that messages contain at least one ToolResponseMessage with name
+				// "weather_tool"
 				boolean hasWeatherToolResponse = messages.stream()
-						.filter(msg -> msg instanceof ToolResponseMessage)
-						.map(msg -> (ToolResponseMessage) msg)
-						.flatMap(toolMsg -> toolMsg.getResponses().stream())
-						.anyMatch(response -> "weather_tool".equals(response.name()));
+					.filter(msg -> msg instanceof ToolResponseMessage)
+					.map(msg -> (ToolResponseMessage) msg)
+					.flatMap(toolMsg -> toolMsg.getResponses().stream())
+					.anyMatch(response -> "weather_tool".equals(response.name()));
 
 				assertTrue(hasWeatherToolResponse,
 						"Messages should contain at least one ToolResponseMessage with ToolResponse name 'weather_tool'");
 
-				// Verify the weather tool was NOT actually called (count should be 0 because it was emulated)
-				assertEquals(0, weatherTool.counter,
-						"Weather tool should not be actually called when emulated");
+				// Verify the weather tool was NOT actually called (count should be 0
+				// because it was emulated)
+				assertEquals(0, weatherTool.counter, "Weather tool should not be actually called when emulated");
 			});
 
 		}
@@ -115,24 +115,23 @@ class ToolEmulatorTest {
 
 	@Test
 	public void testToolEmulatorEmulateAllTools() throws Exception {
-		
 
 		// Create tool emulator that emulates all tools by default
 		ToolEmulatorInterceptor toolEmulatorInterceptor = ToolEmulatorInterceptor.builder()
-				.model(emulatorModel)
-				.emulateAllTools(true)
-				.build();
+			.chatClient(emulatorClient)
+			.emulateAllTools(true)
+			.build();
 
 		WeatherTool weatherTool = new WeatherTool();
 		ToolCallback weatherToolCallback = WeatherTool.createWeatherTool("weather_tool", weatherTool);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("emulator_all_agent")
-				.model(chatModel)
-				.tools(weatherToolCallback)
-				.interceptors(toolEmulatorInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("emulator_all_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherToolCallback))
+			.interceptors(toolEmulatorInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("上海的天气如何？");
@@ -141,8 +140,7 @@ class ToolEmulatorTest {
 			assertTrue(result.isPresent(), "Agent result should be present");
 
 			// Verify the weather tool was NOT actually called (emulated instead)
-			assertEquals(0, weatherTool.counter,
-					"Weather tool should not be called when emulate all is enabled");
+			assertEquals(0, weatherTool.counter, "Weather tool should not be called when emulate all is enabled");
 
 		}
 		catch (java.util.concurrent.CompletionException e) {
@@ -153,24 +151,23 @@ class ToolEmulatorTest {
 
 	@Test
 	public void testToolEmulatorSelectiveEmulation() throws Exception {
-		
 
 		// Create tool emulator that only emulates specific tools (not weather_tool)
 		ToolEmulatorInterceptor toolEmulatorInterceptor = ToolEmulatorInterceptor.builder()
-				.model(emulatorModel)
-				.emulateAllTools(false)
-				.build();
+			.chatClient(emulatorClient)
+			.emulateAllTools(false)
+			.build();
 
 		WeatherTool weatherTool = new WeatherTool();
 		ToolCallback weatherToolCallback = WeatherTool.createWeatherTool("weather_tool", weatherTool);
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("selective_emulator_agent")
-				.model(chatModel)
-				.tools(weatherToolCallback)
-				.interceptors(toolEmulatorInterceptor)
-				.saver(new MemorySaver())
-				.build();
+			.name("selective_emulator_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherToolCallback))
+			.interceptors(toolEmulatorInterceptor)
+			.saver(new MemorySaver())
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("深圳今天天气怎样？");
@@ -179,8 +176,7 @@ class ToolEmulatorTest {
 			assertTrue(result.isPresent(), "Agent result should be present");
 
 			// Verify the weather tool WAS actually called (not in emulation list)
-			assertTrue(weatherTool.counter > 0,
-					"Weather tool should be called when not in emulation list");
+			assertTrue(weatherTool.counter > 0, "Weather tool should be called when not in emulation list");
 
 		}
 		catch (java.util.concurrent.CompletionException e) {

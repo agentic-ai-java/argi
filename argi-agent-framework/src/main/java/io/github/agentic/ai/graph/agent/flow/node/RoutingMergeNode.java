@@ -15,23 +15,23 @@
  */
 package io.github.agentic.ai.graph.agent.flow.node;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.graph.GraphResponse;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.action.NodeAction;
 import io.github.agentic.ai.graph.agent.BaseAgent;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Dedicated node for merging routing results. Collects outputs from sub-agents routed by
@@ -54,17 +54,19 @@ public class RoutingMergeNode implements NodeAction {
 			- Keep the response concise and well-organized
 			""";
 
-	private final ChatModel chatModel;
+	private final ChatClient chatClient;
+
 	private final List<BaseAgent> subAgents;
+
 	private final String mergedOutputKey;
 
-	public RoutingMergeNode(ChatModel chatModel, List<BaseAgent> subAgents) {
-		this(chatModel, subAgents, DEFAULT_MERGED_OUTPUT_KEY);
+	public RoutingMergeNode(ChatClient chatClient, List<BaseAgent> subAgents) {
+		this(chatClient, subAgents, DEFAULT_MERGED_OUTPUT_KEY);
 	}
 
-	public RoutingMergeNode(ChatModel chatModel, List<BaseAgent> subAgents, String mergedOutputKey) {
-		this.chatModel = chatModel;
-		this.subAgents = subAgents;
+	public RoutingMergeNode(ChatClient chatClient, List<BaseAgent> subAgents, String mergedOutputKey) {
+		this.chatClient = Objects.requireNonNull(chatClient, "chatClient must not be null");
+		this.subAgents = List.copyOf(subAgents);
 		this.mergedOutputKey = mergedOutputKey != null ? mergedOutputKey : DEFAULT_MERGED_OUTPUT_KEY;
 	}
 
@@ -74,7 +76,11 @@ public class RoutingMergeNode implements NodeAction {
 
 		List<String> formattedResults = new ArrayList<>();
 		String lastResult = null;
+		Object selected = state.value(RoutingNode.SELECTED_AGENTS_KEY).orElse(null);
 		for (BaseAgent subAgent : subAgents) {
+			if (selected instanceof List<?> names && !names.contains(subAgent.name())) {
+				continue;
+			}
 			String outputKey = subAgent.getOutputKey();
 			if (outputKey == null) {
 				continue;
@@ -91,10 +97,14 @@ public class RoutingMergeNode implements NodeAction {
 			}
 		}
 
-		// When the router delegated to a single sub-agent, that agent's answer is already the
-		// final response. Re-synthesizing it through the LLM would issue a redundant model call
-		// and emit a second, rephrased copy of the same answer to the user (gh-4616). Pass the
-		// single result through unchanged; only genuinely multi-source results need synthesis.
+		// When the router delegated to a single sub-agent, that agent's answer is already
+		// the
+		// final response. Re-synthesizing it through the LLM would issue a redundant
+		// model call
+		// and emit a second, rephrased copy of the same answer to the user (gh-4616).
+		// Pass the
+		// single result through unchanged; only genuinely multi-source results need
+		// synthesis.
 		if (formattedResults.size() == 1) {
 			logger.debug("RoutingMergeNode: single routed result, returning it without re-synthesis");
 			return Map.of(mergedOutputKey, lastResult);
@@ -108,31 +118,38 @@ public class RoutingMergeNode implements NodeAction {
 	}
 
 	private String extractOriginalQuery(OverAllState state) {
-		@SuppressWarnings("unchecked")
-		List<Message> messages = (List<Message>) state.value("messages").orElse(List.of());
-		if (messages.isEmpty()) {
-			return "";
-		}
-		Message last = messages.get(messages.size() - 1);
-		return last.getText() != null ? last.getText() : "";
+		return state.<String>value(RoutingNode.ORIGINAL_QUERY_KEY)
+			.orElseGet(() -> RoutingMessages.originalQuery(RoutingMessages.read(state)));
 	}
 
-	private String synthesize(String query, List<String> formattedResults) {
+	private String synthesize(String query, List<String> formattedResults) throws Exception {
 		if (formattedResults == null || formattedResults.isEmpty()) {
 			return "No results found from any knowledge source.";
 		}
 		String formatted = String.join("\n\n", formattedResults);
 		String systemPrompt = SYNTHESIZE_SYSTEM_TEMPLATE.formatted(query);
-		Prompt prompt = new Prompt(List.of(
-				new SystemMessage(systemPrompt),
-				new UserMessage(formatted)));
-		ChatResponse response = chatModel.call(prompt);
-		return response.getResult().getOutput().getText();
+		CompletableFuture<io.github.agentic.ai.api.chat.ChatResponse> pending = chatClient
+			.call(ChatRequest.of(List.of(ChatMessage.system(systemPrompt), ChatMessage.user(formatted))))
+			.toCompletableFuture();
+		try {
+			return pending.get().text();
+		}
+		catch (InterruptedException interrupted) {
+			pending.cancel(true);
+			Thread.currentThread().interrupt();
+			throw interrupted;
+		}
 	}
 
 	public static String extractText(Object output, String outputKey) {
-		if (output instanceof Message message) {
-			return message.getText();
+		if (output instanceof ChatMessage message) {
+			return message.text();
+		}
+		if (output instanceof io.github.agentic.ai.api.chat.ChatResponse response) {
+			return response.text();
+		}
+		if (output instanceof ChatMessage message) {
+			return message.text();
 		}
 		if (output instanceof GraphResponse<?> gr) {
 			Optional<?> val = gr.resultValue();
@@ -141,10 +158,7 @@ public class RoutingMergeNode implements NodeAction {
 				if (v instanceof Map<?, ?> map) {
 					v = map.get(outputKey);
 				}
-				if (v instanceof Message m) {
-					return m.getText();
-				}
-				return v.toString();
+				return extractText(v, outputKey);
 			}
 			return "";
 		}
@@ -152,7 +166,9 @@ public class RoutingMergeNode implements NodeAction {
 	}
 
 	private static String capitalize(String s) {
-		if (s == null || s.isEmpty()) return s;
+		if (s == null || s.isEmpty())
+			return s;
 		return s.substring(0, 1).toUpperCase() + s.substring(1).toLowerCase();
 	}
+
 }

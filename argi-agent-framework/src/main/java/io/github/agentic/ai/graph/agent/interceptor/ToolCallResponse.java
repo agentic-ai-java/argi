@@ -15,10 +15,14 @@
  */
 package io.github.agentic.ai.graph.agent.interceptor;
 
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.chat.ToolCall;
+import io.github.agentic.ai.api.tool.ToolResult;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -27,10 +31,10 @@ import java.util.Optional;
  */
 public class ToolCallResponse {
 
-    public final static String SUCCESS_STATUS = "SUCCESS";
+	public final static String SUCCESS_STATUS = "SUCCESS";
 
-    /** Status of an error response; see {@link ToolOutcome} for the full outcome vocabulary. */
-    public final static String ERROR_STATUS = "error";
+	/** Status of an error response; see {@link ToolOutcome} for the full outcome vocabulary. */
+	public static final String ERROR_STATUS = "error";
 
 	/**
 	 * Metadata key carrying the structured failure kind of an error response. Values are
@@ -56,22 +60,44 @@ public class ToolCallResponse {
 
 	/** No tool with the requested name could be resolved; nothing was invoked. */
 	public static final String FAILURE_KIND_UNRESOLVED = "unresolved";
+
 	private final String result;
+
+	private final List<ContentPart> contentParts;
+
 	private final String toolName;
+
 	private final String toolCallId;
+
 	private final String status;
+
 	private final Map<String, Object> metadata;
 
 	public ToolCallResponse(String result, String toolName, String toolCallId) {
 		this(result, toolName, toolCallId, null, null);
 	}
 
-	public ToolCallResponse(String result, String toolName, String toolCallId, String status, Map<String, Object> metadata) {
+	public ToolCallResponse(String result, String toolName, String toolCallId, String status,
+			Map<String, Object> metadata) {
+		this(result, result == null ? List.of() : List.of(ContentPart.text(result)), toolName, toolCallId, status,
+				metadata);
+	}
+
+	private ToolCallResponse(String result, List<ContentPart> contentParts, String toolName, String toolCallId,
+			String status, Map<String, Object> metadata) {
 		this.result = result;
+		this.contentParts = List.copyOf(contentParts);
 		this.toolName = toolName;
 		this.toolCallId = toolCallId;
 		this.status = status;
 		this.metadata = metadata != null ? new HashMap<>(metadata) : Collections.emptyMap();
+	}
+
+	/** Preserves complete neutral tool output without flattening content or metadata. */
+	public static ToolCallResponse from(ToolCall call, ToolResult result) {
+		ChatMessage message = result.toMessage(call);
+		return new ToolCallResponse(message.text(), result.content(), call.name(), call.id(),
+				result.error() ? ERROR_STATUS : SUCCESS_STATUS, result.metadata());
 	}
 
 	/**
@@ -86,6 +112,7 @@ public class ToolCallResponse {
 	public static ToolCallResponse of(String toolCallId, String toolName, String result) {
 		return new ToolCallResponse(result, toolName, toolCallId);
 	}
+
     /**
      *  <p>
      *   Rewrite the status field of the source code to SUCCESS, and then make a judgment in the tool interceptor
@@ -216,15 +243,21 @@ public class ToolCallResponse {
 		return value instanceof String s ? Optional.of(s) : Optional.empty();
 	}
 
-	public ToolResponseMessage.ToolResponse toToolResponse() {
-		return new ToolResponseMessage.ToolResponse(toolCallId, toolName, result);
+	/** Creates a neutral tool message, preserving failure and application metadata. */
+	public ChatMessage toMessage() {
+		return new ToolResult(contentParts, isError(), metadata).toMessage(new ToolCall(toolCallId, toolName, "{}"));
 	}
 
 	public static class Builder {
+
 		private String content;
+
 		private String toolName;
+
 		private String toolCallId;
+
 		private String status;
+
 		private Map<String, Object> metadata;
 
 		public Builder content(String content) {
@@ -255,6 +288,7 @@ public class ToolCallResponse {
 		public ToolCallResponse build() {
 			return new ToolCallResponse(content, toolName, toolCallId, status, metadata);
 		}
-	}
-}
 
+	}
+
+}

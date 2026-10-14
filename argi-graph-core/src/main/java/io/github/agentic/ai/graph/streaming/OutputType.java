@@ -20,37 +20,35 @@ import static io.github.agentic.ai.graph.RunnableConfig.AGENT_MODEL_NAME;
 import static io.github.agentic.ai.graph.RunnableConfig.AGENT_TOOL_NAME;
 
 public enum OutputType {
-	AGENT_MODEL_STREAMING,
-	AGENT_MODEL_FINISHED,
-	AGENT_TOOL_STREAMING,
-	AGENT_TOOL_FINISHED,
-	AGENT_HOOK_STREAMING,
-	AGENT_HOOK_FINISHED,
-	GRAPH_NODE_STREAMING,
-	GRAPH_NODE_FINISHED;
+
+	AGENT_MODEL_STREAMING, AGENT_MODEL_FINISHED, AGENT_TOOL_STREAMING, AGENT_TOOL_FINISHED, AGENT_HOOK_STREAMING,
+	AGENT_HOOK_FINISHED, GRAPH_NODE_STREAMING, GRAPH_NODE_FINISHED;
 
 	/**
 	 * Converts to a specific OutputType instance based on streaming and nodeId parameters
-	 *
 	 * @param streaming whether it is streaming output
-	 * @param nodeId    the node ID
+	 * @param nodeId the node ID
 	 * @return the corresponding OutputType instance
 	 */
 	public static OutputType from(boolean streaming, String nodeId) {
 		if (nodeId.startsWith(AGENT_MODEL_NAME)) {
 			return streaming ? AGENT_MODEL_STREAMING : AGENT_MODEL_FINISHED;
-		} else if (nodeId.startsWith(AGENT_TOOL_NAME)) {
+		}
+		else if (nodeId.startsWith(AGENT_TOOL_NAME)) {
 			return streaming ? AGENT_TOOL_STREAMING : AGENT_TOOL_FINISHED;
-		} else if (nodeId.startsWith(AGENT_HOOK_NAME_PREFIX)) {
+		}
+		else if (nodeId.startsWith(AGENT_HOOK_NAME_PREFIX)) {
 			return streaming ? AGENT_HOOK_STREAMING : AGENT_HOOK_FINISHED;
-		} else {
+		}
+		else {
 			return streaming ? GRAPH_NODE_STREAMING : GRAPH_NODE_FINISHED;
 		}
 	}
 
 	/**
-	 * True for model/graph LLM stream completion ({@link #AGENT_MODEL_FINISHED}, {@link #GRAPH_NODE_FINISHED}):
-	 * text was already streamed; do not append {@link StreamingOutput#message()} again.
+	 * True for model/graph LLM stream completion ({@link #AGENT_MODEL_FINISHED},
+	 * {@link #GRAPH_NODE_FINISHED}): text was already streamed; do not append
+	 * {@link StreamingOutput#messages()} again.
 	 */
 	public boolean isStreamAggregationFinished() {
 		return this == AGENT_MODEL_FINISHED || this == GRAPH_NODE_FINISHED;

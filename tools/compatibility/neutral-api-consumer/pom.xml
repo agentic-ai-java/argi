@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2024-2026 the original author or authors.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     https://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>io.github.agentic.ai</groupId>
+	<artifactId>neutral-api-consumer</artifactId>
+	<version>1.0.0</version>
+	<packaging>jar</packaging>
+
+	<properties>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+		<maven.compiler.release>17</maven.compiler.release>
+		<argi.version>2.1.0-RC2-SNAPSHOT</argi.version>
+	</properties>
+
+	<dependencies>
+		<dependency>
+			<groupId>io.github.agentic-ai-java</groupId>
+			<artifactId>argi-graph-core</artifactId>
+			<version>${argi.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.github.agentic-ai-java</groupId>
+			<artifactId>argi-agent-framework</artifactId>
+			<version>${argi.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.github.agentic-ai-java</groupId>
+			<artifactId>argi-studio</artifactId>
+			<version>${argi.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.github.agentic-ai-java</groupId>
+			<artifactId>argi-starter-graph-observation</artifactId>
+			<version>${argi.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.github.agentic-ai-java</groupId>
+			<artifactId>argi-starter-builtin-nodes</artifactId>
+			<version>${argi.version}</version>
+		</dependency>
+	</dependencies>
+</project>

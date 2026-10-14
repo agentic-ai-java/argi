@@ -15,32 +15,35 @@
  */
 package io.github.agentic.ai.graph.agent.hook.messages;
 
-import io.github.agentic.ai.graph.agent.hook.JumpTo;
+import io.github.agentic.ai.api.chat.ChatMessage;
 
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.graph.agent.hook.JumpTo;
 
 import java.util.List;
 
 public class AgentCommand {
+
 	private JumpTo jumpTo;
-	private List<Message> messages;
+
+	private List<ChatMessage> messages;
+
 	private UpdatePolicy updatePolicy;
 
-	public AgentCommand(JumpTo jumpTo, List<Message> messages, UpdatePolicy updatePolicy) {
+	public AgentCommand(JumpTo jumpTo, List<ChatMessage> messages, UpdatePolicy updatePolicy) {
 		this.jumpTo = jumpTo;
 		this.messages = messages;
 		this.updatePolicy = updatePolicy;
 	}
 
-	public AgentCommand(JumpTo jumpTo, List<Message> messages) {
+	public AgentCommand(JumpTo jumpTo, List<ChatMessage> messages) {
 		this(jumpTo, messages, UpdatePolicy.REPLACE);
 	}
 
-	public AgentCommand(List<Message> messages, UpdatePolicy updatePolicy) {
+	public AgentCommand(List<ChatMessage> messages, UpdatePolicy updatePolicy) {
 		this(null, messages, updatePolicy);
 	}
 
-	public AgentCommand(List<Message> messages) {
+	public AgentCommand(List<ChatMessage> messages) {
 		this(null, messages, UpdatePolicy.REPLACE);
 	}
 
@@ -52,11 +55,11 @@ public class AgentCommand {
 		this.jumpTo = jumpTo;
 	}
 
-	List<Message> getMessages() {
+	List<ChatMessage> getMessages() {
 		return messages;
 	}
 
-	void setMessages(List<Message> messages) {
+	void setMessages(List<ChatMessage> messages) {
 		this.messages = messages;
 	}
 
@@ -67,4 +70,5 @@ public class AgentCommand {
 	void setUpdatePolicy(UpdatePolicy updatePolicy) {
 		this.updatePolicy = updatePolicy;
 	}
+
 }

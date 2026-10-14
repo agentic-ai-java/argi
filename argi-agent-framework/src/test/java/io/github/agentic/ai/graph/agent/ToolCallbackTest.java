@@ -44,20 +44,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 import reactor.core.publisher.Flux;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Test cases demonstrating different ways to provide tools to ReactAgent:
- * 1. MethodTools - Using @Tool annotation on methods
- * 2. ToolCallbackProvider - Using ToolCallbackProvider interface
- * 3. ToolNames - Using tool names with ToolCallbackResolver
- * 4. ToolCallbackResolver - Custom tool resolution
+ * Verifies explicit Spring AI tool adaptation before neutral ToolRegistry registration.
+ * Method annotations, providers, and resolvers are application-side integration details,
+ * not ReactAgent builder entry points.
  */
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class ToolCallbackTest {
 
 	private ChatModel chatModel;
@@ -68,19 +66,18 @@ class ToolCallbackTest {
 	 * Tool class using @Tool annotation for method-based tools
 	 */
 	public static class CalculatorTools {
+
 		public static int callCount = 0;
 
 		@Tool(description = "Add two numbers together")
-		public String add(
-				@ToolParam(description = "First number") int a,
+		public String add(@ToolParam(description = "First number") int a,
 				@ToolParam(description = "Second number") int b) {
 			callCount++;
 			return String.valueOf(a + b);
 		}
 
 		@Tool(description = "Multiply two numbers together")
-		public String multiply(
-				@ToolParam(description = "First number") int a,
+		public String multiply(@ToolParam(description = "First number") int a,
 				@ToolParam(description = "Second number") int b) {
 			callCount++;
 			return String.valueOf(a * b);
@@ -92,6 +89,7 @@ class ToolCallbackTest {
 	 * Tool class with no-parameter method using @Tool annotation
 	 */
 	public static class SystemInfoTools {
+
 		public static int callCount = 0;
 
 		@Tool(description = "Get current system time in milliseconds")
@@ -104,26 +102,29 @@ class ToolCallbackTest {
 		public String getSystemInfo() {
 			callCount++;
 			return String.format("System: %s, Java Version: %s, Available Processors: %d",
-					System.getProperty("os.name"),
-					System.getProperty("java.version"),
+					System.getProperty("os.name"), System.getProperty("java.version"),
 					Runtime.getRuntime().availableProcessors());
 		}
+
 	}
 
 	/**
 	 * Tool class using Function interface
 	 */
 	public static class SearchTool implements BiFunction<String, ToolContext, String> {
+
 		@Override
 		public String apply(String query, ToolContext toolContext) {
 			return "Search results for: " + query;
 		}
+
 	}
 
 	/**
 	 * ToolCallbackProvider implementation
 	 */
 	public static class CustomToolCallbackProvider implements ToolCallbackProvider {
+
 		private final List<ToolCallback> toolCallbacks;
 
 		public CustomToolCallbackProvider(List<ToolCallback> toolCallbacks) {
@@ -134,12 +135,14 @@ class ToolCallbackTest {
 		public ToolCallback[] getToolCallbacks() {
 			return toolCallbacks.toArray(new ToolCallback[0]);
 		}
+
 	}
 
 	/**
 	 * Request class for search tool with composite type
 	 */
 	public static class SearchRequest {
+
 		@JsonProperty(required = true)
 		@JsonPropertyDescription("The search query string")
 		public String query;
@@ -150,22 +153,26 @@ class ToolCallbackTest {
 		public SearchRequest(String query) {
 			this.query = query;
 		}
+
 	}
 
 	/**
 	 * Search function using composite type
 	 */
 	public static class SearchFunction implements BiFunction<SearchRequest, ToolContext, String> {
+
 		@Override
 		public String apply(SearchRequest request, ToolContext toolContext) {
 			return "Search results for: " + request.query;
 		}
+
 	}
 
 	/**
 	 * Request class for calculator tool with composite type
 	 */
 	public static class CalculatorRequest {
+
 		@JsonProperty(required = true)
 		@JsonPropertyDescription("First number for the calculation")
 		public int a;
@@ -181,16 +188,19 @@ class ToolCallbackTest {
 			this.a = a;
 			this.b = b;
 		}
+
 	}
 
 	/**
 	 * Calculator function using composite type
 	 */
 	public static class CalculatorFunction implements BiFunction<CalculatorRequest, ToolContext, String> {
+
 		@Override
 		public String apply(CalculatorRequest request, ToolContext toolContext) {
 			return String.valueOf(request.a + request.b);
 		}
+
 	}
 
 	@BeforeEach
@@ -199,22 +209,29 @@ class ToolCallbackTest {
 	}
 
 	/**
-	 * Test 1: Using methodTools with @Tool annotation
-	 * Demonstrates how to use methods annotated with @Tool as tools
+	 * Test 1: Using methodTools with @Tool annotation Demonstrates how to use methods
+	 * annotated with @Tool as tools
 	 */
 	@Test
 	public void testMethodTools() throws Exception {
 		CalculatorTools calculatorTools = new CalculatorTools();
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("calculator_agent")
-				.model(chatModel)
-				.description("An agent that can perform calculations")
-				.instruction("You are a helpful calculator assistant. Use the available tools to perform calculations.")
-				.methodTools(calculatorTools)  // Pass the object with @Tool annotated methods
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("calculator_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("An agent that can perform calculations")
+			.instruction("You are a helpful calculator assistant. Use the available tools to perform calculations.")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(org.springframework.ai.support.ToolCallbacks.from(calculatorTools))) // Pass
+																									// the
+																									// object
+																									// with
+																									// @Tool
+																									// annotated
+																									// methods
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("What is 15 + 27?");
@@ -233,29 +250,30 @@ class ToolCallbackTest {
 	}
 
 	/**
-	 * Test 2: Using ToolCallbackProvider
-	 * Demonstrates how to use ToolCallbackProvider to provide tools dynamically
+	 * Test 2: Using ToolCallbackProvider Demonstrates how to use ToolCallbackProvider to
+	 * provide tools dynamically
 	 */
 	@Test
 	public void testToolCallbackProvider() throws Exception {
 		// Create tools
 		ToolCallback searchTool = FunctionToolCallback.builder("search", new SearchTool())
-				.description("Search for information")
-				.inputType(String.class)
-				.build();
+			.description("Search for information")
+			.inputType(String.class)
+			.build();
 
 		// Create ToolCallbackProvider
 		ToolCallbackProvider toolProvider = new CustomToolCallbackProvider(List.of(searchTool));
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("search_agent")
-				.model(chatModel)
-				.description("An agent that can search for information")
-				.instruction("You are a helpful assistant with search capabilities.")
-				.toolCallbackProviders(toolProvider)  // Use ToolCallbackProvider
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("search_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("An agent that can search for information")
+			.instruction("You are a helpful assistant with search capabilities.")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(toolProvider.getToolCallbacks()))
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("Search for information about Spring AI");
@@ -274,39 +292,39 @@ class ToolCallbackTest {
 	}
 
 	/**
-	 * Test 3: Using toolNames with ToolCallbackResolver
-	 * Demonstrates how to use tool names with a resolver to dynamically resolve tools
+	 * Test 3: Using toolNames with ToolCallbackResolver Demonstrates how to use tool
+	 * names with a resolver to dynamically resolve tools
 	 */
 	@Test
 	public void testToolNamesWithResolver() throws Exception {
 		// Create tools with composite input types
 		ToolCallback searchTool = FunctionToolCallback.builder("search", new SearchFunction())
-				.description("Search for information")
-				.inputType(SearchRequest.class)
-				.build();
+			.description("Search for information")
+			.inputType(SearchRequest.class)
+			.build();
 
 		ToolCallback calculatorTool = FunctionToolCallback.builder("calculator", new CalculatorFunction())
-				.description("Perform arithmetic calculations")
-				.inputType(CalculatorRequest.class)
-				.build();
+			.description("Perform arithmetic calculations")
+			.inputType(CalculatorRequest.class)
+			.build();
 
 		// Create StaticToolCallbackResolver with the tools
-		StaticToolCallbackResolver resolver = new StaticToolCallbackResolver(
-				List.of(calculatorTool, searchTool));
+		StaticToolCallbackResolver resolver = new StaticToolCallbackResolver(List.of(calculatorTool, searchTool));
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("multi_tool_agent")
-				.model(chatModel)
-				.description("An agent with multiple tools")
-				.instruction("You are a helpful assistant with access to calculator and search tools.")
-				.toolNames("calculator", "search")  // Use tool names instead of ToolCallback instances
-				.resolver(resolver)  // Provide the resolver to resolve tool names
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("multi_tool_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("An agent with multiple tools")
+			.instruction("You are a helpful assistant with access to calculator and search tools.")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(resolver.resolve("calculator"), resolver.resolve("search")))
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		try {
-			Optional<OverAllState> result = agent.invoke("Calculate 25 + 4 and then search for information about the result");
+			Optional<OverAllState> result = agent
+				.invoke("Calculate 25 + 4 and then search for information about the result");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			OverAllState state = result.get();
@@ -322,14 +340,15 @@ class ToolCallbackTest {
 	}
 
 	/**
-	 * Test 4: Using ToolCallbackResolver directly
-	 * Demonstrates how to use a custom ToolCallbackResolver for tool resolution
-	 * Uses MethodToolCallback instead of FunctionToolCallback to support JSON format input
+	 * Test 4: Using ToolCallbackResolver directly Demonstrates how to use a custom
+	 * ToolCallbackResolver for tool resolution Uses MethodToolCallback instead of
+	 * FunctionToolCallback to support JSON format input
 	 */
 	@Test
 	public void testToolCallbackResolver() throws Exception {
 		// Create a calculator tool class with a method for calculations
 		class CalculatorTool {
+
 			public String calculate(String expression, ToolContext toolContext) {
 				// Simple calculation parsing (for demo purposes)
 				if (expression.contains("/")) {
@@ -339,44 +358,45 @@ class ToolCallbackTest {
 				}
 				return "Calculation result for: " + expression;
 			}
+
 		}
 
 		// Create MethodToolCallback using reflection
 		CalculatorTool calculatorToolInstance = new CalculatorTool();
-		java.lang.reflect.Method method = ReflectionUtils.findMethod(CalculatorTool.class, 
-				"calculate", String.class, ToolContext.class);
-		
+		java.lang.reflect.Method method = ReflectionUtils.findMethod(CalculatorTool.class, "calculate", String.class,
+				ToolContext.class);
+
 		if (method == null) {
 			fail("Could not find calculate method in CalculatorTool class");
 		}
 
 		// Create ToolDefinition using ToolDefinitions.builder() with the method
 		ToolDefinition toolDefinition = ToolDefinitions.builder(method)
-				.name("calculator")
-				.description("Perform arithmetic calculations")
-				.build();
+			.name("calculator")
+			.description("Perform arithmetic calculations")
+			.build();
 
 		// Build MethodToolCallback
 		ToolCallback calculatorTool = MethodToolCallback.builder()
-				.toolDefinition(toolDefinition)
-				.toolMethod(method)
-				.toolObject(calculatorToolInstance)
-				.build();
+			.toolDefinition(toolDefinition)
+			.toolMethod(method)
+			.toolObject(calculatorToolInstance)
+			.build();
 
 		// Create a custom resolver
-		StaticToolCallbackResolver resolver = new StaticToolCallbackResolver(
-				List.of(calculatorTool));
+		StaticToolCallbackResolver resolver = new StaticToolCallbackResolver(List.of(calculatorTool));
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("resolver_agent")
-				.model(chatModel)
-				.description("An agent using ToolCallbackResolver")
-				.instruction("You are a helpful calculator assistant.")
-				.tools(calculatorTool)  // Direct tool assignment
-				.resolver(resolver)  // Also set resolver for tool node
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("resolver_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("An agent using ToolCallbackResolver")
+			.instruction("You are a helpful calculator assistant.")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(calculatorTool)) // Direct
+																													// tool
+																													// assignment
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("What is 100 divided by 4?");
@@ -395,8 +415,8 @@ class ToolCallbackTest {
 	}
 
 	/**
-	 * Test 5: Combining multiple tool provision methods
-	 * Demonstrates combining methodTools, ToolCallbackProvider, and direct tools
+	 * Test 5: Combining multiple tool provision methods Demonstrates combining
+	 * methodTools, ToolCallbackProvider, and direct tools
 	 */
 	@Test
 	public void testCombinedToolProvision() throws Exception {
@@ -405,27 +425,30 @@ class ToolCallbackTest {
 
 		// Direct tool
 		ToolCallback searchTool = FunctionToolCallback.builder("search", new SearchTool())
-				.description("Search for information")
-				.inputType(String.class)
-				.build();
+			.description("Search for information")
+			.inputType(String.class)
+			.build();
 
 		// ToolCallbackProvider
 		ToolCallbackProvider toolProvider = new CustomToolCallbackProvider(List.of(searchTool));
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("combined_tool_agent")
-				.model(chatModel)
-				.description("An agent with multiple tool provision methods")
-				.instruction("You are a helpful assistant with calculator and search capabilities.")
-				.methodTools(calculatorTools)  // Method-based tools
-				.toolCallbackProviders(toolProvider)  // Provider-based tools
-				.tools(searchTool)  // Direct tools
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("combined_tool_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("An agent with multiple tool provision methods")
+			.instruction("You are a helpful assistant with calculator and search capabilities.")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(java.util.stream.Stream
+					.concat(java.util.Arrays.stream(org.springframework.ai.support.ToolCallbacks.from(calculatorTools)),
+							java.util.Arrays.stream(toolProvider.getToolCallbacks()))
+					.toList()))
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		try {
-			Optional<OverAllState> result = agent.invoke("Calculate 50 + 75 and search for information about mathematics");
+			Optional<OverAllState> result = agent
+				.invoke("Calculate 50 + 75 and search for information about mathematics");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			OverAllState state = result.get();
@@ -441,8 +464,8 @@ class ToolCallbackTest {
 	}
 
 	/**
-	 * Test 6: Using methodTools with multiple tool objects
-	 * Demonstrates passing multiple objects with @Tool annotated methods
+	 * Test 6: Using methodTools with multiple tool objects Demonstrates passing multiple
+	 * objects with @Tool annotated methods
 	 */
 	@Test
 	public void testMultipleMethodTools() throws Exception {
@@ -450,23 +473,28 @@ class ToolCallbackTest {
 
 		// Another tool class with @Tool methods
 		class WeatherTools {
+
 			@Tool(description = "Get current weather for a location")
 			public String getWeather(@ToolParam(description = "City name") String city) {
 				return "Sunny, 25°C in " + city;
 			}
+
 		}
 
 		WeatherTools weatherTools = new WeatherTools();
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("multi_method_tool_agent")
-				.model(chatModel)
-				.description("An agent with multiple method-based tools")
-				.instruction("You are a helpful assistant with calculator and weather tools.")
-				.methodTools(calculatorTools, weatherTools)  // Multiple tool objects
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("multi_method_tool_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("An agent with multiple method-based tools")
+			.instruction("You are a helpful assistant with calculator and weather tools.")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(org.springframework.ai.support.ToolCallbacks.from(calculatorTools, weatherTools))) // Multiple
+																													// tool
+																													// objects
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		try {
 			Optional<OverAllState> result = agent.invoke("What is 10 * 8 and what's the weather in Beijing?");
@@ -485,8 +513,8 @@ class ToolCallbackTest {
 	}
 
 	/**
-	 * Test 7: Using methodTools with no-parameter methods
-	 * Demonstrates how to use @Tool annotation on methods without parameters
+	 * Test 7: Using methodTools with no-parameter methods Demonstrates how to use @Tool
+	 * annotation on methods without parameters
 	 */
 	@Test
 	public void testMethodToolsWithNoParameters() throws Exception {
@@ -494,24 +522,35 @@ class ToolCallbackTest {
 		SystemInfoTools.callCount = 0; // Reset call count
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("system_info_agent")
-				.model(chatModel)
-				.description("An agent that can get system information")
-				.instruction("You are a helpful assistant that can provide system information. Use the available tools to get system details.")
-				.methodTools(systemInfoTools)  // Pass the object with @Tool annotated methods (no parameters)
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("system_info_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("An agent that can get system information")
+			.instruction(
+					"You are a helpful assistant that can provide system information. Use the available tools to get system details.")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(org.springframework.ai.support.ToolCallbacks.from(systemInfoTools))) // Pass
+																									// the
+																									// object
+																									// with
+																									// @Tool
+																									// annotated
+																									// methods
+																									// (no
+																									// parameters)
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		try {
-			Optional<OverAllState> result = agent.invoke("What is the current system time? Please use the tool to get it.");
+			Optional<OverAllState> result = agent
+				.invoke("What is the current system time? Please use the tool to get it.");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			OverAllState state = result.get();
 			assertTrue(state.value("messages").isPresent(), "Messages should be present in state");
 
 			// Verify that the tool was called
-			assertTrue(SystemInfoTools.callCount > 0, 
+			assertTrue(SystemInfoTools.callCount > 0,
 					"SystemInfoTools should have been called at least once. Call count: " + SystemInfoTools.callCount);
 
 			System.out.println("=== MethodTools with No Parameters Test ===");
@@ -525,8 +564,8 @@ class ToolCallbackTest {
 	}
 
 	/**
-	 * Test 8: Using agent.stream() with tool calls
-	 * Demonstrates streaming agent execution with tool invocation
+	 * Test 8: Using agent.stream() with tool calls Demonstrates streaming agent execution
+	 * with tool invocation
 	 */
 	@Test
 	public void testStreamWithToolCalls() throws Exception {
@@ -534,14 +573,21 @@ class ToolCallbackTest {
 		CalculatorTools.callCount = 0; // Reset call count
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("streaming_calculator_agent")
-				.model(chatModel)
-				.description("An agent that can perform calculations using streaming")
-				.instruction("You are a helpful calculator assistant. Use the available tools to perform calculations.")
-				.methodTools(calculatorTools)  // Pass the object with @Tool annotated methods
-				.saver(new MemorySaver())
-				.enableLogging(true)
-				.build();
+			.name("streaming_calculator_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("An agent that can perform calculations using streaming")
+			.instruction("You are a helpful calculator assistant. Use the available tools to perform calculations.")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(org.springframework.ai.support.ToolCallbacks.from(calculatorTools))) // Pass
+																									// the
+																									// object
+																									// with
+																									// @Tool
+																									// annotated
+																									// methods
+			.saver(new MemorySaver())
+			.enableLogging(true)
+			.build();
 
 		try {
 			// Use stream() instead of invoke()
@@ -554,11 +600,11 @@ class ToolCallbackTest {
 			// Process stream outputs
 			stream.doOnNext(output -> {
 				receivedOutput.set(true);
-				
+
 				System.out.println("=== Stream Output ===");
 				System.out.println("Node: " + output.node());
 				System.out.println("Agent: " + output.agent());
-				
+
 				if (output.tokenUsage() != null) {
 					System.out.println("Token Usage: " + output.tokenUsage());
 				}
@@ -566,31 +612,27 @@ class ToolCallbackTest {
 				// Check if this is a streaming output with messages
 				if (output instanceof StreamingOutput<?> streamingOutput) {
 					System.out.println("Streaming Output received");
-					
+
 					// Check if tool was called by examining the call count
 					if (CalculatorTools.callCount > 0) {
 						toolCalled.set(true);
 						System.out.println("Tool was called! Call count: " + CalculatorTools.callCount);
 					}
 				}
-			})
-			.doOnError(error -> {
+			}).doOnError(error -> {
 				System.err.println("Stream error: " + error.getMessage());
 				error.printStackTrace();
 				fail("Stream execution failed: " + error.getMessage());
-			})
-			.doOnComplete(() -> {
+			}).doOnComplete(() -> {
 				System.out.println("=== Stream completed ===");
 				assertTrue(receivedOutput.get(), "Should have received at least one output");
-				assertTrue(toolCalled.get() || CalculatorTools.callCount > 0, 
+				assertTrue(toolCalled.get() || CalculatorTools.callCount > 0,
 						"Tool should have been called during stream execution");
-			})
-			.blockLast(); // Block until stream completes
+			}).blockLast(); // Block until stream completes
 
 			// Verify tool was actually called
-			assertTrue(CalculatorTools.callCount > 0, 
-					"Calculator tool should have been called at least once");
-			
+			assertTrue(CalculatorTools.callCount > 0, "Calculator tool should have been called at least once");
+
 			System.out.println("=== Stream with Tool Calls Test Completed ===");
 			System.out.println("Total tool calls: " + CalculatorTools.callCount);
 		}
@@ -601,4 +643,3 @@ class ToolCallbackTest {
 	}
 
 }
-

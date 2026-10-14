@@ -18,17 +18,19 @@ package io.github.agentic.ai.graph.agent.tool;
 /**
  * Exception thrown when a tool execution is cancelled.
  *
- * <p>This exception is thrown when:</p>
+ * <p>
+ * This exception is thrown when:
+ * </p>
  * <ul>
- *   <li>A {@link CancellationToken} is triggered during tool execution</li>
- *   <li>A tool's {@link java.util.concurrent.CompletableFuture} is cancelled</li>
- *   <li>A tool explicitly checks for cancellation and aborts</li>
+ * <li>A {@link CancellationToken} is triggered during tool execution</li>
+ * <li>A tool's {@link java.util.concurrent.CompletableFuture} is cancelled</li>
+ * <li>A tool explicitly checks for cancellation and aborts</li>
  * </ul>
  *
  * @author disaster
  * @since 1.0.0
  * @see CancellationToken
- * @see AsyncToolCallback
+ * @see io.github.agentic.ai.api.tool.Tool
  */
 public class ToolCancelledException extends RuntimeException {
 

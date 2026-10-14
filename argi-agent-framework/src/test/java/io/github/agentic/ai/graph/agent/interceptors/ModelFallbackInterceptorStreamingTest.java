@@ -23,12 +23,14 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.graph.agent.interceptor.modelfallback.ModelFallbackInterceptor;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
+import reactor.adapter.JdkFlowAdapter;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatMessage;
 
 import java.time.Duration;
 import java.util.List;
@@ -44,8 +46,10 @@ class ModelFallbackInterceptorStreamingTest {
 	@Test
 	void streamingPrimaryResponseDoesNotCallFallback() {
 		CountingModel fallback = new CountingModel("fallback");
-		ModelResponse primary = ModelResponse.of(Flux.just(response("primary")));
-		ModelResponse result = interceptor(fallback).interceptModel(ModelRequest.builder().messages(List.of()).build(), request -> primary);
+		ModelResponse primary = ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(
+				Flux.just(ChatEvent.response(ModelResponse.of(ChatMessage.assistant("primary")).getChatResponse()))));
+		ModelResponse result = interceptor(fallback).interceptModel(ModelRequest.builder().messages(List.of()).build(),
+				request -> primary);
 
 		assertSame(primary, result);
 		assertEquals(0, fallback.calls);
@@ -56,9 +60,9 @@ class ModelFallbackInterceptorStreamingTest {
 		CountingModel fallback = new CountingModel("fallback");
 		RuntimeException failure = new RuntimeException("stream failed");
 		ModelResponse result = interceptor(fallback).interceptModel(ModelRequest.builder().messages(List.of()).build(),
-				request -> ModelResponse.of(Flux.error(failure)));
+				request -> ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(Flux.error(failure))));
 
-		Flux<?> stream = assertInstanceOf(Flux.class, result.getMessage());
+		Flux<ChatEvent> stream = JdkFlowAdapter.flowPublisherToFlux(result.getStream());
 		assertSame(failure, assertThrows(RuntimeException.class, () -> stream.blockLast(Duration.ofSeconds(2))));
 		assertEquals(0, fallback.calls);
 	}
@@ -66,9 +70,10 @@ class ModelFallbackInterceptorStreamingTest {
 	@Test
 	void synchronousPrimaryResponseIsPreserved() {
 		CountingModel fallback = new CountingModel("fallback");
-		ModelResponse primary = ModelResponse.of(new AssistantMessage("primary"));
+		ModelResponse primary = ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("primary"));
 
-		assertSame(primary, interceptor(fallback).interceptModel(ModelRequest.builder().messages(List.of()).build(), request -> primary));
+		assertSame(primary, interceptor(fallback).interceptModel(ModelRequest.builder().messages(List.of()).build(),
+				request -> primary));
 		assertEquals(0, fallback.calls);
 	}
 
@@ -77,10 +82,14 @@ class ModelFallbackInterceptorStreamingTest {
 		CountingModel fallback = new CountingModel("fallback");
 		ModelResponse result = interceptor(fallback).interceptModel(ModelRequest.builder().messages(List.of()).build(),
 				request -> {
-					throw new RuntimeException("primary failed");
+					if (request.getChatClient() == null) {
+						throw new RuntimeException("primary failed");
+					}
+					fallback.calls++;
+					return ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("fallback"));
 				});
 
-		assertEquals("fallback", assertInstanceOf(AssistantMessage.class, result.getMessage()).getText());
+		assertEquals("fallback", result.getMessage().text());
 		assertEquals(1, fallback.calls);
 	}
 
@@ -88,21 +97,27 @@ class ModelFallbackInterceptorStreamingTest {
 	void agentStreamingKeepsThePrimaryModelOutput() throws Exception {
 		CountingModel primary = new CountingModel("primary");
 		CountingModel fallback = new CountingModel("fallback");
-		ReactAgent agent = ReactAgent.builder().name("streaming-fallback-test").model(primary)
-				.interceptors(interceptor(fallback)).build();
+		ReactAgent agent = ReactAgent.builder()
+			.name("streaming-fallback-test")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(primary))
+			.interceptors(interceptor(fallback))
+			.build();
 		NodeOutput output = agent.stream("hello", RunnableConfig.builder().threadId("streaming-fallback").build())
-				.last().block(Duration.ofSeconds(2));
+			.last()
+			.block(Duration.ofSeconds(2));
 
 		assertNotNull(output);
 		List<?> messages = assertInstanceOf(List.class, output.state().value("messages").orElseThrow());
-		assertEquals("primary", assertInstanceOf(Message.class, messages.get(messages.size() - 1)).getText());
+		assertEquals("primary", assertInstanceOf(ChatMessage.class, messages.get(messages.size() - 1)).text());
 		assertEquals(1, primary.streams);
 		assertEquals(0, primary.calls);
 		assertEquals(0, fallback.calls);
 	}
 
 	private static ModelFallbackInterceptor interceptor(ChatModel fallback) {
-		return ModelFallbackInterceptor.builder().addFallbackModel(fallback).build();
+		return ModelFallbackInterceptor.builder()
+			.addFallbackClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(fallback))
+			.build();
 	}
 
 	private static ChatResponse response(String text) {
@@ -132,5 +147,7 @@ class ModelFallbackInterceptorStreamingTest {
 			streams++;
 			return Flux.just(response(text));
 		}
+
 	}
+
 }

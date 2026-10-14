@@ -20,13 +20,13 @@ import io.github.agentic.ai.graph.agent.interceptor.ToolCallRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallResponse;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
 
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.Prompt;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRequest;
 
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import org.slf4j.Logger;
@@ -35,41 +35,35 @@ import org.slf4j.LoggerFactory;
 /**
  * Tool interceptor that emulates specified tools using an LLM instead of executing them.
  *
- * This interceptor allows selective emulation of tools for testing purposes.
- * By default (when tools=null), all tools are emulated. You can specify which
- * tools to emulate by passing a list of tool names.
+ * This interceptor allows selective emulation of tools for testing purposes. By default,
+ * all tools are emulated. Set {@code emulateAllTools(false)} to emulate only the
+ * explicitly configured tool names.
  *
- * Example:
- * // Emulate all tools (default behavior)
- * ToolEmulatorInterceptor emulator = ToolEmulatorInterceptor.builder()
- *     .model(chatModel)
- *     .build();
+ * Example: // Emulate all tools (default behavior) ToolEmulatorInterceptor emulator =
+ * ToolEmulatorInterceptor.builder() .chatClient(chatClient) .build();
  *
- * // Emulate specific tools by name
- * ToolEmulatorInterceptor emulator = ToolEmulatorInterceptor.builder()
- *     .model(chatModel)
- *     .addTool("get_weather")
- *     .addTool("get_user_location")
- *     .build();
+ * // Emulate specific tools by name ToolEmulatorInterceptor emulator =
+ * ToolEmulatorInterceptor.builder() .chatClient(chatClient) .emulateAllTools(false)
+ * .addTool("get_weather") .addTool("get_user_location") .build();
  *
- * // Emulate all except specified tools
- * ToolEmulatorInterceptor emulator = ToolEmulatorInterceptor.builder()
- *     .model(chatModel)
- *     .emulateAllTools(false)  // Only emulate specified tools
- *     .addTool("expensive_api")
- *     .build();
+ * // Emulate only an expensive tool ToolEmulatorInterceptor emulator =
+ * ToolEmulatorInterceptor.builder() .chatClient(chatClient) .emulateAllTools(false) //
+ * Only emulate specified tools .addTool("expensive_api") .build();
  */
 public class ToolEmulatorInterceptor extends ToolInterceptor {
 
 	private static final Logger log = LoggerFactory.getLogger(ToolEmulatorInterceptor.class);
 
-	private final ChatModel emulatorModel;
+	private final ChatClient chatClient;
+
 	private final boolean emulateAll;
+
 	private final Set<String> toolsToEmulate;
+
 	private final String promptTemplate;
 
 	private ToolEmulatorInterceptor(Builder builder) {
-		this.emulatorModel = builder.emulatorModel;
+		this.chatClient = builder.chatClient;
 		this.emulateAll = builder.emulateAll;
 		this.toolsToEmulate = new HashSet<>(builder.toolsToEmulate);
 		this.promptTemplate = builder.promptTemplate;
@@ -100,14 +94,20 @@ public class ToolEmulatorInterceptor extends ToolInterceptor {
 
 		try {
 			// Build prompt for emulator LLM
-			String prompt = String.format(promptTemplate,
-					toolName,
-					"No description available", // TODO: Tool descriptions not available in ToolCallRequest
+			String prompt = String.format(promptTemplate, toolName, "No description available", // TODO:
+																								// Tool
+																								// descriptions
+																								// not
+																								// available
+																								// in
+																								// ToolCallRequest
 					request.getArguments());
 
 			// Get emulated response from LLM
-			ChatResponse response = emulatorModel.call(new Prompt(new UserMessage(prompt)));
-			String emulatedResult = response.getResult().getOutput().getText();
+			String emulatedResult = chatClient.callBlocking(ChatRequest.of(List.of(ChatMessage.user(prompt)))).text();
+			if (emulatedResult.isBlank()) {
+				throw new IllegalStateException("Tool emulator returned an empty result");
+			}
 
 			log.debug("Emulated tool '{}' returned: {}", toolName,
 					emulatedResult.length() > 100 ? emulatedResult.substring(0, 100) + "..." : emulatedResult);
@@ -124,33 +124,35 @@ public class ToolEmulatorInterceptor extends ToolInterceptor {
 	}
 
 	public static class Builder {
+
 		private final Set<String> toolsToEmulate = new HashSet<>();
-		private ChatModel emulatorModel;
+
+		private ChatClient chatClient;
+
 		private boolean emulateAll = true; // Default: emulate all tools
+
 		private String promptTemplate = """
 				You are emulating a tool call for testing purposes.
-				
+
 				Tool: %s
 				Description: %s
 				Arguments: %s
-				
+
 				Generate a realistic response that this tool would return given these arguments.
 				Return ONLY the tool's output, no explanation or preamble.
 				Introduce variation into your responses.
 				""";
 
 		/**
-		 * Set the chat model used for emulation.
-		 * Required.
+		 * Set the provider-neutral chat client used for emulation. Required.
 		 */
-		public Builder model(ChatModel model) {
-			this.emulatorModel = model;
+		public Builder chatClient(ChatClient chatClient) {
+			this.chatClient = chatClient;
 			return this;
 		}
 
 		/**
-		 * Add a tool name to emulate.
-		 * If emulateAllTools is true, this is ignored.
+		 * Add a tool name to emulate. If emulateAllTools is true, this is ignored.
 		 */
 		public Builder addTool(String toolName) {
 			this.toolsToEmulate.add(toolName);
@@ -166,8 +168,8 @@ public class ToolEmulatorInterceptor extends ToolInterceptor {
 		}
 
 		/**
-		 * Set whether to emulate all tools or only specified ones.
-		 * Default is true (emulate all tools).
+		 * Set whether to emulate all tools or only specified ones. Default is true
+		 * (emulate all tools).
 		 *
 		 * Set to false to only emulate tools added via addTool().
 		 */
@@ -177,11 +179,8 @@ public class ToolEmulatorInterceptor extends ToolInterceptor {
 		}
 
 		/**
-		 * Set a custom prompt template for emulation.
-		 * The template should accept 3 string format arguments:
-		 * 1. Tool name
-		 * 2. Tool description
-		 * 3. Tool arguments (JSON)
+		 * Set a custom prompt template for emulation. The template should accept 3 string
+		 * format arguments: 1. Tool name 2. Tool description 3. Tool arguments (JSON)
 		 */
 		public Builder promptTemplate(String template) {
 			this.promptTemplate = template;
@@ -189,11 +188,12 @@ public class ToolEmulatorInterceptor extends ToolInterceptor {
 		}
 
 		public ToolEmulatorInterceptor build() {
-			if (emulatorModel == null) {
-				throw new IllegalStateException("Emulator model is required");
+			if (chatClient == null) {
+				throw new IllegalStateException("Emulator chatClient is required");
 			}
 			return new ToolEmulatorInterceptor(this);
 		}
-	}
-}
 
+	}
+
+}

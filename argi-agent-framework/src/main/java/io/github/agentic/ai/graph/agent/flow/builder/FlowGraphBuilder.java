@@ -23,7 +23,7 @@ import io.github.agentic.ai.graph.agent.flow.strategy.FlowGraphBuildingStrategyR
 import io.github.agentic.ai.graph.agent.hook.Hook;
 import io.github.agentic.ai.graph.exception.GraphStateException;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import org.springframework.ai.chat.model.ChatModel;
+import io.github.agentic.ai.api.chat.ChatClient;
 
 import java.util.HashMap;
 import java.util.List;
@@ -44,7 +44,8 @@ public class FlowGraphBuilder {
 	 * @throws GraphStateException if graph construction fails
 	 */
 	public static StateGraph buildGraph(String strategyType, FlowGraphConfig config) throws GraphStateException {
-		FlowGraphBuildingStrategy strategy = FlowGraphBuildingStrategyRegistry.getInstance().createStrategy(strategyType);
+		FlowGraphBuildingStrategy strategy = FlowGraphBuildingStrategyRegistry.getInstance()
+			.createStrategy(strategyType);
 		strategy.validateConfig(config);
 		return strategy.buildGraph(config);
 	}
@@ -66,7 +67,7 @@ public class FlowGraphBuilder {
 
 		private Map<String, Agent> conditionalAgents;
 
-		private ChatModel chatModel;
+		private ChatClient chatClient;
 
 		private StateSerializer stateSerializer;
 
@@ -127,12 +128,12 @@ public class FlowGraphBuilder {
 			this.conditionalAgents = conditionalAgents;
 		}
 
-		public ChatModel getChatModel() {
-			return chatModel;
+		public ChatClient getChatClient() {
+			return chatClient;
 		}
 
-		public void setChatModel(ChatModel chatModel) {
-			this.chatModel = chatModel;
+		public void setChatClient(ChatClient chatClient) {
+			this.chatClient = chatClient;
 		}
 
 		public List<Hook> getHooks() {
@@ -184,8 +185,8 @@ public class FlowGraphBuilder {
 			return this;
 		}
 
-		public FlowGraphConfig chatModel(ChatModel model) {
-			this.chatModel = model;
+		public FlowGraphConfig chatClient(ChatClient client) {
+			this.chatClient = client;
 			return this;
 		}
 

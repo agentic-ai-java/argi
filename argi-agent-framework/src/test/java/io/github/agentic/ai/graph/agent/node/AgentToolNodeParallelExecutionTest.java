@@ -21,7 +21,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -174,7 +174,7 @@ class AgentToolNodeParallelExecutionTest {
 					new AssistantMessage.ToolCall("id-2", "function", "tool2", "{}"));
 
 			// Apply null fallback logic (as implemented in AgentToolNode)
-			List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
+			List<ChatMessage> toolResponses = new ArrayList<>();
 			for (int i = 0; i < orderedResponses.length(); i++) {
 				ToolCallResponse response = orderedResponses.get(i);
 				if (response == null) {
@@ -183,18 +183,18 @@ class AgentToolNodeParallelExecutionTest {
 					response = ToolCallResponse.error(toolCall.id(), toolCall.name(),
 							"Tool execution did not produce a response");
 				}
-				toolResponses.add(response.toToolResponse());
+				toolResponses.add(response.toMessage());
 			}
 
 			// Verify all responses are present (no null)
 			assertEquals(3, toolResponses.size());
 
 			// Verify normal responses
-			assertEquals("result0", toolResponses.get(0).responseData());
-			assertEquals("result2", toolResponses.get(2).responseData());
+			assertEquals("result0", toolResponses.get(0).text());
+			assertEquals("result2", toolResponses.get(2).text());
 
 			// Verify fallback error response
-			String errorResponse = toolResponses.get(1).responseData();
+			String errorResponse = toolResponses.get(1).text();
 			assertTrue(errorResponse.contains("Error:"));
 			assertTrue(errorResponse.contains("did not produce a response"));
 		}
@@ -211,7 +211,7 @@ class AgentToolNodeParallelExecutionTest {
 					new AssistantMessage.ToolCall("id-1", "function", "tool1", "{}"),
 					new AssistantMessage.ToolCall("id-2", "function", "tool2", "{}"));
 
-			List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
+			List<ChatMessage> toolResponses = new ArrayList<>();
 			for (int i = 0; i < orderedResponses.length(); i++) {
 				ToolCallResponse response = orderedResponses.get(i);
 				if (response == null) {
@@ -219,13 +219,13 @@ class AgentToolNodeParallelExecutionTest {
 					response = ToolCallResponse.error(toolCall.id(), toolCall.name(),
 							"Tool execution did not produce a response");
 				}
-				toolResponses.add(response.toToolResponse());
+				toolResponses.add(response.toMessage());
 			}
 
 			// All should be error responses
 			assertEquals(3, toolResponses.size());
-			for (ToolResponseMessage.ToolResponse tr : toolResponses) {
-				assertTrue(tr.responseData().contains("Error:"));
+			for (ChatMessage tr : toolResponses) {
+				assertTrue(tr.text().contains("Error:"));
 			}
 		}
 
@@ -244,7 +244,7 @@ class AgentToolNodeParallelExecutionTest {
 				toolCalls.add(new AssistantMessage.ToolCall("id-" + i, "function", "tool" + i, "{}"));
 			}
 
-			List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
+			List<ChatMessage> toolResponses = new ArrayList<>();
 			for (int i = 0; i < orderedResponses.length(); i++) {
 				ToolCallResponse response = orderedResponses.get(i);
 				if (response == null) {
@@ -252,7 +252,7 @@ class AgentToolNodeParallelExecutionTest {
 					response = ToolCallResponse.error(toolCall.id(), toolCall.name(),
 							"Tool execution did not produce a response");
 				}
-				toolResponses.add(response.toToolResponse());
+				toolResponses.add(response.toMessage());
 			}
 
 			// Critical: response count must equal tool call count
@@ -277,16 +277,16 @@ class AgentToolNodeParallelExecutionTest {
 		}
 
 		@Test
-		@DisplayName("error response should be convertible to ToolResponse")
-		void errorResponse_shouldBeConvertible_toToolResponse() {
+		@DisplayName("error response should be convertible to a neutral tool message")
+		void errorResponse_shouldBeConvertible_toMessage() {
 			ToolCallResponse error = ToolCallResponse.error("call-id", "testTool", "Failure reason");
 
-			ToolResponseMessage.ToolResponse toolResponse = error.toToolResponse();
+			ChatMessage toolResponse = error.toMessage();
 
 			assertNotNull(toolResponse);
-			assertEquals("call-id", toolResponse.id());
-			assertEquals("testTool", toolResponse.name());
-			assertTrue(toolResponse.responseData().contains("Error:"));
+			assertEquals("call-id", toolResponse.toolCallId());
+			assertEquals("testTool", toolResponse.toolName());
+			assertTrue(toolResponse.text().contains("Error:"));
 		}
 
 	}

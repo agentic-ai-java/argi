@@ -18,7 +18,7 @@ package io.github.agentic.ai.graph.skills.registry.customized;
 import io.github.agentic.ai.graph.skills.SkillMetadata;
 import io.github.agentic.ai.graph.skills.registry.AbstractSkillRegistry;
 
-import org.springframework.ai.chat.prompt.SystemPromptTemplate;
+import io.github.agentic.ai.graph.utils.PromptTemplate;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -36,36 +36,40 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Example implementation of SkillRegistry that demonstrates how to integrate
- * with a third-party backend system via API calls.
+ * Example implementation of SkillRegistry that demonstrates how to integrate with a
+ * third-party backend system via API calls.
  *
- * <p>This is a <b>test/example implementation</b> showing how users can extend
- * SkillRegistry to integrate with their own backend systems. It demonstrates:
+ * <p>
+ * This is a <b>test/example implementation</b> showing how users can extend SkillRegistry
+ * to integrate with their own backend systems. It demonstrates:
  * <ul>
- *   <li>Loading skills from a backend API</li>
- *   <li>Parsing JSON responses</li>
- *   <li>Caching skills and resources locally</li>
- *   <li>Implementing all required SkillRegistry interface methods</li>
+ * <li>Loading skills from a backend API</li>
+ * <li>Parsing JSON responses</li>
+ * <li>Caching skills and resources locally</li>
+ * <li>Implementing all required SkillRegistry interface methods</li>
  * </ul>
  *
- * <p><b>Example Usage:</b>
- * <pre>{@code
+ * <p>
+ * <b>Example Usage:</b> <pre>{@code
  * StoreSkillRegistryExample registry = StoreSkillRegistryExample.builder()
  *     .basePath("/tmp/skills")
  *     .apiUrl("https://api.example.com/skills")
  *     .build();
  * }</pre>
  *
- * <p><b>Note:</b> This implementation uses a mock API call. In a real implementation,
- * you would replace {@link #fetchSkillFromApi(String)} with an actual HTTP client
- * call to your backend system.
+ * <p>
+ * <b>Note:</b> This implementation uses a mock API call. In a real implementation, you
+ * would replace {@link #fetchSkillFromApi(String)} with an actual HTTP client call to
+ * your backend system.
  */
 public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 
 	private static final Logger logger = LoggerFactory.getLogger(CustomizedSkillRegistryExample.class);
 
 	private final String basePath;
+
 	private final String apiUrl;
+
 	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	private CustomizedSkillRegistryExample(Builder builder) {
@@ -81,11 +85,11 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 	}
 
 	/**
-	 * Simulates an API call to fetch skill data.
-	 * In a real implementation, this would make an HTTP request to the backend.
+	 * Simulates an API call to fetch skill data. In a real implementation, this would
+	 * make an HTTP request to the backend.
 	 *
-	 * <p>Example API response format:
-	 * <pre>{@code
+	 * <p>
+	 * Example API response format: <pre>{@code
 	 * {
 	 *   "code": 200,
 	 *   "message": "success",
@@ -103,38 +107,25 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 	 *   }
 	 * }
 	 * }</pre>
-	 *
 	 * @param skillName the name of the skill to fetch
 	 * @return JSON response string
 	 */
 	private String fetchSkillFromApi(String skillName) {
-		// TODO: Replace with actual API call using HTTP client (e.g., RestTemplate, WebClient)
+		// TODO: Replace with actual API call using HTTP client (e.g., RestTemplate,
+		// WebClient)
 		// For now, return a mock response
-		return String.format(
-				"{\n" +
-						"  \"code\": 200,\n" +
-						"  \"message\": \"success\",\n" +
-						"  \"data\": {\n" +
-						"    \"name\": \"%s\",\n" +
-						"    \"description\": \"技能描述 for %s\",\n" +
-						"    \"fullContent\": \"# %s\\n\\n详细的 Agent 指令内容...\",\n" +
-						"    \"resource\": {\n" +
-						"      \"references/split-script.py\": {\n" +
-						"        \"name\": \"split-script.py\",\n" +
-						"        \"type\": \"reference\",\n" +
-						"        \"content\": \"#!/usr/bin/env python3\\n# Resource content for %s\"\n" +
-						"      }\n" +
-						"    }\n" +
-						"  }\n" +
-						"}",
-				skillName, skillName, skillName, skillName
-		);
+		return String.format("{\n" + "  \"code\": 200,\n" + "  \"message\": \"success\",\n" + "  \"data\": {\n"
+				+ "    \"name\": \"%s\",\n" + "    \"description\": \"技能描述 for %s\",\n"
+				+ "    \"fullContent\": \"# %s\\n\\n详细的 Agent 指令内容...\",\n" + "    \"resource\": {\n"
+				+ "      \"references/split-script.py\": {\n" + "        \"name\": \"split-script.py\",\n"
+				+ "        \"type\": \"reference\",\n"
+				+ "        \"content\": \"#!/usr/bin/env python3\\n# Resource content for %s\"\n" + "      }\n"
+				+ "    }\n" + "  }\n" + "}", skillName, skillName, skillName, skillName);
 	}
 
 	/**
-	 * Saves a resource to the local filesystem.
-	 * Resources are saved under basePath with the resource key as the subpath.
-	 *
+	 * Saves a resource to the local filesystem. Resources are saved under basePath with
+	 * the resource key as the subpath.
 	 * @param resourceKey the resource key (e.g., "references/split-script.py")
 	 * @param resourceContent the content of the resource
 	 * @throws IOException if the file cannot be written
@@ -201,12 +192,12 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 
 				// Create SkillMetadata
 				SkillMetadata skill = SkillMetadata.builder()
-						.name(name)
-						.description(description)
-						.skillPath(skillPath)
-						.fullContent(fullContent)
-						.source("customized")
-						.build();
+					.name(name)
+					.description(description)
+					.skillPath(skillPath)
+					.fullContent(fullContent)
+					.source("customized")
+					.build();
 
 				// Store skill and its content
 				newSkills.put(name, skill);
@@ -247,7 +238,8 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 		instructions.append("\n");
 		instructions.append("**Skill Path Format:**\n");
 		instructions.append("Each skill has a unique path shown in the skill list above. ");
-		instructions.append("Use the skill id shown in the skill list when calling `read_skill` to read the skill content.\n");
+		instructions
+			.append("Use the skill id shown in the skill list when calling `read_skill` to read the skill content.\n");
 		instructions.append("Use absolute path to read the skill supporting files (scripts, references, etc.).\n");
 
 		return instructions.toString();
@@ -259,28 +251,26 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 	}
 
 	@Override
-	public SystemPromptTemplate getSystemPromptTemplate() {
+	public PromptTemplate getSystemPromptTemplate() {
 		// Use a simple default template for Store registry
 		String template = """
 				## Skills System
-				
-				You have access to a skills library that provides specialized capabilities and domain knowledge. 
+
+				You have access to a skills library that provides specialized capabilities and domain knowledge.
 				All skills are stored in a Store-based Skill Registry.
-				
+
 				### Available Skills
-				
+
 				{skills_list}
-				
+
 				### How to Use Skills
-				
+
 				Use the `read_skill` tool to read the full content of any skill by its name.
-				
+
 				{skills_load_instructions}
 				""";
 
-		return SystemPromptTemplate.builder()
-				.template(template)
-				.build();
+		return PromptTemplate.of(template);
 	}
 
 	@Override
@@ -299,12 +289,13 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 	}
 
 	public static class Builder {
+
 		private String basePath;
+
 		private String apiUrl;
 
 		/**
 		 * Sets the base path for storing skills and resources locally.
-		 *
 		 * @param basePath the base directory path
 		 * @return this builder
 		 */
@@ -315,7 +306,6 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 
 		/**
 		 * Sets the API URL for fetching skills from the backend customized.
-		 *
 		 * @param apiUrl the API endpoint URL
 		 * @return this builder
 		 */
@@ -326,7 +316,6 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 
 		/**
 		 * Builds the StoreSkillRegistryExample instance.
-		 *
 		 * @return a new StoreSkillRegistryExample instance
 		 */
 		public CustomizedSkillRegistryExample build() {
@@ -338,5 +327,7 @@ public class CustomizedSkillRegistryExample extends AbstractSkillRegistry {
 			}
 			return new CustomizedSkillRegistryExample(this);
 		}
+
 	}
+
 }

@@ -15,7 +15,6 @@
  */
 package io.github.agentic.ai.graph.agent.interceptors;
 
-import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -24,34 +23,30 @@ import io.github.agentic.ai.graph.agent.extension.interceptor.AssistantMessageSa
 import io.github.agentic.ai.graph.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.chat.ToolCall;
 
 import org.junit.jupiter.api.Test;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.content.Media;
-import org.springframework.util.MimeTypeUtils;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Unit tests for {@link AssistantMessageSanitizerInterceptor}, covering issue #4561:
- * tool-calling AssistantMessages with {@code null} text must be rewritten with an empty
- * content so strict DeepSeek-compatible backends accept them.
+ * tool-calling assistant messages without a text part must be rewritten with empty
+ * content so strict backends accept them.
  */
 class AssistantMessageSanitizerInterceptorTest {
 
 	private final AssistantMessageSanitizerInterceptor interceptor = AssistantMessageSanitizerInterceptor.builder()
-			.build();
+		.build();
 
-	private static AssistantMessage.ToolCall sampleToolCall() {
-		return new AssistantMessage.ToolCall("call_1", "function", "search", "{\"query\": \"what is sy\"}");
+	private static ToolCall sampleToolCall() {
+		return new ToolCall("call_1", "search", "{\"query\": \"what is sy\"}");
 	}
 
 	/**
@@ -60,80 +55,54 @@ class AssistantMessageSanitizerInterceptorTest {
 	private static ModelCallHandler capturingHandler(AtomicReference<ModelRequest> captured) {
 		return request -> {
 			captured.set(request);
-			return ModelResponse.of(new AssistantMessage("ok"));
+			return ModelResponse.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("ok"));
 		};
 	}
 
 	@Test
 	void rewritesNullTextToolCallMessageToEmptyContent() {
-		AssistantMessage toolCallMessage = AssistantMessage.builder()
-				.content(null)
-				.toolCalls(List.of(sampleToolCall()))
-				.build();
+		ChatMessage toolCallMessage = ChatMessage.assistant(null, List.of(sampleToolCall()));
 
 		ModelRequest request = ModelRequest.builder()
-				.messages(List.of(new UserMessage("search what is sy?"), toolCallMessage))
-				.build();
+			.messages(List.of(ChatMessage.user("search what is sy?"), toolCallMessage))
+			.build();
 
 		AtomicReference<ModelRequest> captured = new AtomicReference<>();
 		interceptor.interceptModel(request, capturingHandler(captured));
 
 		ModelRequest forwarded = captured.get();
 		assertNotNull(forwarded);
-		Message rewritten = forwarded.getMessages().get(1);
-		assertInstanceOf(AssistantMessage.class, rewritten);
-		AssistantMessage rewrittenAssistant = (AssistantMessage) rewritten;
-		// null text -> empty string content, so the serialized request keeps the content field.
-		assertEquals("", rewrittenAssistant.getText());
-		assertTrue(rewrittenAssistant.hasToolCalls());
-		assertEquals(1, rewrittenAssistant.getToolCalls().size());
-		assertEquals("search", rewrittenAssistant.getToolCalls().get(0).name());
+		ChatMessage rewritten = forwarded.getMessages().get(1);
+		assertEquals(ChatRole.ASSISTANT, rewritten.role());
+		assertEquals(List.of(ContentPart.text("")), rewritten.content());
+		assertEquals(List.of(sampleToolCall()), rewritten.toolCalls());
+		assertTrue(toolCallMessage.content().isEmpty(), "Original message must remain unchanged");
 	}
 
 	@Test
 	void preservesToolCallsMetadataAndMedia() {
-		Media media = Media.builder()
-				.mimeType(MimeTypeUtils.IMAGE_PNG)
-				.data(URI.create("http://example.com/image.png"))
-				.id("media-1")
-				.build();
+		ContentPart media = ContentPart.binary(ContentPart.Type.IMAGE, "image/png", new byte[] { 1, 2, 3 });
+		ChatMessage toolCallMessage = new ChatMessage(ChatRole.ASSISTANT, List.of(media), List.of(sampleToolCall()),
+				null, null, Map.of("customKey", "customValue"));
 
-		AssistantMessage toolCallMessage = AssistantMessage.builder()
-				.content(null)
-				.toolCalls(List.of(sampleToolCall()))
-				.properties(Map.of("customKey", "customValue"))
-				.media(List.of(media))
-				.build();
-
-		ModelRequest request = ModelRequest.builder()
-				.messages(List.of(toolCallMessage))
-				.build();
+		ModelRequest request = ModelRequest.builder().messages(List.of(toolCallMessage)).build();
 
 		AtomicReference<ModelRequest> captured = new AtomicReference<>();
 		interceptor.interceptModel(request, capturingHandler(captured));
 
-		AssistantMessage rewritten = (AssistantMessage) captured.get().getMessages().get(0);
-		assertEquals("", rewritten.getText());
-		assertEquals(List.of(sampleToolCall()), rewritten.getToolCalls());
-		assertEquals("customValue", rewritten.getMetadata().get("customKey"));
-		assertEquals(1, rewritten.getMedia().size());
-		assertEquals("media-1", rewritten.getMedia().get(0).getId());
+		ChatMessage rewritten = captured.get().getMessages().get(0);
+		assertEquals("", rewritten.text());
+		assertEquals(List.of(sampleToolCall()), rewritten.toolCalls());
+		assertEquals("customValue", rewritten.metadata().get("customKey"));
+		assertEquals(List.of(media, ContentPart.text("")), rewritten.content());
 	}
 
 	@Test
 	void leavesMessagesUntouchedWhenNoRewriteNeeded() {
-		AssistantMessage textWithToolCalls = AssistantMessage.builder()
-				.content("thinking...")
-				.toolCalls(List.of(sampleToolCall()))
-				.build();
+		ChatMessage textWithToolCalls = ChatMessage.assistant("thinking...", List.of(sampleToolCall()));
 
-		List<Message> original = List.of(
-				new UserMessage("hi"),
-				new AssistantMessage("plain answer"),
-				textWithToolCalls,
-				ToolResponseMessage.builder()
-						.responses(List.of(new ToolResponseMessage.ToolResponse("call_1", "search", "result")))
-						.build());
+		List<ChatMessage> original = List.of(ChatMessage.user("hi"), ChatMessage.assistant("plain answer"),
+				textWithToolCalls, ChatMessage.tool("call_1", "search", "result"));
 
 		ModelRequest request = ModelRequest.builder().messages(original).build();
 
@@ -142,7 +111,8 @@ class AssistantMessageSanitizerInterceptorTest {
 
 		// No message needed fixing: the exact same request instance is forwarded.
 		assertSame(request, captured.get());
-		assertSame(original, captured.get().getMessages());
+		assertSame(request.getMessages(), captured.get().getMessages());
+		assertEquals(original, captured.get().getMessages());
 	}
 
 	@Test
@@ -154,4 +124,5 @@ class AssistantMessageSanitizerInterceptorTest {
 
 		assertSame(request, captured.get());
 	}
+
 }

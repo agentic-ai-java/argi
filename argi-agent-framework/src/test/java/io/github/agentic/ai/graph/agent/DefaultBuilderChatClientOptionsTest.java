@@ -15,9 +15,9 @@
  */
 package io.github.agentic.ai.graph.agent;
 
-import java.lang.reflect.Field;
+import java.util.List;
 
-import io.github.agentic.ai.graph.agent.node.AgentLlmNode;
+import io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.ai.chat.client.ChatClient;
@@ -25,6 +25,8 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.openai.OpenAiChatOptions;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,38 +34,45 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class DefaultBuilderChatClientOptionsTest {
 
 	@Test
-	void chatClientDefaultOptionsCustomizerIsMergedWithBackingModelOptions() throws Exception {
-		ChatModel chatModel = new TestChatModel(OpenAiChatOptions.builder()
-				.model("configured-model")
-				.temperature(0.2)
-				.build());
+	void chatClientDefaultOptionsRemainOwnedByTheAdapter() throws Exception {
+		TestChatModel chatModel = new TestChatModel(
+				OpenAiChatOptions.builder().model("configured-model").temperature(0.2).build());
 		ChatClient chatClient = ChatClient.builder(chatModel)
-				.defaultOptions(OpenAiChatOptions.builder().temperature(0.7))
-				.build();
+			.defaultOptions(OpenAiChatOptions.builder().model("configured-model").temperature(0.7))
+			.build();
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("test-agent")
-				.chatClient(chatClient)
-				.build();
+			.name("test-agent")
+			.chatClient(new SpringAiChatClientAdapter(chatClient))
+			.build();
 
-		ChatOptions effectiveOptions = getChatOptions(agent);
+		agent.call("test");
+		ChatOptions effectiveOptions = chatModel.prompt.getOptions();
 		assertEquals("configured-model", effectiveOptions.getModel());
 		assertEquals(0.7, effectiveOptions.getTemperature());
 	}
 
-	private static ChatOptions getChatOptions(ReactAgent agent) throws Exception {
-		Field llmNodeField = ReactAgent.class.getDeclaredField("llmNode");
-		llmNodeField.setAccessible(true);
-		AgentLlmNode llmNode = (AgentLlmNode) llmNodeField.get(agent);
-
-		Field chatOptionsField = AgentLlmNode.class.getDeclaredField("chatOptions");
-		chatOptionsField.setAccessible(true);
-		return (ChatOptions) chatOptionsField.get(llmNode);
+	@Test
+	void requestOptionsOverrideClientDefaultsWithoutLosingTheConfiguredModel() throws Exception {
+		TestChatModel model = new TestChatModel(ChatOptions.builder().build());
+		ChatClient client = ChatClient.builder(model)
+			.defaultOptions(OpenAiChatOptions.builder().model("configured-model").temperature(0.7))
+			.build();
+		ReactAgent.builder()
+			.name("test-agent")
+			.chatClient(new SpringAiChatClientAdapter(client))
+			.generationOptions(io.github.agentic.ai.api.chat.GenerationOptions.builder().temperature(0.4).build())
+			.build()
+			.call("test");
+		assertEquals("configured-model", model.prompt.getOptions().getModel());
+		assertEquals(0.4, model.prompt.getOptions().getTemperature());
 	}
 
 	private static final class TestChatModel implements ChatModel {
 
 		private final ChatOptions options;
+
+		private Prompt prompt;
 
 		private TestChatModel(ChatOptions options) {
 			this.options = options;
@@ -76,7 +85,8 @@ class DefaultBuilderChatClientOptionsTest {
 
 		@Override
 		public ChatResponse call(Prompt prompt) {
-			throw new UnsupportedOperationException("This test only verifies ChatClient default options.");
+			this.prompt = prompt;
+			return new ChatResponse(List.of(new Generation(new AssistantMessage("answer"))));
 		}
 
 	}

@@ -18,36 +18,32 @@ package io.github.agentic.ai.graph.agent.planner;
 import java.util.List;
 import java.util.Objects;
 
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRequest;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.GenerationOptions;
+import io.github.agentic.ai.api.chat.ToolChoice;
 
 /**
  * Opt-in, model-backed planning adapter. It returns validated data only; it never invokes
  * tools, agents or an executor. DIRECT is for a known single-capability task; DECOMPOSE
  * is for tasks needing a dependency graph. This policy is selected by the application,
- * not inferred from untrusted model claims. Use a tool-free ChatModel, not an executing
- * agent.
+ * not inferred from untrusted model claims. Uses a single-turn ChatClient with no tools,
+ * never a native executing agent.
  */
 public final class ArgiPlanner {
 
-	private final ChatModel model;
+	private final ChatClient chatClient;
 
 	private final PlanValidator validator;
 
 	private final PlanCodec codec = new PlanCodec();
 
-	public ArgiPlanner(ChatModel model, PlanValidator validator) {
-		this.model = Objects.requireNonNull(model, "model");
+	public ArgiPlanner(ChatClient chatClient, PlanValidator validator) {
+		this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
 		this.validator = Objects.requireNonNull(validator, "validator");
-		// Spring AI 2 uses raw ChatModel responses here, not a tool-executing ChatClient.
-		if (model.getOptions() instanceof ToolCallingChatOptions options) {
-			PlanValidator.require(options.getToolCallbacks() == null || options.getToolCallbacks().isEmpty(),
-					"Planner requires a model without default tool callbacks");
-		}
 	}
 
 	/** Generate or directly construct a plan; validation failures never return a plan. */
@@ -79,15 +75,17 @@ public final class ArgiPlanner {
 					+ this.validator.maxDepth() + "\nRegistered capabilities:\n"
 					+ PlanCodec.MAPPER.writeValueAsString(this.validator.capabilities()) + "\nWire schema:\n"
 					+ this.codec.jsonSchema();
-			ChatResponse response = this.model.call(new Prompt(
-					List.of(new SystemMessage(system), new UserMessage(PlanCodec.MAPPER.writeValueAsString(request))),
-					ToolCallingChatOptions.builder().toolCallbacks(List.of()).build()));
+			ChatResponse response = this.chatClient.callBlocking(new ChatRequest(
+					List.of(ChatMessage.system(system), ChatMessage.user(PlanCodec.MAPPER.writeValueAsString(request))),
+					List.of(), GenerationOptions.builder().toolChoice(ToolChoice.none()).build(), java.util.Map.of()));
 			PlanValidator.require(
-					response != null && response.getResults() != null && response.getResults().size() == 1,
-					"Planner requires exactly one model generation");
-			var output = response.getResult().getOutput();
-			PlanValidator.require(output != null && !output.hasToolCalls(), "Planner must not return tool calls");
-			plan = this.codec.decode(output.getText());
+					response != null && response.messages().size() == 1
+							&& response.messages().get(0).role() == ChatRole.ASSISTANT,
+					"Planner requires exactly one assistant message");
+			var output = response.messages().get(0);
+			PlanValidator.require(response.toolCalls().isEmpty() && output.toolCalls().isEmpty(),
+					"Planner must not return tool calls");
+			plan = this.codec.decode(output.text());
 		}
 		this.validator.validateGenerated(plan);
 		PlanValidator.require(plan.revision() == request.revision() && plan.objective().equals(request.objective()),

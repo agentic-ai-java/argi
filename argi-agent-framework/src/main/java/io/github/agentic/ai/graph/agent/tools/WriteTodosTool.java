@@ -21,9 +21,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.util.List;
 import java.util.Map;
@@ -32,11 +32,11 @@ import java.util.function.BiFunction;
 import static io.github.agentic.ai.graph.agent.tools.ToolContextConstants.AGENT_STATE_FOR_UPDATE_CONTEXT_KEY;
 
 /**
- * Tool for writing and managing todos in the agent workflow.
- * This tool allows agents to create, update, and track task lists.
+ * Tool for writing and managing todos in the agent workflow. This tool allows agents to
+ * create, update, and track task lists.
  * <p>
- * Inspired by Claude Code's TodoWrite tool, it helps AI agents track progress,
- * organize complex tasks, and provide visibility into task execution.
+ * Inspired by Claude Code's TodoWrite tool, it helps AI agents track progress, organize
+ * complex tasks, and provide visibility into task execution.
  */
 public class WriteTodosTool implements BiFunction<WriteTodosTool.Request, ToolContext, WriteTodosTool.Response> {
 
@@ -230,7 +230,7 @@ public class WriteTodosTool implements BiFunction<WriteTodosTool.Request, ToolCo
 			}
 
 			// Extract state from ToolContext
-			Map<String, Object> contextData = toolContext.getContext();
+			Map<String, Object> contextData = toolContext.attributes();
 			if (contextData == null) {
 				return Response.error("Tool context is not available");
 			}
@@ -276,8 +276,8 @@ public class WriteTodosTool implements BiFunction<WriteTodosTool.Request, ToolCo
 			}
 
 			if (item.getContent() == null || item.getContent().isBlank()) {
-				return Response.error("Task at index " + i
-						+ " has empty or blank content. All tasks must have meaningful content.");
+				return Response.error(
+						"Task at index " + i + " has empty or blank content. All tasks must have meaningful content.");
 			}
 
 			if (item.getStatus() == null) {
@@ -290,19 +290,15 @@ public class WriteTodosTool implements BiFunction<WriteTodosTool.Request, ToolCo
 	}
 
 	@JsonClassDescription("Request to write or update todos")
-	public record Request(
-			@JsonProperty(required = true, value = "todos")
-			@JsonPropertyDescription("List of todo items. Each item must have: content (imperative form, e.g. 'Run tests'), status (pending|in_progress|completed), and activeForm (present continuous, e.g. 'Running tests')")
-			List<Todo> todos) {
+	public record Request(@JsonProperty(required = true,
+			value = "todos") @JsonPropertyDescription("List of todo items. Each item must have: content (imperative form, e.g. 'Run tests'), status (pending|in_progress|completed), and activeForm (present continuous, e.g. 'Running tests')") List<Todo> todos) {
 	}
 
 	/**
-	 * Tool response with success status and message.
-	 * Provides clear feedback for both successful updates and error cases.
+	 * Tool response with success status and message. Provides clear feedback for both
+	 * successful updates and error cases.
 	 */
-	public record Response(
-			@JsonProperty("success") boolean success,
-			@JsonProperty("message") String message,
+	public record Response(@JsonProperty("success") boolean success, @JsonProperty("message") String message,
 			@JsonProperty("todoCount") Integer todoCount) {
 
 		public static Response success(String message, int todoCount) {
@@ -314,8 +310,8 @@ public class WriteTodosTool implements BiFunction<WriteTodosTool.Request, ToolCo
 		}
 
 		/**
-		 * Returns the message suitable for display to the agent.
-		 * For success: the guidance message; for error: the error details.
+		 * Returns the message suitable for display to the agent. For success: the
+		 * guidance message; for error: the error details.
 		 */
 		public String getDisplayMessage() {
 			return message;
@@ -356,8 +352,8 @@ public class WriteTodosTool implements BiFunction<WriteTodosTool.Request, ToolCo
 			return this;
 		}
 
-		public ToolCallback build() {
-			return FunctionToolCallback.builder(name, new WriteTodosTool(this.todoEventHandler))
+		public Tool build() {
+			return TypedTool.builder(name, new WriteTodosTool(this.todoEventHandler))
 				.description(description)
 				.inputType(Request.class)
 				.build();

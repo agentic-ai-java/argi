@@ -15,6 +15,8 @@
  */
 package io.github.agentic.ai.graph.agent.hook.messages;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.action.AsyncNodeActionWithConfig;
@@ -22,22 +24,22 @@ import io.github.agentic.ai.graph.agent.ReactAgent;
 import io.github.agentic.ai.graph.agent.hook.Hook;
 import io.github.agentic.ai.graph.state.ReplaceAllWith;
 
-import org.springframework.ai.chat.messages.Message;
-
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 public abstract class MessagesModelHook implements Hook {
+
 	private String agentName;
+
 	private ReactAgent agent;
 
-	public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
+	public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 		return new AgentCommand(previousMessages);
 	}
 
-	public AgentCommand afterModel(List<Message> previousMessages, RunnableConfig config) {
+	public AgentCommand afterModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 		return new AgentCommand(previousMessages);
 	}
 
@@ -87,6 +89,7 @@ public abstract class MessagesModelHook implements Hook {
 	 * AsyncNodeActionWithConfig interface.
 	 */
 	public static class BeforeModelAction implements AsyncNodeActionWithConfig {
+
 		private final MessagesModelHook messagesModelHook;
 
 		public BeforeModelAction(MessagesModelHook messagesModelHook) {
@@ -96,7 +99,7 @@ public abstract class MessagesModelHook implements Hook {
 		@Override
 		public CompletableFuture<Map<String, Object>> apply(OverAllState state, RunnableConfig config) {
 			@SuppressWarnings("unchecked")
-			List<Message> messages = (List<Message>) state.value("messages").orElse(List.of());
+			List<ChatMessage> messages = (List<ChatMessage>) state.value("messages").orElse(List.of());
 
 			AgentCommand command = messagesModelHook.beforeModel(messages, config);
 
@@ -104,7 +107,8 @@ public abstract class MessagesModelHook implements Hook {
 			if (command.getMessages() != null) {
 				if (UpdatePolicy.REPLACE == command.getUpdatePolicy()) {
 					result.put("messages", ReplaceAllWith.of(command.getMessages()));
-				} else {
+				}
+				else {
 					result.put("messages", command.getMessages());
 				}
 			}
@@ -114,6 +118,7 @@ public abstract class MessagesModelHook implements Hook {
 
 			return CompletableFuture.completedFuture(result);
 		}
+
 	}
 
 	/**
@@ -121,6 +126,7 @@ public abstract class MessagesModelHook implements Hook {
 	 * AsyncNodeActionWithConfig interface for afterModel hook.
 	 */
 	public static class AfterModelAction implements AsyncNodeActionWithConfig {
+
 		private final MessagesModelHook messagesModelHook;
 
 		public AfterModelAction(MessagesModelHook messagesModelHook) {
@@ -130,7 +136,7 @@ public abstract class MessagesModelHook implements Hook {
 		@Override
 		public CompletableFuture<Map<String, Object>> apply(OverAllState state, RunnableConfig config) {
 			@SuppressWarnings("unchecked")
-			List<Message> messages = (List<Message>) state.value("messages").orElse(List.of());
+			List<ChatMessage> messages = (List<ChatMessage>) state.value("messages").orElse(List.of());
 
 			AgentCommand command = messagesModelHook.afterModel(messages, config);
 
@@ -138,7 +144,8 @@ public abstract class MessagesModelHook implements Hook {
 			if (command.getMessages() != null) {
 				if (UpdatePolicy.REPLACE == command.getUpdatePolicy()) {
 					result.put("messages", ReplaceAllWith.of(command.getMessages()));
-				} else {
+				}
+				else {
 					result.put("messages", command.getMessages());
 				}
 			}
@@ -146,9 +153,9 @@ public abstract class MessagesModelHook implements Hook {
 				result.put("jump_to", command.getJumpTo().name());
 			}
 
-
 			return CompletableFuture.completedFuture(result);
 		}
+
 	}
 
 }

@@ -20,22 +20,18 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-import org.springframework.ai.tool.ToolCallback;
+import io.github.agentic.ai.api.tool.Tool;
 
 /**
  * Immutable lookup from tool name to declared {@link ToolEffect}. Tools without a
  * declaration resolve to {@link ToolEffect#UNSAFE}.
  *
  * Declarations come from the application ({@link #builder()}) or from tool callbacks that
- * implement {@link ToolEffectAware} ({@link #fromTools(Iterable)}); they are never derived
- * from tool call arguments.
+ * implement {@link ToolEffectAware} ({@link #fromTools(Iterable)}); they are never
+ * derived from tool call arguments.
  *
- * Example:
- * ToolEffectRegistry effects = ToolEffectRegistry.builder()
- *     .readOnly("search", "get_order")
- *     .idempotent("upsert_customer")
- *     .reconcilable("create_payment")
- *     .build();
+ * Example: ToolEffectRegistry effects = ToolEffectRegistry.builder() .readOnly("search",
+ * "get_order") .idempotent("upsert_customer") .reconcilable("create_payment") .build();
  */
 public final class ToolEffectRegistry {
 
@@ -60,17 +56,17 @@ public final class ToolEffectRegistry {
 	}
 
 	/**
-	 * Collect the declarations of the given tool callbacks. Callbacks that do not implement
-	 * {@link ToolEffectAware} are left undeclared and therefore resolve to
+	 * Collect the declarations of the given tool callbacks. Callbacks that do not
+	 * implement {@link ToolEffectAware} are left undeclared and therefore resolve to
 	 * {@link ToolEffect#UNSAFE}.
 	 * @param tools the registered tool callbacks
 	 * @return a registry with one entry per effect-aware callback
 	 */
-	public static ToolEffectRegistry fromTools(Iterable<? extends ToolCallback> tools) {
+	public static ToolEffectRegistry fromTools(Iterable<? extends Tool> tools) {
 		Builder builder = builder();
-		for (ToolCallback tool : tools) {
+		for (Tool tool : tools) {
 			if (tool instanceof ToolEffectAware aware) {
-				builder.declare(tool.getToolDefinition().name(), aware.toolEffect());
+				builder.declare(tool.definition().name(), aware.toolEffect());
 			}
 		}
 		return builder.build();
@@ -95,7 +91,8 @@ public final class ToolEffectRegistry {
 	}
 
 	/**
-	 * Merge another registry into this one. Declarations of {@code other} win on conflict.
+	 * Merge another registry into this one. Declarations of {@code other} win on
+	 * conflict.
 	 * @param other the registry whose declarations take precedence
 	 * @return a new registry containing both sets of declarations
 	 */

@@ -17,10 +17,9 @@ package io.github.agentic.ai.graph.agent.extension.tools.filesystem;
 
 import io.github.agentic.ai.graph.agent.extension.file.FilesystemBackend;
 
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.annotation.ToolParam;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.io.IOException;
 import java.nio.file.FileSystems;
@@ -44,11 +43,11 @@ public class GlobTool implements BiFunction<String, ToolContext, String> {
 
 	public static final String DESCRIPTION = """
 			Find files matching a glob pattern.
-			
+
 			Usage:
 			- Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character)
 			- Returns a list of absolute file paths that match the pattern
-			
+
 			Examples:
 			- `**/*.java` - Find all Java files
 			- `*.txt` - Find all text files in root
@@ -64,8 +63,7 @@ public class GlobTool implements BiFunction<String, ToolContext, String> {
 	}
 
 	@Override
-	public String apply(@ToolParam(description = "The glob pattern to match files") String pattern,
-			ToolContext toolContext) {
+	public String apply(String pattern, ToolContext toolContext) {
 		return glob(pattern, toolContext);
 	}
 
@@ -80,13 +78,10 @@ public class GlobTool implements BiFunction<String, ToolContext, String> {
 
 			List<String> matchedFiles = new ArrayList<>();
 
-			Files.walk(basePathObj)
-					.filter(Files::isRegularFile)
-					.filter(path -> {
-						Path relativePath = basePathObj.relativize(path);
-						return matcher.matches(relativePath) || matcher.matches(path);
-					})
-					.forEach(path -> matchedFiles.add(path.toString()));
+			Files.walk(basePathObj).filter(Files::isRegularFile).filter(path -> {
+				Path relativePath = basePathObj.relativize(path);
+				return matcher.matches(relativePath) || matcher.matches(path);
+			}).forEach(path -> matchedFiles.add(path.toString()));
 
 			if (matchedFiles.isEmpty()) {
 				return "No files found matching pattern: " + pattern;
@@ -99,17 +94,14 @@ public class GlobTool implements BiFunction<String, ToolContext, String> {
 		}
 	}
 
-	public static ToolCallback createGlobToolCallback(String description) {
-		return createGlobToolCallback(description, null);
+	public static Tool createGlobTool(String description) {
+		return createGlobTool(description, null);
 	}
 
-	public static ToolCallback createGlobToolCallback(String description, FilesystemBackend backend) {
-		BiFunction<GlobRequest, ToolContext, String> function =
-				(request, context) -> new GlobTool(backend).apply(request.pattern, context);
-		return FunctionToolCallback.builder("glob", function)
-				.description(description)
-				.inputType(GlobRequest.class)
-				.build();
+	public static Tool createGlobTool(String description, FilesystemBackend backend) {
+		BiFunction<GlobRequest, ToolContext, String> function = (request, context) -> new GlobTool(backend)
+			.apply(request.pattern, context);
+		return TypedTool.builder("glob", function).description(description).inputType(GlobRequest.class).build();
 	}
 
 	/** Request structure for glob searches. */
@@ -125,5 +117,7 @@ public class GlobTool implements BiFunction<String, ToolContext, String> {
 		public GlobRequest(String pattern) {
 			this.pattern = pattern;
 		}
+
 	}
+
 }

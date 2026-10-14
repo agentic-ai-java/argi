@@ -34,10 +34,9 @@ import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 import org.junit.jupiter.api.io.TempDir;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -59,14 +58,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class AgentSkillsTest {
 
 	private ChatModel chatModel;
 
 	/**
-	 * Get the absolute path to test skills directory.
-	 * Uses ClassPathResource to locate the skills directory in test resources.
+	 * Get the absolute path to test skills directory. Uses ClassPathResource to locate
+	 * the skills directory in test resources.
 	 */
 	private String getTestSkillsDirectory() throws Exception {
 		Resource resource = new ClassPathResource("skills");
@@ -109,12 +108,8 @@ class AgentSkillsTest {
 	public void testSkillsAgentHookLoadsSkillsWithResource() throws Exception {
 		// Test 2: Use Resource object (ClassPathResource)
 		Resource skillsResource = new ClassPathResource("skills");
-		SkillRegistry registry = FileSystemSkillRegistry.builder()
-			.projectSkillsDirectory(skillsResource)
-			.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillRegistry registry = FileSystemSkillRegistry.builder().projectSkillsDirectory(skillsResource).build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
 
 		// Trigger skill loading by calling beforeAgent
 		OverAllState state = new OverAllState();
@@ -136,12 +131,8 @@ class AgentSkillsTest {
 	public void testSkillsAgentHookLoadsSkillsWithAbsolutePath() throws Exception {
 		// Test 3: Use absolute path
 		String testSkillsPath = getTestSkillsDirectory();
-		SkillRegistry registry = FileSystemSkillRegistry.builder()
-			.projectSkillsDirectory(testSkillsPath)
-			.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillRegistry registry = FileSystemSkillRegistry.builder().projectSkillsDirectory(testSkillsPath).build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
 
 		// Trigger skill loading by calling beforeAgent
 		OverAllState state = new OverAllState();
@@ -163,26 +154,20 @@ class AgentSkillsTest {
 	public void testSkillsInterceptorEnhancesSystemPrompt() throws Exception {
 		// Load skills first - using Resource object
 		Resource skillsResource = new ClassPathResource("skills");
-		SkillRegistry registry = FileSystemSkillRegistry.builder()
-			.projectSkillsDirectory(skillsResource)
-			.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
-		
+		SkillRegistry registry = FileSystemSkillRegistry.builder().projectSkillsDirectory(skillsResource).build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
+
 		OverAllState state = new OverAllState();
 		RunnableConfig config = RunnableConfig.builder().threadId("test-thread").build();
 		hook.beforeAgent(state, config).join();
 
 		// Create interceptor
-		SkillsInterceptor interceptor = SkillsInterceptor.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillsInterceptor interceptor = SkillsInterceptor.builder().skillRegistry(registry).build();
 
 		// Verify registry has access to skills
 		assertTrue(registry.size() > 0, "Registry should have skills");
 		assertTrue(registry.contains("pdf-extractor"), "Registry should have pdf-extractor skill");
-		
+
 		List<SkillMetadata> skills = registry.listAll();
 		assertNotNull(skills, "Skills list should not be null");
 		assertFalse(skills.isEmpty(), "Skills list should not be empty");
@@ -191,8 +176,8 @@ class AgentSkillsTest {
 	@Test
 	public void testReactAgentWithSkillsHook() throws Exception {
 		SkillRegistry registry = FileSystemSkillRegistry.builder()
-				.projectSkillsDirectory(getTestSkillsDirectory())
-				.build();
+			.projectSkillsDirectory(getTestSkillsDirectory())
+			.build();
 		// Use default path (classpath:skills)
 		SkillsAgentHook hook = SkillsAgentHook.builder()
 			.skillRegistry(registry)
@@ -201,7 +186,7 @@ class AgentSkillsTest {
 
 		ReactAgent agent = ReactAgent.builder()
 			.name("skills-agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.saver(new MemorySaver())
 			.hooks(List.of(hook))
 			.build();
@@ -210,7 +195,7 @@ class AgentSkillsTest {
 		Optional<OverAllState> result = agent.invoke("你好，请介绍一下你自己。");
 
 		assertTrue(result.isPresent(), "Result should be present");
-		
+
 		// Verify skills were loaded through hook
 		assertTrue(registry.size() > 0, "Skills should be loaded");
 		assertTrue(registry.contains("pdf-extractor"), "Should contain pdf-extractor skill");
@@ -220,26 +205,22 @@ class AgentSkillsTest {
 	public void testReactAgentWithSkillsHookAndInterceptor() throws Exception {
 		// Use Resource object for project skills directory
 		Resource skillsResource = new ClassPathResource("skills");
-		SkillRegistry registry = FileSystemSkillRegistry.builder()
-			.projectSkillsDirectory(skillsResource)
-			.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillRegistry registry = FileSystemSkillRegistry.builder().projectSkillsDirectory(skillsResource).build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
 
 		// Hook automatically provides interceptor through getModelInterceptors()
 		ReactAgent agent = ReactAgent.builder()
 			.name("skills-agent-full")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.saver(new MemorySaver())
 			.hooks(List.of(hook))
 			.build();
 
-		AssistantMessage response = agent.call("你好，请介绍一下你自己。");
-		
+		var response = agent.call("你好，请介绍一下你自己。");
+
 		assertNotNull(response, "Response should not be null");
-		assertNotNull(response.getText(), "Response text should not be null");
-		assertFalse(response.getText().isEmpty(), "Response text should not be empty");
+		assertNotNull(response.text(), "Response text should not be null");
+		assertFalse(response.text().isEmpty(), "Response text should not be empty");
 
 		// Verify skills registry has skills
 		assertTrue(registry.size() > 0, "Skills should be loaded");
@@ -249,35 +230,24 @@ class AgentSkillsTest {
 	public void testSkillsHookProvidesInterceptor() throws Exception {
 		// Use absolute path
 		String testSkillsPath = getTestSkillsDirectory();
-		SkillRegistry registry = FileSystemSkillRegistry.builder()
-			.projectSkillsDirectory(testSkillsPath)
-			.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillRegistry registry = FileSystemSkillRegistry.builder().projectSkillsDirectory(testSkillsPath).build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
 
 		// Verify hook provides interceptor
 		List<io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor> interceptors = hook.getModelInterceptors();
 		assertNotNull(interceptors, "Interceptors should not be null");
 		assertFalse(interceptors.isEmpty(), "Interceptors should not be empty");
-		assertTrue(interceptors.get(0) instanceof SkillsInterceptor, 
-			"First interceptor should be SkillsInterceptor");
+		assertTrue(interceptors.get(0) instanceof SkillsInterceptor, "First interceptor should be SkillsInterceptor");
 	}
 
 	@Test
 	public void testSkillsRegistrySharing() throws Exception {
 		// Use Resource object
 		Resource skillsResource = new ClassPathResource("skills");
-		SkillRegistry registry = FileSystemSkillRegistry.builder()
-			.projectSkillsDirectory(skillsResource)
-			.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillRegistry registry = FileSystemSkillRegistry.builder().projectSkillsDirectory(skillsResource).build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
 
-		SkillsInterceptor interceptor = SkillsInterceptor.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillsInterceptor interceptor = SkillsInterceptor.builder().skillRegistry(registry).build();
 
 		// Load skills through hook
 		OverAllState state = new OverAllState();
@@ -285,10 +255,8 @@ class AgentSkillsTest {
 		hook.beforeAgent(state, config).join();
 
 		// Verify both hook and registry share the same registry
-		assertEquals(registry.size(), hook.getSkillCount(), 
-			"Hook and registry should have same skill count");
-		assertEquals(registry.size(), registry.size(), 
-			"Registry should have consistent skill count");
+		assertEquals(registry.size(), hook.getSkillCount(), "Hook and registry should have same skill count");
+		assertEquals(registry.size(), registry.size(), "Registry should have consistent skill count");
 		assertTrue(registry.contains("pdf-extractor"), "Registry should contain pdf-extractor");
 		assertTrue(hook.hasSkill("pdf-extractor"), "Hook should have pdf-extractor");
 		assertTrue(registry.contains("pdf-extractor"), "Registry should have pdf-extractor");
@@ -306,21 +274,19 @@ class AgentSkillsTest {
 		Path userSkillDir = userSkillsDir.resolve("user-skill");
 		Files.createDirectories(userSkillDir);
 		Files.writeString(userSkillDir.resolve("SKILL.md"),
-			"---\nname: user-skill\ndescription: User level skill\n---\n# User Skill");
+				"---\nname: user-skill\ndescription: User level skill\n---\n# User Skill");
 
 		// Create project skill with same name (should override)
 		Path projectSkillDir = projectSkillsDir.resolve("user-skill");
 		Files.createDirectories(projectSkillDir);
 		Files.writeString(projectSkillDir.resolve("SKILL.md"),
-			"---\nname: user-skill\ndescription: Project level skill (overrides user)\n---\n# Project Skill");
+				"---\nname: user-skill\ndescription: Project level skill (overrides user)\n---\n# Project Skill");
 
 		SkillRegistry registry = FileSystemSkillRegistry.builder()
 			.userSkillsDirectory(userSkillsDir.toString())
 			.projectSkillsDirectory(projectSkillsDir.toString())
 			.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
 
 		// Load skills
 		OverAllState state = new OverAllState();
@@ -331,7 +297,7 @@ class AgentSkillsTest {
 		assertEquals(1, registry.size(), "Should have 1 skill (project overrides user)");
 		SkillMetadata skill = registry.get("user-skill").orElseThrow();
 		assertEquals("Project level skill (overrides user)", skill.getDescription(),
-			"Project skill should override user skill");
+				"Project skill should override user skill");
 		assertEquals("project", skill.getSource(), "Skill source should be project");
 	}
 
@@ -342,44 +308,41 @@ class AgentSkillsTest {
 			.build();
 
 		ShellToolAgentHook shellHook = ShellToolAgentHook.builder()
-				.shellTool2(ShellTool2.builder(System.getProperty("user.dir")).build())
-				.build();
+			.shellTool2(ShellTool2.builder(System.getProperty("user.dir")).build())
+			.build();
 
 		ReactAgent agent = ReactAgent.builder()
 			.name("skills-integration-agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.saver(new MemorySaver())
-			.tools(PythonTool.createPythonToolCallback(PythonTool.DESCRIPTION))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(PythonTool.createPythonToolCallback(PythonTool.DESCRIPTION)))
 			.hooks(List.of(skillsHook, shellHook))
 			.enableLogging(true)
 			.build();
 
-//		// Test that agent can be invoked with skills loaded
-//		Optional<OverAllState> result = agent.invoke(
-//			new UserMessage("请告诉我有哪些可用的技能？"));
-//
-//		assertTrue(result.isPresent(), "Result should be present");
-//
-//		// Verify skills are available
-//		assertTrue(registry.size() > 0, "Skills should be loaded");
-//
+		// // Test that agent can be invoked with skills loaded
+		// Optional<OverAllState> result = agent.invoke(
+		// new UserMessage("请告诉我有哪些可用的技能？"));
+		//
+		// assertTrue(result.isPresent(), "Result should be present");
+		//
+		// // Verify skills are available
+		// assertTrue(registry.size() > 0, "Skills should be loaded");
+		//
 		// Get the response
 		String path = getTestSkillsDirectory() + "/pdf-extractor/argi-roadmap.pdf";
-		AssistantMessage response = agent.call(String.format("请从 %s 文件中提取关键信息。", path));
+		var response = agent.call(String.format("请从 %s 文件中提取关键信息。", path));
 		assertNotNull(response, "Response should not be null");
-		assertNotNull(response.getText(), "Response text should not be null");
+		assertNotNull(response.text(), "Response text should not be null");
 	}
 
 	@Test
 	public void testSkillsList() throws Exception {
 		// Use absolute path
 		String testSkillsPath = getTestSkillsDirectory();
-		SkillRegistry registry = FileSystemSkillRegistry.builder()
-			.projectSkillsDirectory(testSkillsPath)
-			.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
+		SkillRegistry registry = FileSystemSkillRegistry.builder().projectSkillsDirectory(testSkillsPath).build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).build();
 
 		// Load skills
 		OverAllState state = new OverAllState();
@@ -390,15 +353,14 @@ class AgentSkillsTest {
 		List<SkillMetadata> skills = hook.listSkills();
 		assertNotNull(skills, "Skills list should not be null");
 		assertFalse(skills.isEmpty(), "Skills list should not be empty");
-		assertEquals(registry.size(), skills.size(), 
-			"Hook listSkills should match registry size");
+		assertEquals(registry.size(), skills.size(), "Hook listSkills should match registry size");
 
 		// Verify skill details
 		SkillMetadata pdfSkill = skills.stream()
 			.filter(s -> "pdf-extractor".equals(s.getName()))
 			.findFirst()
 			.orElseThrow();
-		
+
 		assertNotNull(pdfSkill.getDescription(), "Skill description should not be null");
 		assertNotNull(pdfSkill.getSkillPath(), "Skill path should not be null");
 		assertEquals("pdf-extractor", pdfSkill.getName(), "Skill name should match");
@@ -407,13 +369,9 @@ class AgentSkillsTest {
 	@Test
 	public void testClasspathSkillRegistryIntegration() throws Exception {
 		// Test ClasspathSkillRegistry with ReactAgent integration
-		ClasspathSkillRegistry registry = ClasspathSkillRegistry.builder()
-			.classpathPath("skills")
-			.build();
-		
-		SkillsAgentHook skillsHook = SkillsAgentHook.builder()
-			.skillRegistry(registry)
-			.build();
+		ClasspathSkillRegistry registry = ClasspathSkillRegistry.builder().classpathPath("skills").build();
+
+		SkillsAgentHook skillsHook = SkillsAgentHook.builder().skillRegistry(registry).build();
 
 		ShellToolAgentHook shellHook = ShellToolAgentHook.builder()
 			.shellTool2(ShellTool2.builder(System.getProperty("user.dir")).build())
@@ -421,87 +379,87 @@ class AgentSkillsTest {
 
 		ReactAgent agent = ReactAgent.builder()
 			.name("classpath-skills-integration-agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.saver(new MemorySaver())
-			.tools(PythonTool.createPythonToolCallback(PythonTool.DESCRIPTION))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(PythonTool.createPythonToolCallback(PythonTool.DESCRIPTION)))
 			.hooks(List.of(skillsHook, shellHook))
 			.enableLogging(true)
 			.build();
 
-//		// Test that agent can be invoked with skills loaded
-//		Optional<OverAllState> result = agent.invoke(
-//			new UserMessage("请告诉我有哪些可用的技能？"));
-//
-//		assertTrue(result.isPresent(), "Result should be present");
-//
-//		// Verify skills are available
-//		assertTrue(registry.size() > 0, "Skills should be loaded");
+		// // Test that agent can be invoked with skills loaded
+		// Optional<OverAllState> result = agent.invoke(
+		// new UserMessage("请告诉我有哪些可用的技能？"));
+		//
+		// assertTrue(result.isPresent(), "Result should be present");
+		//
+		// // Verify skills are available
+		// assertTrue(registry.size() > 0, "Skills should be loaded");
 
 		// Get the response
 		String path = getTestSkillsDirectory() + "/pdf-extractor/argi-roadmap.pdf";
-		AssistantMessage response = agent.call(String.format("请从 %s 文件中提取关键信息。", path));
+		var response = agent.call(String.format("请从 %s 文件中提取关键信息。", path));
 		assertNotNull(response, "Response should not be null");
-		assertNotNull(response.getText(), "Response text should not be null");
-		
+		assertNotNull(response.text(), "Response text should not be null");
+
 		// Verify registry is working
 		assertNotNull(registry, "Registry should not be null");
 		assertEquals("Classpath", registry.getRegistryType(), "Registry type should be Classpath");
 	}
 
 	/**
-	 * Verifies that groupedTools are passed to SkillsInterceptor and that tools for a skill
-	 * are added to dynamicToolCallbacks when the agent calls read_skill for that skill.
-	 * Uses a dedicated skill "grouped-tools-test" and a record_result tool that captures
-	 * invocations; asserts the tool was called after the agent reads the skill.
+	 * Verifies that groupedTools are passed to SkillsInterceptor and that tools for a
+	 * skill are added to dynamicToolRegistry when the agent calls read_skill for that
+	 * skill. Uses a dedicated skill "grouped-tools-test" and a record_result tool that
+	 * captures invocations; asserts the tool was called after the agent reads the skill.
 	 */
 	@Test
 	public void testGroupedToolsActivationAndToolUsage() throws Exception {
 		// 1. Create test tool that records invocations
 		List<String> recordedValues = Collections.synchronizedList(new ArrayList<>());
 		ToolCallback recordResultTool = FunctionToolCallback
-				.builder("record_result",
-						(RecordResultRequest req, ToolContext ctx) -> {
-							if (req != null && req.value != null) {
-								recordedValues.add(req.value.trim());
-							}
-							return "recorded";
-						})
-				.description("Records a result value (parameter: value). Use this when the user asks to record a value.")
-				.inputType(RecordResultRequest.class)
-				.build();
+			.builder("record_result", (RecordResultRequest req, ToolContext ctx) -> {
+				if (req != null && req.value != null) {
+					recordedValues.add(req.value.trim());
+				}
+				return "recorded";
+			})
+			.description("Records a result value (parameter: value). Use this when the user asks to record a value.")
+			.inputType(RecordResultRequest.class)
+			.build();
 
 		// 2. Register groupedTools: skill name "grouped-tools-test" -> list of tools
-		Map<String, List<ToolCallback>> groupedTools = Map.of("grouped-tools-test", List.of(recordResultTool));
+		Map<String, io.github.agentic.ai.api.tool.ToolRegistry> groupedTools = Map.of("grouped-tools-test",
+				new io.github.agentic.ai.api.tool.ToolRegistry(
+						List.of(new io.github.agentic.ai.adapter.springai.SpringAiToolAdapter(recordResultTool))));
 
 		// 3. Skill registry loading from test resources (includes grouped-tools-test)
 		SkillRegistry registry = FileSystemSkillRegistry.builder()
-				.projectSkillsDirectory(getTestSkillsDirectory())
-				.build();
-		SkillsAgentHook hook = SkillsAgentHook.builder()
-				.skillRegistry(registry)
-				.groupedTools(groupedTools)
-				.build();
+			.projectSkillsDirectory(getTestSkillsDirectory())
+			.build();
+		SkillsAgentHook hook = SkillsAgentHook.builder().skillRegistry(registry).groupedTools(groupedTools).build();
 
-		// 4. Build agent with hook (hook provides read_skill + SkillsInterceptor with groupedTools)
+		// 4. Build agent with hook (hook provides read_skill + SkillsInterceptor with
+		// groupedTools)
 		ReactAgent agent = ReactAgent.builder()
-				.name("grouped-tools-test-agent")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.hooks(List.of(hook))
-				.enableLogging(true)
-				.build();
+			.name("grouped-tools-test-agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.hooks(List.of(hook))
+			.enableLogging(true)
+			.build();
 
 		// 5. Prompt: ask to read the skill then follow it to record a value
 		String valueToRecord = "hello-grouped-tools";
-		String prompt = String.format(
-				"请先用 read_skill 读取 grouped-tools-test 技能，然后按该技能要求用 record_result 工具记录：%s",
+		String prompt = String.format("请先用 read_skill 读取 grouped-tools-test 技能，然后按该技能要求用 record_result 工具记录：%s",
 				valueToRecord);
 
-		AssistantMessage response = agent.call(prompt);
+		var response = agent.call(prompt);
 
 		assertNotNull(response, "Response should not be null");
 		assertFalse(recordedValues.isEmpty(),
-				"record_result tool from groupedTools should have been invoked after read_skill; recorded: " + recordedValues);
+				"record_result tool from groupedTools should have been invoked after read_skill; recorded: "
+						+ recordedValues);
 		assertTrue(recordedValues.stream().anyMatch(v -> v.contains(valueToRecord) || valueToRecord.contains(v)),
 				"Recorded values should contain the requested value; recorded: " + recordedValues);
 	}
@@ -512,5 +470,7 @@ class AgentSkillsTest {
 		@JsonProperty("value")
 		@JsonPropertyDescription("The value to record")
 		public String value;
+
 	}
+
 }

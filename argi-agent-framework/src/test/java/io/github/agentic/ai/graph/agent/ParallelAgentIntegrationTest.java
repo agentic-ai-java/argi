@@ -22,7 +22,7 @@ import io.github.agentic.ai.graph.agent.flow.agent.ParallelAgent;
 import io.github.agentic.ai.graph.exception.GraphStateException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 import org.springframework.ai.chat.model.ChatModel;
 
 import java.util.List;
@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * Integration test class for ParallelAgent to verify parallel execution and result
  * merging functionality. Tests the actual execution flow with real LLM agents.
  */
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class ParallelAgentIntegrationTest {
 
 	private ChatModel chatModel;
@@ -53,7 +53,7 @@ class ParallelAgentIntegrationTest {
 		// Create specialized sub-agents with unique output keys and specific instructions
 		ReactAgent proseWriterAgent = ReactAgent.builder()
 			.name("prose_writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("专门写散文的AI助手")
 			.instruction("你是一个知名的散文作家，擅长写优美的散文。用户会给你一个主题，你只需要创作一篇100字左右的散文，不要写诗或做总结。请专注于散文创作，确保内容优美、意境深远。")
 			.outputKey("prose_result")
@@ -61,7 +61,7 @@ class ParallelAgentIntegrationTest {
 
 		ReactAgent poemWriterAgent = ReactAgent.builder()
 			.name("poem_writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("专门写现代诗的AI助手")
 			.instruction("你是一个知名的现代诗人，擅长写现代诗。用户会给你一个主题，你只需要创作一首现代诗，不要写散文或做总结。请专注于诗歌创作，确保语言精炼、意象丰富。")
 			.outputKey("poem_result")
@@ -70,7 +70,7 @@ class ParallelAgentIntegrationTest {
 
 		ReactAgent summaryAgent = ReactAgent.builder()
 			.name("summary_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("专门做内容总结的AI助手")
 			.instruction("你是一个专业的内容分析师，擅长对主题进行总结和提炼。用户会给你一个主题，你只需要对这个主题进行简要总结，不要写散文或诗歌。请专注于总结分析，确保观点清晰、概括准确。")
 			.outputKey("summary_result")
@@ -107,19 +107,15 @@ class ParallelAgentIntegrationTest {
 			assertTrue(finalState.value("poem_result").isPresent(), "Poem result should be present");
 			assertTrue(finalState.value("summary_result").isPresent(), "Summary result should be present");
 
-			
 			// Verify the merged results contain all individual results
 			Map mergedResults = (Map) finalState.value("merged_results").get();
-			assertTrue(mergedResults.containsKey("prose_result"),
-					"Merged results should contain prose result");
-			assertTrue(mergedResults.containsKey("poem_result"),
-					"Merged results should contain poem result");
-			assertTrue(mergedResults.containsKey("summary_result"),
-					"Merged results should contain summary result");
+			assertTrue(mergedResults.containsKey("prose_result"), "Merged results should contain prose result");
+			assertTrue(mergedResults.containsKey("poem_result"), "Merged results should contain poem result");
+			assertTrue(mergedResults.containsKey("summary_result"), "Merged results should contain summary result");
 
-			assertEquals(mergedResults.get("prose_result"),finalState.value("prose_result").get());
-			assertEquals(mergedResults.get("poem_result"),finalState.value("poem_result").get());
-			assertEquals(mergedResults.get("summary_result"),finalState.value("summary_result").get());
+			assertEquals(mergedResults.get("prose_result"), finalState.value("prose_result").get());
+			assertEquals(mergedResults.get("poem_result"), finalState.value("poem_result").get());
+			assertEquals(mergedResults.get("summary_result"), finalState.value("summary_result").get());
 
 			System.out.println("Final state: " + finalState);
 		}
@@ -148,14 +144,16 @@ class ParallelAgentIntegrationTest {
 	// // 创建数据获取Agent - 模拟API调用
 	// ReactAgent fetchWeatherAgent = ReactAgent.builder()
 	// .name("WeatherFetcher")
-	// .model(chatModel)
+	// .chatClient(new
+	// io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 	// .instruction("你是一个天气数据获取助手。请模拟获取杭州今天的天气信息，包括温度、湿度、风力等。直接返回模拟数据，不需要真实API调用。")
 	// .outputKey("weather_data")
 	// .build();
 	//
 	// ReactAgent fetchNewsAgent = ReactAgent.builder()
 	// .name("NewsFetcher")
-	// .model(chatModel)
+	// .chatClient(new
+	// io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 	// .instruction("你是一个新闻数据获取助手。请模拟获取今天杭州的主要新闻，重点关注科技和民生。直接返回模拟数据，不需要真实API调用。")
 	// .outputKey("news_data")
 	// .build();
@@ -172,7 +170,8 @@ class ParallelAgentIntegrationTest {
 	//
 	// // 创建结果合成Agent - 实现Gather模式
 	// ReactAgent synthesizer =
-	// ReactAgent.builder().name("DailyReportSynthesizer").model(chatModel).instruction("""
+	// ReactAgent.builder().name("DailyReportSynthesizer").chatClient(new
+	// io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel)).instruction("""
 	// 你是一个日报生成器。请基于以下信息生成一份杭州今日综合报告：
 	//
 	// 天气信息: {weather_data}
@@ -234,7 +233,7 @@ class ParallelAgentIntegrationTest {
 		// Create two agents with the same output key
 		ReactAgent agent1 = ReactAgent.builder()
 			.name("agent1")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("第一个测试Agent")
 			.instruction("测试助手1")
 			.outputKey("duplicate_key") // Same output key as agent2
@@ -242,7 +241,7 @@ class ParallelAgentIntegrationTest {
 
 		ReactAgent agent2 = ReactAgent.builder()
 			.name("agent2")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("第二个测试Agent")
 			.instruction("测试助手2")
 			.outputKey("duplicate_key") // Same output key as agent1
@@ -272,7 +271,7 @@ class ParallelAgentIntegrationTest {
 
 		ReactAgent agent1 = ReactAgent.builder()
 			.name("agent1")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("第一个测试Agent")
 			.instruction("请返回数字1")
 			.outputKey("result1")
@@ -280,7 +279,7 @@ class ParallelAgentIntegrationTest {
 
 		ReactAgent agent2 = ReactAgent.builder()
 			.name("agent2")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("第二个测试Agent")
 			.instruction("请返回数字2")
 			.outputKey("result2")
@@ -313,7 +312,7 @@ class ParallelAgentIntegrationTest {
 		for (int i = 0; i < 5; i++) {
 			agents.add(ReactAgent.builder()
 				.name("worker_" + i)
-				.model(chatModel)
+				.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 				.description("Worker agent " + i)
 				.instruction("请返回工作结果 " + i)
 				.outputKey("result_" + i)

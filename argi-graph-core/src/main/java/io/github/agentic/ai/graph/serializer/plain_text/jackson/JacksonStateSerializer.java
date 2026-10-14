@@ -15,14 +15,16 @@
  */
 package io.github.agentic.ai.graph.serializer.plain_text.jackson;
 
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.graph.GraphResponse;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.serializer.Serializer;
 import io.github.agentic.ai.graph.serializer.plain_text.PlainTextStateSerializer;
 import io.github.agentic.ai.graph.state.AgentStateFactory;
-import org.springframework.ai.chat.metadata.EmptyUsage;
-import org.springframework.ai.chat.metadata.Usage;
-import org.springframework.ai.chat.model.ChatResponse;
+import io.github.agentic.ai.graph.streaming.StreamingOutput;
 
 import java.io.IOException;
 import java.io.ObjectInput;
@@ -68,9 +70,15 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 	protected JacksonStateSerializer(AgentStateFactory<OverAllState> stateFactory, ObjectMapper objectMapper) {
 		super(stateFactory);
 		this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper cannot be null");
+		// Stable markers are required for final records held in untyped graph state.
+		typeMapper.register(new TypeMapper.Reference<ChatMessage>("ARGI_CHAT_MESSAGE") {
+		}).register(new TypeMapper.Reference<ChatEvent>("ARGI_CHAT_EVENT") {
+		}).register(new TypeMapper.Reference<io.github.agentic.ai.api.chat.ChatResponse>("ARGI_CHAT_RESPONSE") {
+		}).register(new TypeMapper.Reference<ContentPart>("ARGI_CONTENT_PART") {
+		}).register(new TypeMapper.Reference<ToolCall>("ARGI_TOOL_CALL") {
+		}).register(new TypeMapper.Reference<io.github.agentic.ai.api.chat.Usage>("ARGI_USAGE") {
+		});
 		this.objectMapper.setVisibility(PropertyAccessor.FIELD, JsonAutoDetect.Visibility.ANY);
-		this.objectMapper.addMixIn(Usage.class, NonNullUsageMixin.class);
-		this.objectMapper.addMixIn(EmptyUsage.class, NonNullUsageMixin.class);
 
 		this.objectMapper.registerModule(new Jdk8Module());
 		this.objectMapper.registerModule(new JavaTimeModule());
@@ -82,12 +90,14 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 
 		objectMapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
 		objectMapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-//		objectMapper.registerModule(new ParameterNamesModule());
+		// objectMapper.registerModule(new ParameterNamesModule());
 		objectMapper.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
 
 		var module = new SimpleModule();
 		module.addDeserializer(Map.class, new GenericMapDeserializer(typeMapper));
 		module.addDeserializer(List.class, new GenericListDeserializer(typeMapper));
+		module.addSerializer(StreamingOutput.class, new StreamingOutputSerializer());
+		module.addDeserializer(StreamingOutput.class, new StreamingOutputDeserializer(typeMapper, stateFactory));
 
 		this.objectMapper.registerModule(module);
 
@@ -135,10 +145,10 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 	}
 
 	/**
-	 * Normalize state map before serialization.
-	 * Converts non-serializable objects (GraphResponse, CompletableFuture) to Maps.
+	 * Normalize state map before serialization. Converts non-serializable objects
+	 * (GraphResponse, CompletableFuture) to Maps.
 	 */
-	private Map<String, Object> normalizeForSerialization(Map<String, Object> state) {
+	private static Map<String, Object> normalizeForSerialization(Map<String, Object> state) {
 		if (state == null || state.isEmpty()) {
 			return state;
 		}
@@ -148,22 +158,72 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 	}
 
 	/**
-	 * Normalize a single value for serialization.
-	 * Only transforms GraphResponse, ChatResponse and CompletableFuture, recursively checks containers.
+	 * Normalize a single value for serialization. Normalizes neutral chat records and
+	 * runtime snapshots, recursively checking containers.
 	 */
-	private Object normalizeValue(Object value) {
+	static Object normalizeValue(Object value) {
 		if (value == null) {
 			return null;
 		}
-
-		// 1. GraphResponse → snapshot map (fully normalize internally)
-		if (value instanceof GraphResponse) {
-			return normalizeGraphResponse((GraphResponse<?>) value);
+		if (value instanceof ChatEvent event) {
+			Map<String, Object> fields = new LinkedHashMap<>();
+			fields.put("type", event.type().name());
+			fields.put("text", event.text());
+			fields.put("toolCall", event.toolCall());
+			fields.put("response", event.response());
+			fields.put("usage", event.usage());
+			fields.put("metadata", event.metadata());
+			return normalizeChatRecord("ARGI_CHAT_EVENT", fields);
+		}
+		if (value instanceof ChatMessage message) {
+			Map<String, Object> fields = new LinkedHashMap<>();
+			fields.put("role", message.role().name());
+			fields.put("content", message.content());
+			fields.put("toolCalls", message.toolCalls());
+			fields.put("toolCallId", message.toolCallId());
+			fields.put("toolName", message.toolName());
+			fields.put("metadata", message.metadata());
+			return normalizeChatRecord("ARGI_CHAT_MESSAGE", fields);
+		}
+		if (value instanceof io.github.agentic.ai.api.chat.ChatResponse response) {
+			Map<String, Object> fields = new LinkedHashMap<>();
+			fields.put("id", response.id());
+			fields.put("model", response.model());
+			fields.put("messages", response.messages());
+			fields.put("toolCalls", response.toolCalls());
+			fields.put("finishReason", response.finishReason() == null ? null : response.finishReason().name());
+			fields.put("usage", response.usage());
+			fields.put("metadata", response.metadata());
+			return normalizeChatRecord("ARGI_CHAT_RESPONSE", fields);
+		}
+		if (value instanceof ContentPart content) {
+			Map<String, Object> fields = new LinkedHashMap<>();
+			fields.put("type", content.type().name());
+			fields.put("text", content.text());
+			fields.put("mimeType", content.mimeType());
+			fields.put("data",
+					content.data() == null ? null : java.util.Base64.getEncoder().encodeToString(content.data()));
+			fields.put("metadata", content.metadata());
+			return normalizeChatRecord("ARGI_CONTENT_PART", fields);
+		}
+		if (value instanceof ToolCall call) {
+			return normalizeChatRecord("ARGI_TOOL_CALL",
+					Map.of("id", call.id(), "name", call.name(), "arguments", call.arguments()));
+		}
+		if (value instanceof io.github.agentic.ai.api.chat.Usage usage) {
+			Map<String, Object> fields = new LinkedHashMap<>();
+			fields.put("inputTokens", usage.inputTokens());
+			fields.put("outputTokens", usage.outputTokens());
+			fields.put("totalTokens", usage.totalTokens());
+			return normalizeChatRecord("ARGI_USAGE", fields);
+		}
+		if (value instanceof java.time.Duration duration) {
+			return normalizeChatRecord("ARGI_DURATION", Map.of("value", duration.toString()));
 		}
 
-		// 2. ChatResponse → snapshot map (fully normalize internally)
-		if (value instanceof ChatResponse) {
-			return normalizeChatResponse((ChatResponse) value);
+		// GraphResponse -> snapshot map (fully normalize internally)
+		if (value instanceof GraphResponse) {
+			return normalizeGraphResponse((GraphResponse<?>) value);
 		}
 
 		// 3. CompletableFuture → snapshot map (fully normalize internally)
@@ -201,32 +261,33 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 			return changed ? result : value;
 		}
 
-	// 6. Array → shallow scan for GraphResponse/ChatResponse/CompletableFuture
-	if (value.getClass().isArray()) {
-		// Check if it's a primitive array (int[], double[], etc.)
-		Class<?> componentType = value.getClass().getComponentType();
-		if (componentType.isPrimitive()) {
-			// Primitive arrays cannot contain GraphResponse/ChatResponse/CompletableFuture
-			// Return as-is, let Jackson handle the serialization
-			return value;
-		}
-		
-		// Object array - check for GraphResponse/ChatResponse/CompletableFuture
-		Object[] array = (Object[]) value;
-		Object[] result = new Object[array.length];
-		boolean changed = false;
-		for (int i = 0; i < array.length; i++) {
-			Object normalized = normalizeValue(array[i]);
-			result[i] = normalized;
-			if (normalized != array[i]) {
-				changed = true;
+		// 6. Array → shallow scan for GraphResponse/ChatResponse/CompletableFuture
+		if (value.getClass().isArray()) {
+			// Check if it's a primitive array (int[], double[], etc.)
+			Class<?> componentType = value.getClass().getComponentType();
+			if (componentType.isPrimitive()) {
+				// Primitive arrays cannot contain
+				// GraphResponse/ChatResponse/CompletableFuture
+				// Return as-is, let Jackson handle the serialization
+				return value;
 			}
-		}
-		// If nothing changed, return original array to preserve type
-		return changed ? result : value;
-	}
 
-	// 7. Optional → unwrap and check
+			// Object array - check for GraphResponse/ChatResponse/CompletableFuture
+			Object[] array = (Object[]) value;
+			Object[] result = new Object[array.length];
+			boolean changed = false;
+			for (int i = 0; i < array.length; i++) {
+				Object normalized = normalizeValue(array[i]);
+				result[i] = normalized;
+				if (normalized != array[i]) {
+					changed = true;
+				}
+			}
+			// If nothing changed, return original array to preserve type
+			return changed ? result : value;
+		}
+
+		// 7. Optional → unwrap and check
 		if (value instanceof Optional) {
 			Optional<?> opt = (Optional<?>) value;
 			if (opt.isEmpty()) {
@@ -241,10 +302,16 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 		return value;
 	}
 
+	private static Map<String, Object> normalizeChatRecord(String type, Map<String, Object> fields) {
+		Map<String, Object> result = normalizeForSerialization(fields);
+		result.put(TypeMapper.TYPE_PROPERTY, type);
+		return result;
+	}
+
 	/**
 	 * Convert GraphResponse into serializable snapshot map with type marker.
 	 */
-	private Map<String, Object> normalizeGraphResponse(GraphResponse<?> response) {
+	private static Map<String, Object> normalizeGraphResponse(GraphResponse<?> response) {
 		Map<String, Object> snapshot = new LinkedHashMap<>();
 		snapshot.put("@type", "GraphResponse");
 		snapshot.put("error", response.isError());
@@ -256,18 +323,21 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 			if (response.getOutput() != null) {
 				try {
 					response.getOutput().getNow(null);
-				} catch (Exception e) {
+				}
+				catch (Exception e) {
 					Map<String, Object> errorMap = new LinkedHashMap<>();
 					errorMap.put("message", e.getMessage());
 					errorMap.put("class", e.getClass().getName());
 					snapshot.put("errorDetails", errorMap);
 				}
 			}
-		} else if (response.isDone()) {
+		}
+		else if (response.isDone()) {
 			// Done case (output == null, value in resultValue)
 			snapshot.put("status", "done");
 			response.resultValue().ifPresent(result -> snapshot.put("result", deepNormalizeValue(result)));
-		} else {
+		}
+		else {
 			// Pending or completed case (output != null and not error)
 			// The output CompletableFuture contains the value
 			if (response.getOutput() != null && response.getOutput().isDone()) {
@@ -275,10 +345,12 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 				try {
 					Object result = response.getOutput().getNow(null);
 					snapshot.put("result", deepNormalizeValue(result));
-				} catch (Exception ignored) {
+				}
+				catch (Exception ignored) {
 					// Should not happen as we checked isDone() and !isError()
 				}
-			} else {
+			}
+			else {
 				snapshot.put("status", "pending");
 			}
 		}
@@ -288,93 +360,47 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 	}
 
 	/**
-	 * Convert ChatResponse into serializable snapshot map with type marker.
+	 * Deep normalize a value (for use inside
+	 * GraphResponse/ChatResponse/CompletableFuture). Recursively normalizes all
+	 * containers.
 	 */
-	private Map<String, Object> normalizeChatResponse(ChatResponse response) {
-		Map<String, Object> snapshot = new LinkedHashMap<>();
-		snapshot.put("@type", "ChatResponse");
-		
-		// Normalize result (Generation list)
-		if (response.getResult() != null) {
-			snapshot.put("result", deepNormalizeValue(response.getResult()));
-		} else {
-			snapshot.put("result", null);
-		}
-		
-		// Normalize metadata
-		if (response.getMetadata() != null) {
-			snapshot.put("metadata", deepNormalizeValue(response.getMetadata()));
-		} else {
-			snapshot.put("metadata", null);
-		}
-		
-		return snapshot;
-	}
-
-	/**
-	 * Deep normalize a value (for use inside GraphResponse/ChatResponse/CompletableFuture).
-	 * Recursively normalizes all containers.
-	 */
-	private Object deepNormalizeValue(Object value) {
+	private static Object deepNormalizeValue(Object value) {
 		if (value == null) {
 			return null;
 		}
-
-		// 1. GraphResponse → snapshot map
-		if (value instanceof GraphResponse) {
-			return normalizeGraphResponse((GraphResponse<?>) value);
+		if (value instanceof ChatEvent || value instanceof ChatMessage || value instanceof ContentPart
+				|| value instanceof ToolCall || value instanceof io.github.agentic.ai.api.chat.ChatResponse
+				|| value instanceof io.github.agentic.ai.api.chat.Usage) {
+			return normalizeValue(value);
 		}
-
-		// 2. ChatResponse → snapshot map
-		if (value instanceof ChatResponse) {
-			return normalizeChatResponse((ChatResponse) value);
+		if (value instanceof GraphResponse<?> response) {
+			return normalizeGraphResponse(response);
 		}
-
-		// 3. CompletableFuture → snapshot map
-		if (value instanceof CompletableFuture) {
-			return normalizeCompletableFuture((CompletableFuture<?>) value);
+		if (value instanceof CompletableFuture<?> future) {
+			return normalizeCompletableFuture(future);
 		}
-
-		// 4. Map → recursive normalization
-		if (value instanceof Map) {
-			Map<?, ?> map = (Map<?, ?>) value;
+		if (value instanceof Map<?, ?> map) {
 			Map<Object, Object> normalized = new LinkedHashMap<>(map.size());
-			map.forEach((k, v) -> normalized.put(k, deepNormalizeValue(v)));
+			map.forEach((key, item) -> normalized.put(key, deepNormalizeValue(item)));
 			return hasTypeMarkerKey(map) ? mapEnvelope(map.getClass(), normalized) : normalized;
 		}
-
-		// 5. Collection → recursive normalization
-		if (value instanceof Collection) {
-			Collection<?> collection = (Collection<?>) value;
-			return collection.stream().map(this::deepNormalizeValue).collect(Collectors.toList());
+		if (value instanceof Collection<?> collection) {
+			return collection.stream().map(JacksonStateSerializer::deepNormalizeValue).collect(Collectors.toList());
 		}
-
-	// 6. Array → recursive normalization
-	if (value.getClass().isArray()) {
-		// Check if it's a primitive array
-		Class<?> componentType = value.getClass().getComponentType();
-		if (componentType.isPrimitive()) {
-			// Primitive arrays cannot contain GraphResponse/CompletableFuture
-			return value;
+		if (value.getClass().isArray()) {
+			return value.getClass().getComponentType().isPrimitive() ? value
+					: Arrays.stream((Object[]) value).map(JacksonStateSerializer::deepNormalizeValue).toArray();
 		}
-		
-		Object[] array = (Object[]) value;
-		return Arrays.stream(array).map(this::deepNormalizeValue).toArray();
-	}
-
-		// 6. Optional → unwrap and normalize
-		if (value instanceof Optional) {
-			return ((Optional<?>) value).map(this::deepNormalizeValue).orElse(null);
+		if (value instanceof Optional<?> optional) {
+			return optional.map(JacksonStateSerializer::deepNormalizeValue).orElse(null);
 		}
-
-		// 7. Other types → return as-is (assumed serializable)
 		return value;
 	}
 
 	/**
 	 * Convert CompletableFuture into serializable snapshot map with type marker.
 	 */
-	private Map<String, Object> normalizeCompletableFuture(CompletableFuture<?> future) {
+	private static Map<String, Object> normalizeCompletableFuture(CompletableFuture<?> future) {
 		Map<String, Object> snapshot = new LinkedHashMap<>();
 		snapshot.put("@type", "CompletableFuture");
 
@@ -409,11 +435,11 @@ public abstract class JacksonStateSerializer extends PlainTextStateSerializer {
 		return snapshot;
 	}
 
-	private boolean hasTypeMarkerKey(Map<?, ?> map) {
+	private static boolean hasTypeMarkerKey(Map<?, ?> map) {
 		return map.containsKey("@class") || map.containsKey("@type") || map.containsKey("@typeHint");
 	}
 
-	private Map<String, Object> mapEnvelope(Class<?> mapClass, Map<?, ?> map) {
+	private static Map<String, Object> mapEnvelope(Class<?> mapClass, Map<?, ?> map) {
 		Map<String, Object> envelope = new LinkedHashMap<>();
 		envelope.put("@type", MapEnvelopeSupport.MAP_ENVELOPE_TYPE);
 		envelope.put(MapEnvelopeSupport.MAP_CLASS_PROPERTY, mapClass.getName());

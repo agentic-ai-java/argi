@@ -48,13 +48,22 @@
 
     <modules>
         <module>argi-bom</module>
+        <module>argi-api/argi-api-base</module>
+        <module>argi-api/argi-adapter-spring-ai</module>
+        <module>argi-api/argi-adapter-langchain4j</module>
+        <module>argi-api/argi-adapter-google-adk</module>
+        <module>argi-api/argi-adapter-agentscope</module>
         <module>argi-graph-core</module>
         <module>argi-agent-framework</module>
         <module>argi-studio</module>
 
         <!-- ARGI Spring Boot Starters -->
-        <module>spring-boot-starters/argi-starter-graph-observation</module>
-        <module>spring-boot-starters/argi-starter-builtin-nodes</module>
+        <module>argi-spring-boot-starter/argi-starter-graph-observation</module>
+        <module>argi-spring-boot-starter/argi-starter-builtin-nodes</module>
+        <module>argi-spring-boot-starter/argi-starter-adapter-spring-ai</module>
+        <module>argi-spring-boot-starter/argi-starter-adapter-langchain4j</module>
+        <module>argi-spring-boot-starter/argi-starter-adapter-google-adk</module>
+        <module>argi-spring-boot-starter/argi-starter-adapter-agentscope</module>
     </modules>
 
     <scm>
@@ -86,6 +95,18 @@
         <!-- Spring version -->
         <spring-ai.version>2.0.1</spring-ai.version>
         <spring-boot.version>4.1.1</spring-boot.version>
+
+        <!-- Adapter versions -->
+        <langchain4j.version>1.22.0</langchain4j.version>
+        <google-adk.version>1.11.0</google-adk.version>
+        <agentscope.version>2.0.4</agentscope.version>
+
+        <!-- Keep security patch families aligned with the published ARGI BOM. -->
+        <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
+        <jackson-bom.version>3.1.7</jackson-bom.version>
+        <bouncycastle.version>1.85</bouncycastle.version>
+        <jsoup.version>1.23.2</jsoup.version>
+        <tomcat.version>11.0.26</tomcat.version>
 
         <!-- Redis -->
         <redisson.version>3.52.0</redisson.version>
@@ -140,6 +161,106 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- Import patch BOMs before Spring Boot's dependency defaults. -->
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson-2-bom.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>tools.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson-bom.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcpkix-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcutil-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jsoup</groupId>
+                <artifactId>jsoup</artifactId>
+                <version>${jsoup.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.tomcat.embed</groupId>
+                <artifactId>tomcat-embed-core</artifactId>
+                <version>${tomcat.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.tomcat.embed</groupId>
+                <artifactId>tomcat-embed-el</artifactId>
+                <version>${tomcat.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.tomcat.embed</groupId>
+                <artifactId>tomcat-embed-jasper</artifactId>
+                <version>${tomcat.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.tomcat.embed</groupId>
+                <artifactId>tomcat-embed-websocket</artifactId>
+                <version>${tomcat.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-starter-adapter-spring-ai</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-starter-adapter-langchain4j</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-starter-adapter-google-adk</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-starter-adapter-agentscope</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-adapter-spring-ai</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-adapter-langchain4j</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-adapter-google-adk</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-adapter-agentscope</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>com.squareup.okhttp3</groupId>
                 <artifactId>okhttp-bom</artifactId>
@@ -190,13 +311,6 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
-
-    <dependencies>
-        <dependency>
-            <groupId>org.jspecify</groupId>
-            <artifactId>jspecify</artifactId>
-        </dependency>
-    </dependencies>
 
     <repositories>
         <repository>
@@ -362,7 +476,8 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
-                    <argLine>${surefireArgLine}</argLine>
+                    <!-- Resolve agent options after prepare-agent has updated the property. -->
+                    <argLine>@{surefireArgLine}</argLine>
 
                     <useFile>false</useFile>
                     <trimStackTrace>false</trimStackTrace>
@@ -519,14 +634,14 @@
                         <executions>
                             <execution>
                                 <id>flatten</id>
-                                <configuration combine.self="override">
-                                    <updatePomFile>true</updatePomFile>
-                                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
-                                </configuration>
                                 <goals>
                                     <goal>flatten</goal>
                                 </goals>
                                 <phase>process-resources</phase>
+                                <configuration combine.self="override">
+                                    <updatePomFile>true</updatePomFile>
+                                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                                </configuration>
                             </execution>
                             <execution>
                                 <id>flatten.clean</id>

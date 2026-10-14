@@ -20,13 +20,12 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.prompt.Prompt;
-import reactor.core.publisher.Flux;
+import io.github.agentic.ai.api.chat.ChatClient;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CancellationException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,25 +33,22 @@ import org.slf4j.LoggerFactory;
 /**
  * Automatic fallback to alternative models on errors.
  *
- * Retries failed model calls with alternative models in sequence until
- * success or all models exhausted.
- * Streaming responses are passed through unchanged. Errors emitted by the
- * publisher after subscription are not handled by this interceptor.
+ * Retries failed model calls with alternative models in sequence until success or all
+ * models exhausted. Streaming responses are passed through unchanged. Errors emitted by
+ * the publisher after subscription are not handled by this interceptor.
  *
- * Example:
- * ModelFallbackInterceptor interceptor = ModelFallbackInterceptor.builder()
- *     .addFallbackModel(gpt4oMiniModel)
- *     .addFallbackModel(claude35SonnetModel)
- *     .build();
+ * Example: ModelFallbackInterceptor interceptor = ModelFallbackInterceptor.builder()
+ * .addFallbackClient(primaryAlternative) .addFallbackClient(secondaryAlternative)
+ * .build();
  */
 public class ModelFallbackInterceptor extends ModelInterceptor {
 
 	private static final Logger log = LoggerFactory.getLogger(ModelFallbackInterceptor.class);
 
-	private final List<ChatModel> fallbackModels;
+	private final List<ChatClient> fallbackClients;
 
 	private ModelFallbackInterceptor(Builder builder) {
-		this.fallbackModels = new ArrayList<>(builder.fallbackModels);
+		this.fallbackClients = List.copyOf(builder.fallbackClients);
 	}
 
 	public static Builder builder() {
@@ -65,45 +61,42 @@ public class ModelFallbackInterceptor extends ModelInterceptor {
 
 		// Try primary model first
 		try {
-			ModelResponse modelResponse = handler.call(request);
-			if (modelResponse.getMessage() instanceof Flux<?>) {
-				return modelResponse;
-			}
-			Message message = (Message) modelResponse.getMessage();
-			
-			// Check if response contains error indicator
-			if (message.getText() != null && message.getText().contains("Exception:")) {
-				throw new RuntimeException(message.getText());
-			}
-			
-			// Return successful response
-			return modelResponse;
+			return handler.call(request);
 		}
 		catch (Exception e) {
+			propagateCancellation(e);
 			log.warn("Primary model failed: {}", e.getMessage());
 			lastException = e;
 		}
 
 		// Try fallback models in sequence
-		for (int i = 0; i < fallbackModels.size(); i++) {
-			ChatModel fallbackModel = fallbackModels.get(i);
+		for (int i = 0; i < fallbackClients.size(); i++) {
 			try {
-				log.info("Trying fallback model {} of {}", i + 1, fallbackModels.size());
-
-				// Call the fallback model directly
-				Prompt prompt = new Prompt(request.getMessages(), request.getOptions());
-				var response = fallbackModel.call(prompt);
-
-				return ModelResponse.of(response.getResult().getOutput());
+				log.info("Trying fallback client {} of {}", i + 1, fallbackClients.size());
+				// Reuse the request pipeline so system messages, tools and usage are
+				// retained.
+				return handler.call(ModelRequest.builder(request).chatClient(fallbackClients.get(i)).build());
 			}
 			catch (Exception e) {
+				propagateCancellation(e);
 				log.warn("Fallback model {} failed: {}", i + 1, e.getMessage());
 				lastException = e;
 			}
 		}
 
 		// All models failed
-		throw new RuntimeException("All models failed after " + (fallbackModels.size() + 1) + " attempts", lastException);
+		throw new RuntimeException("All clients failed after " + (fallbackClients.size() + 1) + " attempts",
+				lastException);
+	}
+
+	private static void propagateCancellation(Exception failure) {
+		if (failure instanceof CancellationException cancelled) {
+			throw cancelled;
+		}
+		if (Thread.currentThread().isInterrupted() || failure instanceof InterruptedException) {
+			Thread.currentThread().interrupt();
+			throw new CancellationException("Model call interrupted");
+		}
 	}
 
 	@Override
@@ -112,23 +105,26 @@ public class ModelFallbackInterceptor extends ModelInterceptor {
 	}
 
 	public static class Builder {
-		private final List<ChatModel> fallbackModels = new ArrayList<>();
 
-		public Builder addFallbackModel(ChatModel model) {
-			this.fallbackModels.add(model);
+		private final List<ChatClient> fallbackClients = new ArrayList<>();
+
+		public Builder addFallbackClient(ChatClient client) {
+			this.fallbackClients.add(Objects.requireNonNull(client, "Fallback client must not be null"));
 			return this;
 		}
 
-		public Builder fallbackModels(List<ChatModel> models) {
-			this.fallbackModels.addAll(models);
+		public Builder fallbackClients(List<ChatClient> clients) {
+			clients.forEach(this::addFallbackClient);
 			return this;
 		}
 
 		public ModelFallbackInterceptor build() {
-			if (fallbackModels.isEmpty()) {
-				throw new IllegalArgumentException("At least one fallback model must be specified");
+			if (fallbackClients.isEmpty()) {
+				throw new IllegalArgumentException("At least one fallback client must be specified");
 			}
 			return new ModelFallbackInterceptor(this);
 		}
+
 	}
+
 }

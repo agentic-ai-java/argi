@@ -27,8 +27,7 @@ import io.github.agentic.ai.graph.agent.hook.messages.UpdatePolicy;
 import io.github.agentic.ai.graph.agent.tools.WeatherTool;
 import io.github.agentic.ai.graph.checkpoint.savers.MemorySaver;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -38,7 +37,7 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,17 +45,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Test for ReactAgent short-term memory functionality using MemorySaver and threadId
  *
- * Short-term memory allows the agent to remember previous interactions within a single thread/session.
- * This test demonstrates:
- * 1. Basic memory retention across multiple calls with same threadId
- * 2. Memory isolation between different threads
- * 3. Message trimming to manage context window
- * 4. Message deletion for memory cleanup
+ * Short-term memory allows the agent to remember previous interactions within a single
+ * thread/session. This test demonstrates: 1. Basic memory retention across multiple calls
+ * with same threadId 2. Memory isolation between different threads 3. ChatMessage
+ * trimming to manage context window 4. ChatMessage deletion for memory cleanup
  */
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class ShortTermMemoryTest {
 
 	private ChatModel chatModel;
+
 	private ToolCallback weatherTool;
 
 	@BeforeEach
@@ -68,43 +66,43 @@ class ShortTermMemoryTest {
 	}
 
 	/**
-	 * Test 1: Basic short-term memory - agent remembers user's name across multiple interactions
+	 * Test 1: Basic short-term memory - agent remembers user's name across multiple
+	 * interactions
 	 */
 	@Test
 	void testBasicShortTermMemory() throws Exception {
 		// Create agent with MemorySaver
 		ReactAgent agent = ReactAgent.builder()
-				.name("memory_agent")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.build();
+			.name("memory_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.build();
 
 		// Create config with threadId to maintain conversation context
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId("conversation_1")
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId("conversation_1").build();
 
 		// First interaction: introduce name
 		Optional<OverAllState> result1 = agent.invoke("你好！我叫张三。", config);
 		assertTrue(result1.isPresent(), "First response should be present");
 
-		AssistantMessage response1 = (AssistantMessage) result1.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
-		System.out.println("Response 1: " + response1.getText());
-		assertTrue(response1.getText().contains("张三") || response1.getText().contains("你好"),
+		ChatMessage response1 = (ChatMessage) result1.get()
+			.value("messages")
+			.map(m -> ((List<ChatMessage>) m).get(((List<ChatMessage>) m).size() - 1))
+			.orElseThrow();
+		System.out.println("Response 1: " + response1.text());
+		assertTrue(response1.text().contains("张三") || response1.text().contains("你好"),
 				"Agent should acknowledge the greeting");
 
 		// Second interaction: ask for name
 		Optional<OverAllState> result2 = agent.invoke("我叫什么名字？", config);
 		assertTrue(result2.isPresent(), "Second response should be present");
 
-		AssistantMessage response2 = (AssistantMessage) result2.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
-		System.out.println("Response 2: " + response2.getText());
-		assertTrue(response2.getText().contains("张三"),
-				"Agent should remember the name from previous interaction");
+		ChatMessage response2 = (ChatMessage) result2.get()
+			.value("messages")
+			.map(m -> ((List<ChatMessage>) m).get(((List<ChatMessage>) m).size() - 1))
+			.orElseThrow();
+		System.out.println("Response 2: " + response2.text());
+		assertTrue(response2.text().contains("张三"), "Agent should remember the name from previous interaction");
 	}
 
 	/**
@@ -113,62 +111,57 @@ class ShortTermMemoryTest {
 	@Test
 	void testMemoryIsolationBetweenThreads() throws Exception {
 		ReactAgent agent = ReactAgent.builder()
-				.name("memory_agent")
-				.model(chatModel)
-				.saver(new MemorySaver())
-				.build();
+			.name("memory_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(new MemorySaver())
+			.build();
 
 		// Thread 1: User named Alice
-		RunnableConfig config1 = RunnableConfig.builder()
-				.threadId("thread_alice")
-				.build();
+		RunnableConfig config1 = RunnableConfig.builder().threadId("thread_alice").build();
 
 		agent.invoke("你好，我叫 Alice。", config1);
 
 		// Thread 2: User named Bob
-		RunnableConfig config2 = RunnableConfig.builder()
-				.threadId("thread_bob")
-				.build();
+		RunnableConfig config2 = RunnableConfig.builder().threadId("thread_bob").build();
 
 		agent.invoke("你好，我叫 Bob。", config2);
 
 		// Ask for name in thread 1 - should be Alice
 		Optional<OverAllState> result1 = agent.invoke("我叫什么名字？", config1);
-		AssistantMessage response1 = (AssistantMessage) result1.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
-		System.out.println("Thread 1 response: " + response1.getText());
-		assertTrue(response1.getText().contains("Alice"),
-				"Thread 1 should remember Alice");
+		ChatMessage response1 = (ChatMessage) result1.get()
+			.value("messages")
+			.map(m -> ((List<ChatMessage>) m).get(((List<ChatMessage>) m).size() - 1))
+			.orElseThrow();
+		System.out.println("Thread 1 response: " + response1.text());
+		assertTrue(response1.text().contains("Alice"), "Thread 1 should remember Alice");
 
 		// Ask for name in thread 2 - should be Bob
 		Optional<OverAllState> result2 = agent.invoke("我叫什么名字？", config2);
-		AssistantMessage response2 = (AssistantMessage) result2.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
-		System.out.println("Thread 2 response: " + response2.getText());
-		assertTrue(response2.getText().contains("Bob"),
-				"Thread 2 should remember Bob");
+		ChatMessage response2 = (ChatMessage) result2.get()
+			.value("messages")
+			.map(m -> ((List<ChatMessage>) m).get(((List<ChatMessage>) m).size() - 1))
+			.orElseThrow();
+		System.out.println("Thread 2 response: " + response2.text());
+		assertTrue(response2.text().contains("Bob"), "Thread 2 should remember Bob");
 	}
 
 	/**
-	 * Test 3: Message trimming - keep context window manageable using MessagesModelHook.
-	 * Before each model call, keeps the first message (e.g. system) and the last 4 messages when over threshold.
+	 * Test 3: ChatMessage trimming - keep context window manageable using
+	 * MessagesModelHook. Before each model call, keeps the first message (e.g. system)
+	 * and the last 4 messages when over threshold.
 	 */
 	@Test
 	void testMessageTrimming() throws Exception {
 		MessageTrimmingMessagesHook messageTrimmingHook = new MessageTrimmingMessagesHook();
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("trimming_agent")
-				.model(chatModel)
-				.hooks(messageTrimmingHook)
-				.saver(new MemorySaver())
-				.build();
+			.name("trimming_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(messageTrimmingHook)
+			.saver(new MemorySaver())
+			.build();
 
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId("trimming_thread")
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId("trimming_thread").build();
 
 		// Have multiple interactions
 		agent.invoke("你好，我叫 Bob", config);
@@ -178,33 +171,32 @@ class ShortTermMemoryTest {
 
 		// After multiple interactions, the message count should be trimmed
 		Optional<OverAllState> result = agent.invoke("我叫什么名字？", config);
-		AssistantMessage response = (AssistantMessage) result.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
+		ChatMessage response = (ChatMessage) result.get()
+			.value("messages")
+			.map(m -> ((List<ChatMessage>) m).get(((List<ChatMessage>) m).size() - 1))
+			.orElseThrow();
 
-		System.out.println("Response after trimming: " + response.getText());
+		System.out.println("Response after trimming: " + response.text());
 		// Note: Due to trimming, the agent might not remember the name
 		// This demonstrates the trade-off between memory and context window size
 	}
 
 	/**
-	 * Test 4: Message deletion - clear old messages using MessagesModelHook.
-	 * After each model response, the hook keeps only the last 4 messages (REPLACE policy).
+	 * Test 4: ChatMessage deletion - clear old messages using MessagesModelHook. After
+	 * each model response, the hook keeps only the last 4 messages (REPLACE policy).
 	 */
 	@Test
 	void testMessageDeletion() throws Exception {
 		MessageDeletionMessagesHook messageDeletionHook = new MessageDeletionMessagesHook();
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("deletion_agent")
-				.model(chatModel)
-				.hooks(messageDeletionHook)
-				.saver(new MemorySaver())
-				.build();
+			.name("deletion_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.hooks(messageDeletionHook)
+			.saver(new MemorySaver())
+			.build();
 
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId("deletion_thread")
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId("deletion_thread").build();
 
 		// Have multiple interactions
 		agent.invoke("记住：密码是 12345", config);
@@ -213,22 +205,23 @@ class ShortTermMemoryTest {
 
 		// After deletion hook, old messages should be removed
 		Optional<OverAllState> result = agent.invoke("密码是什么？", config);
-		AssistantMessage response = (AssistantMessage) result.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
+		ChatMessage response = (ChatMessage) result.get()
+			.value("messages")
+			.map(m -> ((List<ChatMessage>) m).get(((List<ChatMessage>) m).size() - 1))
+			.orElseThrow();
 
-		System.out.println("Response after deletion: " + response.getText());
+		System.out.println("Response after deletion: " + response.text());
 		// Due to message deletion, the agent should not remember the password
-		assertFalse(response.getText().contains("12345"),
-				"Old messages should be deleted");
+		assertFalse(response.text().contains("12345"), "Old messages should be deleted");
 	}
 
 	/**
-	 * MessagesModelHook that deletes old messages after each model response:
-	 * keeps only the last 4 messages when there are more than 4.
+	 * MessagesModelHook that deletes old messages after each model response: keeps only
+	 * the last 4 messages when there are more than 4.
 	 */
 	@HookPositions(HookPosition.AFTER_MODEL)
 	private static class MessageDeletionMessagesHook extends MessagesModelHook {
+
 		private static final int KEEP_LAST = 4;
 
 		@Override
@@ -237,28 +230,31 @@ class ShortTermMemoryTest {
 		}
 
 		@Override
-		public AgentCommand afterModel(List<Message> previousMessages, RunnableConfig config) {
-			System.out.println("Message count before deletion: " + previousMessages.size());
+		public AgentCommand afterModel(List<ChatMessage> previousMessages, RunnableConfig config) {
+			System.out.println("ChatMessage count before deletion: " + previousMessages.size());
 
 			if (previousMessages.size() > KEEP_LAST) {
-				List<Message> recentMessages = new ArrayList<>(previousMessages.subList(
-						previousMessages.size() - KEEP_LAST,
-						previousMessages.size()));
-				System.out.println("Message count after deletion: " + recentMessages.size());
+				List<ChatMessage> recentMessages = new ArrayList<>(
+						previousMessages.subList(previousMessages.size() - KEEP_LAST, previousMessages.size()));
+				System.out.println("ChatMessage count after deletion: " + recentMessages.size());
 				return new AgentCommand(recentMessages, UpdatePolicy.REPLACE);
 			}
 
 			return new AgentCommand(previousMessages);
 		}
+
 	}
 
 	/**
-	 * MessagesModelHook that trims messages before each model call: keeps the first message
-	 * (e.g. system) and the last 4 messages when total count exceeds MAX_MESSAGES.
+	 * MessagesModelHook that trims messages before each model call: keeps the first
+	 * message (e.g. system) and the last 4 messages when total count exceeds
+	 * MAX_MESSAGES.
 	 */
 	@HookPositions(HookPosition.BEFORE_MODEL)
 	private static class MessageTrimmingMessagesHook extends MessagesModelHook {
+
 		private static final int MAX_MESSAGES = 5;
+
 		private static final int KEEP_LAST = 4;
 
 		@Override
@@ -267,25 +263,25 @@ class ShortTermMemoryTest {
 		}
 
 		@Override
-		public AgentCommand beforeModel(List<Message> previousMessages, RunnableConfig config) {
+		public AgentCommand beforeModel(List<ChatMessage> previousMessages, RunnableConfig config) {
 			System.out.println("Current message count: " + previousMessages.size());
 
 			if (previousMessages.size() <= MAX_MESSAGES) {
 				return new AgentCommand(previousMessages);
 			}
 
-			Message firstMsg = previousMessages.get(0);
-			List<Message> recentMessages = previousMessages.subList(
-					previousMessages.size() - KEEP_LAST,
+			ChatMessage firstMsg = previousMessages.get(0);
+			List<ChatMessage> recentMessages = previousMessages.subList(previousMessages.size() - KEEP_LAST,
 					previousMessages.size());
 
-			List<Message> newMessages = new ArrayList<>();
+			List<ChatMessage> newMessages = new ArrayList<>();
 			newMessages.add(firstMsg);
 			newMessages.addAll(recentMessages);
 
 			System.out.println("Trimmed message count: " + newMessages.size());
 			return new AgentCommand(newMessages, UpdatePolicy.REPLACE);
 		}
+
 	}
 
 	/**
@@ -294,15 +290,13 @@ class ShortTermMemoryTest {
 	@Test
 	void testMemoryWithTools() throws Exception {
 		ReactAgent agent = ReactAgent.builder()
-				.name("tool_memory_agent")
-				.model(chatModel)
-				.tools(weatherTool)
-				.saver(new MemorySaver())
-				.build();
+			.name("tool_memory_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter.fromCallbacks(weatherTool))
+			.saver(new MemorySaver())
+			.build();
 
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId("tool_thread")
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId("tool_thread").build();
 
 		// First interaction: user provides their location
 		agent.invoke("我住在北京。", config);
@@ -311,11 +305,12 @@ class ShortTermMemoryTest {
 		Optional<OverAllState> result = agent.invoke("我这里的天气怎么样？", config);
 		assertTrue(result.isPresent(), "Response should be present");
 
-		AssistantMessage response = (AssistantMessage) result.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
+		ChatMessage response = (ChatMessage) result.get()
+			.value("messages")
+			.map(m -> ((List<ChatMessage>) m).get(((List<ChatMessage>) m).size() - 1))
+			.orElseThrow();
 
-		System.out.println("Weather response: " + response.getText());
+		System.out.println("Weather response: " + response.text());
 		// Agent should use the weather tool and remember the user is in Beijing
 	}
 
@@ -329,33 +324,33 @@ class ShortTermMemoryTest {
 
 		// Create first agent instance
 		ReactAgent agent1 = ReactAgent.builder()
-				.name("resume_agent")
-				.model(chatModel)
-				.saver(saver)
-				.build();
+			.name("resume_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(saver)
+			.build();
 
-		RunnableConfig config = RunnableConfig.builder()
-				.threadId(threadId)
-				.build();
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
 		// Have a conversation
 		agent1.invoke("你好，我叫李明，今年25岁。", config);
 
 		// Create a new agent instance with the same saver and threadId
 		ReactAgent agent2 = ReactAgent.builder()
-				.name("resume_agent")
-				.model(chatModel)
-				.saver(saver)
-				.build();
+			.name("resume_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.saver(saver)
+			.build();
 
 		// Continue the conversation with new agent instance
 		Optional<OverAllState> result = agent2.invoke("我叫什么名字？多大了？", config);
-		AssistantMessage response = (AssistantMessage) result.get().value("messages")
-				.map(m -> ((List<Message>) m).get(((List<Message>) m).size() - 1))
-				.orElseThrow();
+		ChatMessage response = (ChatMessage) result.get()
+			.value("messages")
+			.map(m -> ((List<ChatMessage>) m).get(((List<ChatMessage>) m).size() - 1))
+			.orElseThrow();
 
-		System.out.println("Resumed conversation response: " + response.getText());
-		assertTrue(response.getText().contains("李明") || response.getText().contains("25"),
+		System.out.println("Resumed conversation response: " + response.text());
+		assertTrue(response.text().contains("李明") || response.text().contains("25"),
 				"Agent should remember information from previous conversation");
 	}
+
 }

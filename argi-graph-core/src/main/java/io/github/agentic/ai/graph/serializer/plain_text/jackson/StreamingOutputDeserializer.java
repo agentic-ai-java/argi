@@ -16,69 +16,94 @@
 package io.github.agentic.ai.graph.serializer.plain_text.jackson;
 
 import io.github.agentic.ai.graph.OverAllState;
+import io.github.agentic.ai.api.chat.Usage;
 import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
+import io.github.agentic.ai.graph.state.AgentStateFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
-import org.springframework.ai.chat.messages.Message;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import java.util.List;
 
 import java.io.IOException;
+import java.util.Map;
+import java.util.Objects;
 
 /**
- * Custom deserializer for StreamingOutput.
- * Supports deserialization of outputType and message fields.
+ * Custom deserializer for StreamingOutput. Supports deserialization of outputType and
+ * message fields.
  */
 public class StreamingOutputDeserializer extends StdDeserializer<StreamingOutput> {
 
-    public StreamingOutputDeserializer() {
-        super(StreamingOutput.class);
-    }
+	private final TypeMapper types;
 
-    @Override
-    public StreamingOutput deserialize(JsonParser jsonParser, DeserializationContext deserializationContext) throws IOException {
-        ObjectMapper objectMapper = (ObjectMapper) jsonParser.getCodec();
-        JsonNode node = jsonParser.getCodec().readTree(jsonParser);
+	private final AgentStateFactory<OverAllState> stateFactory;
 
-        String nodeName = node.has("node") && !node.get("node").isNull() ? node.get("node").asText() : null;
-        String agentName = node.has("agent") && !node.get("agent").isNull() ? node.get("agent").asText() : null;
-        // Use readValue instead of convertValue to ensure custom deserializers are triggered
-        // This is critical for types like DeepSeekAssistantMessage that may be nested in OverAllState
-        OverAllState state = null;
-        if (node.has("state") && !node.get("state").isNull()) {
-            state = objectMapper.readValue(objectMapper.treeAsTokens(node.get("state")), OverAllState.class);
-        }
-        String chunk = node.has("chunk") && !node.get("chunk").isNull() ? node.get("chunk").asText() : null;
+	public StreamingOutputDeserializer() {
+		this(new TypeMapper(), OverAllState::new);
+	}
 
-        // Deserialize message if present
-        Message message = null;
-        if (node.has("message") && !node.get("message").isNull()) {
-            message = objectMapper.readValue(objectMapper.treeAsTokens(node.get("message")), Message.class);
-        }
+	public StreamingOutputDeserializer(TypeMapper types, AgentStateFactory<OverAllState> stateFactory) {
+		super(StreamingOutput.class);
+		this.types = Objects.requireNonNull(types, "types must not be null");
+		this.stateFactory = Objects.requireNonNull(stateFactory, "stateFactory must not be null");
+	}
 
-        // Deserialize outputType if present
-        OutputType outputType = null;
-        if (node.has("outputType") && !node.get("outputType").isNull()) {
-            String outputTypeStr = node.get("outputType").asText();
-            try {
-                outputType = OutputType.valueOf(outputTypeStr);
-            } catch (IllegalArgumentException e) {
-                // If enum value is not found, outputType remains null
-            }
-        }
+	@Override
+	public StreamingOutput deserialize(JsonParser jsonParser, DeserializationContext deserializationContext)
+			throws IOException {
+		ObjectMapper objectMapper = (ObjectMapper) jsonParser.getCodec();
+		JsonNode node = jsonParser.getCodec().readTree(jsonParser);
+		if (!node.has("messages")) {
+			throw new IOException("Legacy StreamingOutput checkpoints are not supported. Drain or export "
+					+ "in-flight streaming records with the previous runtime before upgrading.");
+		}
 
-        // Create StreamingOutput with all available fields
-        // Prefer constructor with message if message is present
-        if (message != null) {
-            // Use constructor with message
-            StreamingOutput<?> output = new StreamingOutput<>(message, nodeName, agentName, state, outputType);
-            return output;
-        } else {
-            // Fallback to deprecated constructor with chunk (for backward compatibility)
-            return new StreamingOutput<>(chunk, nodeName, agentName, state);
-        }
-    }
+		String nodeName = node.has("node") && !node.get("node").isNull() ? node.get("node").asText() : null;
+		String agentName = node.has("agent") && !node.get("agent").isNull() ? node.get("agent").asText() : null;
+		OverAllState state = null;
+		if (node.has("state") && !node.get("state").isNull()) {
+			Object data = JacksonDeserializer.valueFromNode(node.get("state").get("data"), objectMapper, types);
+			if (!(data instanceof Map<?, ?> map) || map.keySet().stream().anyMatch(key -> !(key instanceof String))) {
+				throw new IOException("Streaming state data must be an object with string keys");
+			}
+			@SuppressWarnings("unchecked")
+			Map<String, Object> stateData = (Map<String, Object>) map;
+			state = stateFactory.apply(stateData);
+		}
+		Object origin = JacksonDeserializer.valueFromNode(node.get("originData"), objectMapper, types);
+
+		Object restoredMessages = JacksonDeserializer.valueFromNode(node.get("messages"), objectMapper, types);
+		if (!(restoredMessages instanceof List<?> values)
+				|| values.stream().anyMatch(value -> !(value instanceof ChatMessage))) {
+			throw new IOException("Streaming messages must be ARGI ChatMessage values");
+		}
+		@SuppressWarnings("unchecked")
+		List<ChatMessage> messages = (List<ChatMessage>) restoredMessages;
+
+		// Deserialize outputType if present
+		OutputType outputType = null;
+		if (node.has("outputType") && !node.get("outputType").isNull()) {
+			String outputTypeStr = node.get("outputType").asText();
+			try {
+				outputType = OutputType.valueOf(outputTypeStr);
+			}
+			catch (IllegalArgumentException e) {
+				throw new IOException("Invalid streaming output type: " + outputTypeStr, e);
+			}
+		}
+
+		Usage usage = node.hasNonNull("tokenUsage")
+				? objectMapper.readValue(objectMapper.treeAsTokens(node.get("tokenUsage")), Usage.class)
+				: Usage.unknown();
+		StreamingOutput<?> output = new StreamingOutput<>(messages, origin, nodeName, agentName, state, outputType);
+		output.setTokenUsage(usage);
+		output.setOutputType(outputType);
+		output.setSubGraph(node.path("subGraph").asBoolean(false));
+		return output;
+	}
+
 }
-

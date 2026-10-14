@@ -16,11 +16,10 @@
 
 package io.github.agentic.ai.graph.agent.flow.agent.loop;
 
+import io.github.agentic.ai.api.chat.ChatMessage;
+
 import io.github.agentic.ai.graph.OverAllState;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.util.JsonHelper;
+import io.github.agentic.ai.graph.agent.internal.JsonCodec;
 import org.springframework.core.convert.converter.Converter;
 
 import java.util.List;
@@ -28,64 +27,65 @@ import java.util.Map;
 
 /**
  * JSON array loop strategy that retrieves a JSON array from the current message state,
- * sends each array element as a message to the model, and returns the result.
- * By default, the text of the last message is treated as a JSON array, but users can customize the converter.
+ * sends each array element as a message to the model, and returns the result. By default,
+ * the text of the last message is treated as a JSON array, but users can customize the
+ * converter.
  *
  * @author vlsmb
  * @since 2025/11/1
  */
 public class ArrayLoopStrategy implements LoopStrategy {
 
-    private final Converter<List<Message>, List<?>> converter;
+	private final Converter<List<ChatMessage>, List<?>> converter;
 
-    public ArrayLoopStrategy(Converter<List<Message>, List<?>> converter) {
-        this.converter = converter;
-    }
+	public ArrayLoopStrategy(Converter<List<ChatMessage>, List<?>> converter) {
+		this.converter = converter;
+	}
 
-    public ArrayLoopStrategy() {
-        this(DEFAULT_MESSAGE_CONVERTER);
-    }
+	public ArrayLoopStrategy() {
+		this(DEFAULT_MESSAGE_CONVERTER);
+	}
 
-    @Override
-    public Map<String, Object> loopInit(OverAllState state) {
-        @SuppressWarnings("unchecked")
-        List<Message> messages = (List<Message>) state.value(LoopStrategy.MESSAGE_KEY).orElse(List.of());
-        List<?> list = converter.convert(messages);
-        if(list != null) {
-            return Map.of(loopCountKey(), 0, loopFlagKey(), true, loopListKey(), list);
-        }
-        return Map.of(loopCountKey(), 0, loopFlagKey(), false, loopListKey(), List.of(),
-                LoopStrategy.MESSAGE_KEY, new SystemMessage("Invalid json array format"));
-    }
+	@Override
+	public Map<String, Object> loopInit(OverAllState state) {
+		@SuppressWarnings("unchecked")
+		List<ChatMessage> messages = (List<ChatMessage>) state.value(LoopStrategy.MESSAGE_KEY).orElse(List.of());
+		List<?> list = converter.convert(messages);
+		if (list != null) {
+			return Map.of(loopCountKey(), 0, loopFlagKey(), true, loopListKey(), list);
+		}
+		return Map.of(loopCountKey(), 0, loopFlagKey(), false, loopListKey(), List.of(), LoopStrategy.MESSAGE_KEY,
+				ChatMessage.system("Invalid json array format"));
+	}
 
-    @Override
-    public Map<String, Object> loopDispatch(OverAllState state) {
-        List<?> list = state.value(loopListKey(), List.class).orElse(List.of());
-        int index = state.value(loopCountKey(), maxLoopCount());
-        if(index < list.size()) {
-            UserMessage message = new UserMessage(list.get(index).toString());
-            return Map.of(loopCountKey(), index + 1, loopFlagKey(), true,
-                    LoopStrategy.MESSAGE_KEY, message);
-        } else {
-            return Map.of(loopFlagKey(), false);
-        }
-    }
+	@Override
+	public Map<String, Object> loopDispatch(OverAllState state) {
+		List<?> list = state.value(loopListKey(), List.class).orElse(List.of());
+		int index = state.value(loopCountKey(), maxLoopCount());
+		if (index < list.size()) {
+			ChatMessage message = ChatMessage.user(list.get(index).toString());
+			return Map.of(loopCountKey(), index + 1, loopFlagKey(), true, LoopStrategy.MESSAGE_KEY, message);
+		}
+		else {
+			return Map.of(loopFlagKey(), false);
+		}
+	}
 
-    /**
-     * 默认的转换器，将最后一个消息的文本作为json数组
-     */
-    private static final Converter<List<Message>, List<?>> DEFAULT_MESSAGE_CONVERTER =
-            messages -> {
-                String lastMessage;
-                if(!messages.isEmpty()) {
-                    lastMessage = messages.get(messages.size() - 1).getText();
-                } else {
-                    lastMessage = null;
-                }
-                if(lastMessage == null) {
-                    return null;
-                }
-                return new JsonHelper().fromJson(lastMessage, List.class);
-            };
+	/**
+	 * 默认的转换器，将最后一个消息的文本作为json数组
+	 */
+	private static final Converter<List<ChatMessage>, List<?>> DEFAULT_MESSAGE_CONVERTER = messages -> {
+		String lastMessage;
+		if (!messages.isEmpty()) {
+			lastMessage = messages.get(messages.size() - 1).text();
+		}
+		else {
+			lastMessage = null;
+		}
+		if (lastMessage == null) {
+			return null;
+		}
+		return new JsonCodec().fromJson(lastMessage, List.class);
+	};
 
 }

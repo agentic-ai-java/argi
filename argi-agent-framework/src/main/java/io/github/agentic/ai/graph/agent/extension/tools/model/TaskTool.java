@@ -17,10 +17,10 @@ package io.github.agentic.ai.graph.agent.extension.tools.model;
 
 import io.github.agentic.ai.graph.agent.ReactAgent;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 
 import java.util.Map;
 import java.util.function.BiFunction;
@@ -31,8 +31,8 @@ import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 /**
  * Tool that enables invoking subagents to handle complex, isolated tasks.
  *
- * This tool allows the main agent to delegate work to specialized subagents,
- * each with their own context and capabilities.
+ * This tool allows the main agent to delegate work to specialized subagents, each with
+ * their own context and capabilities.
  */
 public class TaskTool implements BiFunction<TaskTool.TaskRequest, ToolContext, String> {
 
@@ -46,8 +46,8 @@ public class TaskTool implements BiFunction<TaskTool.TaskRequest, ToolContext, S
 	public String apply(TaskRequest request, ToolContext toolContext) {
 		// Validate subagent type
 		if (!subAgents.containsKey(request.subagentType)) {
-			return "Error: invoked agent of type " + request.subagentType +
-					", the only allowed types are " + subAgents.keySet();
+			return "Error: invoked agent of type " + request.subagentType + ", the only allowed types are "
+					+ subAgents.keySet();
 		}
 
 		// Get the subagent
@@ -55,10 +55,10 @@ public class TaskTool implements BiFunction<TaskTool.TaskRequest, ToolContext, S
 
 		try {
 			// Invoke the subagent with the task description
-			AssistantMessage result = subAgent.call(request.description);
+			ChatMessage result = subAgent.call(request.description);
 
 			// Return the subagent's response
-			return result.getText();
+			return result.text();
 		}
 		catch (Exception e) {
 			return "Error executing subagent task: " + e.getMessage();
@@ -66,13 +66,13 @@ public class TaskTool implements BiFunction<TaskTool.TaskRequest, ToolContext, S
 	}
 
 	/**
-	 * Create a ToolCallback for the task tool.
+	 * Create a neutral tool binding for delegating a task.
 	 */
-	public static ToolCallback createTaskToolCallback(Map<String, ReactAgent> subAgents, String description) {
-		return FunctionToolCallback.builder("task", new TaskTool(subAgents))
-				.description(description)
-				.inputType(TaskRequest.class)
-				.build();
+	public static Tool createTaskTool(Map<String, ReactAgent> subAgents, String description) {
+		return TypedTool.builder("task", new TaskTool(subAgents))
+			.description(description)
+			.inputType(TaskRequest.class)
+			.build();
 	}
 
 	/**
@@ -95,6 +95,7 @@ public class TaskTool implements BiFunction<TaskTool.TaskRequest, ToolContext, S
 			this.description = description;
 			this.subagentType = subagentType;
 		}
-	}
-}
 
+	}
+
+}

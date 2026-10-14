@@ -17,6 +17,7 @@ package io.github.agentic.ai.graph.agent.interceptor;
 
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
+import io.github.agentic.ai.graph.execution.TrustedExecutionContext;
 
 import java.util.Optional;
 
@@ -57,5 +58,8 @@ public final class ToolCallExecutionContext {
 		return this.config.checkPointId();
 	}
 
-}
+	public Optional<TrustedExecutionContext> trustedExecutionContext() {
+		return this.config.trustedExecutionContext();
+	}
 
+}

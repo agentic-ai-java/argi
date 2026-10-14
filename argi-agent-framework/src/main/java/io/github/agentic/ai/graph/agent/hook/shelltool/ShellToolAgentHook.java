@@ -20,50 +20,36 @@ import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.agent.hook.AgentHook;
 import io.github.agentic.ai.graph.agent.hook.HookPosition;
 import io.github.agentic.ai.graph.agent.hook.HookPositions;
-import io.github.agentic.ai.graph.agent.hook.ToolInjection;
+import io.github.agentic.ai.api.tool.Tool;
 import io.github.agentic.ai.graph.agent.tools.ShellSessionManager;
 import io.github.agentic.ai.graph.agent.tools.ShellTool2;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.springframework.ai.support.ToolCallbacks;
-import org.springframework.ai.tool.ToolCallback;
-
-import java.lang.reflect.Field;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Hook for managing ShellTool2 session.
- * This hook initializes the shell session before the agent starts and cleans it up after the agent finishes.
- * Supports ShellTool2 (@Tool annotation).
+ * Hook for managing ShellTool2 session. This hook initializes the shell session before
+ * the agent starts and cleans it up after the agent finishes. Supports ShellTool2 (@Tool
+ * annotation).
  */
-@HookPositions({HookPosition.BEFORE_AGENT, HookPosition.AFTER_AGENT})
-public class ShellToolAgentHook extends AgentHook implements ToolInjection {
+@HookPositions({ HookPosition.BEFORE_AGENT, HookPosition.AFTER_AGENT })
+public class ShellToolAgentHook extends AgentHook {
 
 	private static final Logger log = LoggerFactory.getLogger(ShellToolAgentHook.class);
 
 	private ShellTool2 shellTool2;
-	private String shellToolName;
-
-	/**
-	 * Private constructor for builder pattern.
-	 */
-	private ShellToolAgentHook() {
-	}
 
 	/**
 	 * Private constructor with ShellTool2 for builder pattern.
 	 * @param shellTool2 the ShellTool2 instance to use
-	 * @param shellToolName the name of the shell tool
 	 */
-	private ShellToolAgentHook(ShellTool2 shellTool2, String shellToolName) {
+	private ShellToolAgentHook(ShellTool2 shellTool2) {
 		this.shellTool2 = shellTool2;
-		this.shellToolName = shellToolName;
 	}
 
 	/**
@@ -78,7 +64,7 @@ public class ShellToolAgentHook extends AgentHook implements ToolInjection {
 	public CompletableFuture<Map<String, Object>> beforeAgent(OverAllState state, RunnableConfig config) {
 		ShellSessionManager sessionManager = getSessionManager();
 		if (sessionManager == null) {
-			log.warn("ShellToolAgentHook: No ShellTool2 injected, skipping initialization");
+			log.warn("ShellToolAgentHook: No ShellTool2 configured, skipping initialization");
 			return CompletableFuture.completedFuture(new HashMap<>());
 		}
 
@@ -87,7 +73,8 @@ public class ShellToolAgentHook extends AgentHook implements ToolInjection {
 		try {
 			sessionManager.initialize(config);
 			log.info("Shell session initialized successfully");
-		} catch (Exception e) {
+		}
+		catch (Exception e) {
 			log.error("Failed to initialize shell session", e);
 			throw new RuntimeException("Failed to initialize shell session", e);
 		}
@@ -99,7 +86,7 @@ public class ShellToolAgentHook extends AgentHook implements ToolInjection {
 	public CompletableFuture<Map<String, Object>> afterAgent(OverAllState state, RunnableConfig config) {
 		ShellSessionManager sessionManager = getSessionManager();
 		if (sessionManager == null) {
-			log.warn("ShellToolAgentHook: No ShellTool2 injected, skipping cleanup");
+			log.warn("ShellToolAgentHook: No ShellTool2 configured, skipping cleanup");
 			return CompletableFuture.completedFuture(new HashMap<>());
 		}
 
@@ -108,7 +95,8 @@ public class ShellToolAgentHook extends AgentHook implements ToolInjection {
 		try {
 			sessionManager.cleanup(config);
 			log.info("Shell session cleaned up successfully");
-		} catch (Exception e) {
+		}
+		catch (Exception e) {
 			log.error("Failed to cleanup shell session", e);
 			// Don't throw exception in cleanup to avoid masking original errors
 		}
@@ -122,87 +110,17 @@ public class ShellToolAgentHook extends AgentHook implements ToolInjection {
 	}
 
 	@Override
-	public void injectTool(ToolCallback toolCallback) {
-		if (shellTool2 != null) {
-			// Tool already injected
-			return;
-		}
-
-		log.info("ShellToolAgentHook: Processing tool callback for shell tool extraction");
-
-		try {
-			// Extract ShellTool2
-			ShellTool2 extractedShellTool2 = extractShellTool2(toolCallback);
-			if (extractedShellTool2 != null) {
-				this.shellTool2 = extractedShellTool2;
-				log.info("Successfully extracted and injected ShellTool2 from tool: {}",
-						toolCallback.getToolDefinition().name());
-				return;
-			}
-
-			log.warn("Failed to extract ShellTool2 from tool: {}",
-					toolCallback.getToolDefinition().name());
-		} catch (Exception e) {
-			log.error("Error extracting ShellTool2 from tool callback", e);
-		}
-	}
-
-	/**
-	 * Extract ShellTool2 instance from ToolCallback using reflection.
-	 * Supports MethodToolCallback wrapping ShellTool2 (with @Tool annotation).
-	 */
-	private ShellTool2 extractShellTool2(ToolCallback toolCallback) {
-		try {
-			Class<?> clazz = toolCallback.getClass();
-
-			// Look for 'toolObject' field in MethodToolCallback
-			while (clazz != null) {
-				try {
-					Field toolObjectField = clazz.getDeclaredField("toolObject");
-					toolObjectField.setAccessible(true);
-					Object toolObject = toolObjectField.get(toolCallback);
-
-					if (toolObject instanceof ShellTool2) {
-						return (ShellTool2) toolObject;
-					}
-					break;
-				} catch (NoSuchFieldException e) {
-					// Try parent class
-					clazz = clazz.getSuperclass();
-				}
-			}
-		} catch (Exception e) {
-			log.debug("Could not extract ShellTool2 from ToolCallback via reflection", e);
-		}
-
-		return null;
-	}
-
-	@Override
-	public List<ToolCallback> getTools() {
+	public List<Tool> getTools() {
 		if (shellTool2 == null) {
-			log.info("No ShellTool2 instance injected, creating default instance");
+			log.info("No ShellTool2 instance configured, creating default instance");
 			this.shellTool2 = ShellTool2.builder(System.getProperty("user.dir")).build();
 		}
-		return Arrays.asList(ToolCallbacks.from(shellTool2));
-	}
-
-	@Override
-	public String getRequiredToolName() {
-		// Match by tool name "shell"
-		return shellToolName;
-	}
-
-	@Override
-	public Class<? extends ToolCallback> getRequiredToolType() {
-		// We don't filter by ToolCallback type because ShellTool2 is wrapped
-		// We rely on tool name matching instead
-		return null;
+		return List.of(shellTool2.tool());
 	}
 
 	/**
-	 * Get the injected ShellTool2 instance.
-	 * @return the ShellTool2 instance, or null if not injected
+	 * Get the ShellTool2 instance owned by this hook.
+	 * @return the ShellTool2 instance, or null before default initialization
 	 */
 	protected ShellTool2 getShellTool2() {
 		return shellTool2;
@@ -210,7 +128,7 @@ public class ShellToolAgentHook extends AgentHook implements ToolInjection {
 
 	/**
 	 * Get the ShellSessionManager from ShellTool2.
-	 * @return the ShellSessionManager instance, or null if ShellTool2 is not injected
+	 * @return the ShellSessionManager instance, or null before default initialization
 	 */
 	private ShellSessionManager getSessionManager() {
 		if (shellTool2 != null) {
@@ -223,8 +141,8 @@ public class ShellToolAgentHook extends AgentHook implements ToolInjection {
 	 * Builder class for constructing ShellToolAgentHook instances.
 	 */
 	public static class Builder {
+
 		private ShellTool2 shellTool2;
-		private String shellToolName;
 
 		/**
 		 * Set the ShellTool2 instance.
@@ -237,21 +155,13 @@ public class ShellToolAgentHook extends AgentHook implements ToolInjection {
 		}
 
 		/**
-		 * Set the shell tool name.
-		 * @param shellToolName the name of the shell tool
-		 * @return this builder instance
-		 */
-		public Builder shellToolName(String shellToolName) {
-			this.shellToolName = shellToolName;
-			return this;
-		}
-
-		/**
 		 * Build the ShellToolAgentHook instance.
 		 * @return a new ShellToolAgentHook instance
 		 */
 		public ShellToolAgentHook build() {
-			return new ShellToolAgentHook(shellTool2, shellToolName);
+			return new ShellToolAgentHook(shellTool2);
 		}
+
 	}
+
 }

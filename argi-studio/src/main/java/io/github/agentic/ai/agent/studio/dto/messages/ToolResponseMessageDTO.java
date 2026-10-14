@@ -15,7 +15,8 @@
  */
 package io.github.agentic.ai.agent.studio.dto.messages;
 
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,8 +26,8 @@ import java.util.Map;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * Data Transfer Object for ToolResponseMessage.
- * Provides serialization-friendly representation with default constructor and getters/setters.
+ * Data Transfer Object for ToolResponseMessage. Provides serialization-friendly
+ * representation with default constructor and getters/setters.
  */
 public class ToolResponseMessageDTO implements MessageDTO {
 
@@ -59,37 +60,26 @@ public class ToolResponseMessageDTO implements MessageDTO {
 	}
 
 	/**
-	 * Constructor from Spring AI ToolResponseMessage.
+	 * Constructor from provider-neutral tool message.
 	 */
-	public ToolResponseMessageDTO(ToolResponseMessage message) {
-		this();
-		this.content = message.getText();
-		this.metadata = new HashMap<>(message.getMetadata());
-
-		// Convert tool responses
-		if (message.getResponses() != null && !message.getResponses().isEmpty()) {
-			this.responses = new ArrayList<>();
-			for (ToolResponseMessage.ToolResponse response : message.getResponses()) {
-				this.responses.add(new ToolResponseDTO(response));
-			}
+	public ToolResponseMessageDTO(ChatMessage message) {
+		this(message.text());
+		if (message.role() != ChatRole.TOOL) {
+			throw new IllegalArgumentException("Expected a tool message");
 		}
+		this.metadata = new HashMap<>(message.metadata());
+		this.responses.add(new ToolResponseDTO(message));
 	}
 
 	/**
-	 * Convert to Spring AI ToolResponseMessage.
+	 * Convert to provider-neutral tool message.
 	 */
-	public ToolResponseMessage toToolResponseMessage() {
-		List<ToolResponseMessage.ToolResponse> springResponses = new ArrayList<>();
-		if (this.responses != null) {
-			for (ToolResponseDTO dto : this.responses) {
-				springResponses.add(dto.toToolResponse());
-			}
+	public ChatMessage toToolResponseMessage() {
+		if (responses == null || responses.size() != 1) {
+			throw new IllegalArgumentException("A tool message must contain exactly one result");
 		}
-
-		return ToolResponseMessage.builder()
-			.responses(springResponses)
-			.metadata(this.metadata)
-			.build();
+		ToolResponseDTO result = responses.get(0);
+		return ChatMessage.tool(result.id, result.name, result.responseData).withMetadata(metadata);
 	}
 
 	// Getters and Setters
@@ -130,6 +120,7 @@ public class ToolResponseMessageDTO implements MessageDTO {
 	 * DTO for ToolResponse within ToolResponseMessage.
 	 */
 	public static class ToolResponseDTO {
+
 		@JsonProperty("id")
 		private String id;
 
@@ -142,14 +133,10 @@ public class ToolResponseMessageDTO implements MessageDTO {
 		public ToolResponseDTO() {
 		}
 
-		public ToolResponseDTO(ToolResponseMessage.ToolResponse response) {
-			this.id = response.id();
-			this.name = response.name();
-			this.responseData = response.responseData();
-		}
-
-		public ToolResponseMessage.ToolResponse toToolResponse() {
-			return new ToolResponseMessage.ToolResponse(this.id, this.name, this.responseData);
+		public ToolResponseDTO(ChatMessage response) {
+			this.id = response.toolCallId();
+			this.name = response.toolName();
+			this.responseData = response.text();
 		}
 
 		// Getters and Setters
@@ -177,6 +164,7 @@ public class ToolResponseMessageDTO implements MessageDTO {
 		public void setResponseData(String responseData) {
 			this.responseData = responseData;
 		}
-	}
-}
 
+	}
+
+}

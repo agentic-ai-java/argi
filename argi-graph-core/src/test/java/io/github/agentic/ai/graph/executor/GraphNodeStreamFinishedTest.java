@@ -15,6 +15,12 @@
  */
 package io.github.agentic.ai.graph.executor;
 
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatResponse;
+import io.github.agentic.ai.graph.stream.ScriptedChatClient;
+
 import io.github.agentic.ai.graph.CompiledGraph;
 import io.github.agentic.ai.graph.KeyStrategy;
 import io.github.agentic.ai.graph.NodeOutput;
@@ -25,11 +31,6 @@ import io.github.agentic.ai.graph.stream.LLmNodeAction;
 import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
@@ -46,9 +47,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link io.github.agentic.ai.graph.executor.NodeExecutor} stream completion behavior for
- * graph LLM nodes: {@link OutputType#GRAPH_NODE_FINISHED} must not repeat text already sent as
- * {@link OutputType#GRAPH_NODE_STREAMING} deltas.
+ * Verifies {@link io.github.agentic.ai.graph.executor.NodeExecutor} stream completion
+ * behavior for graph LLM nodes: {@link OutputType#GRAPH_NODE_FINISHED} must not repeat
+ * text already sent as {@link OutputType#GRAPH_NODE_STREAMING} deltas.
  */
 public class GraphNodeStreamFinishedTest {
 
@@ -62,21 +63,18 @@ public class GraphNodeStreamFinishedTest {
 		StringBuilder appendAllNonEmptyChunks = new StringBuilder();
 		AtomicReference<StreamingOutput<?>> finishedOutput = new AtomicReference<>();
 
-		NodeOutput last = compiledGraph.stream(input)
-				.doOnNext(output -> {
-					if (!(output instanceof StreamingOutput<?> so)) {
-						return;
-					}
-					if (so.getOutputType() == OutputType.GRAPH_NODE_FINISHED) {
-						finishedOutput.set(so);
-					}
-					appendChunkIfPresent(appendAllNonEmptyChunks, so);
-				})
-				.blockLast(Duration.ofSeconds(10));
+		NodeOutput last = compiledGraph.stream(input).doOnNext(output -> {
+			if (!(output instanceof StreamingOutput<?> so)) {
+				return;
+			}
+			if (so.getOutputType() == OutputType.GRAPH_NODE_FINISHED) {
+				finishedOutput.set(so);
+			}
+			appendChunkIfPresent(appendAllNonEmptyChunks, so);
+		}).blockLast(Duration.ofSeconds(10));
 
 		assertNotNull(finishedOutput.get(), "stream should emit GRAPH_NODE_FINISHED");
-		assertTrue(isEmptyText(finishedOutput.get()),
-				"GRAPH_NODE_FINISHED must not expose full text in chunk/message");
+		assertTrue(isEmptyText(finishedOutput.get()), "GRAPH_NODE_FINISHED must not expose full text in chunk/message");
 
 		assertEquals(EXPECTED_FULL_TEXT, appendAllNonEmptyChunks.toString(),
 				"appending all non-empty stream chunks should equal full text once, not twice");
@@ -84,35 +82,24 @@ public class GraphNodeStreamFinishedTest {
 				"final state should still contain the full assistant message");
 	}
 
-	private static CompiledGraph buildGraph(ChatModel chatModel) throws Exception {
+	private static CompiledGraph buildGraph(ChatClient chatModel) throws Exception {
 		StateGraph stateGraph = new StateGraph(() -> {
 			Map<String, KeyStrategy> strategies = new HashMap<>();
 			strategies.put("messages", new AppendStrategy());
 			return strategies;
 		}).addNode("streaming_node", node_async(new LLmNodeAction(chatModel, "streaming_node")))
-				.addEdge(START, "streaming_node")
-				.addEdge("streaming_node", END);
+			.addEdge(START, "streaming_node")
+			.addEdge("streaming_node", END);
 		return stateGraph.compile();
 	}
 
-	private static ChatModel createIncrementalMockChatModel() {
-		return new ChatModel() {
-			@Override
-			public ChatResponse call(Prompt prompt) {
-				return new ChatResponse(List.of(new Generation(new AssistantMessage(EXPECTED_FULL_TEXT))));
-			}
-
-			@Override
-			public Flux<ChatResponse> stream(Prompt prompt) {
-				return Flux.just(
-						new ChatResponse(List.of(new Generation(new AssistantMessage("foo")))),
-						new ChatResponse(List.of(new Generation(new AssistantMessage(" bar")))),
-						new ChatResponse(List.of(new Generation(new AssistantMessage(" baz")))));
-			}
-		};
+	private static ChatClient createIncrementalMockChatModel() {
+		return new ScriptedChatClient(() -> Flux.just(ChatEvent.textDelta("foo"), ChatEvent.textDelta(" bar"),
+				ChatEvent.textDelta(" baz"), ChatEvent.response(new ChatResponse(null, null,
+						List.of(ChatMessage.assistant(EXPECTED_FULL_TEXT)), List.of(), null, null, Map.of()))));
 	}
 
-	/** Append whenever chunk or message text is non-empty (naive stream consumer). */
+	/** Append whenever visible assistant text is non-empty (naive stream consumer). */
 	private static void appendChunkIfPresent(StringBuilder sink, StreamingOutput<?> so) {
 		String chunk = chunkText(so);
 		if (chunk != null && !chunk.isEmpty()) {
@@ -121,14 +108,7 @@ public class GraphNodeStreamFinishedTest {
 	}
 
 	private static String chunkText(StreamingOutput<?> so) {
-		String chunk = so.chunk();
-		if (chunk != null) {
-			return chunk;
-		}
-		if (so.message() != null && so.message().getText() != null) {
-			return so.message().getText();
-		}
-		return null;
+		return so.text();
 	}
 
 	private static boolean isEmptyText(StreamingOutput<?> so) {
@@ -142,13 +122,13 @@ public class GraphNodeStreamFinishedTest {
 		}
 		Object messages = last.state().value("messages").orElse(null);
 		if (messages instanceof Iterable<?> list) {
-			AssistantMessage lastAssistant = null;
+			ChatMessage lastAssistant = null;
 			for (Object item : list) {
-				if (item instanceof AssistantMessage am) {
+				if (item instanceof ChatMessage am) {
 					lastAssistant = am;
 				}
 			}
-			return lastAssistant != null && lastAssistant.getText() != null ? lastAssistant.getText() : "";
+			return lastAssistant != null && lastAssistant.text() != null ? lastAssistant.text() : "";
 		}
 		return "";
 	}

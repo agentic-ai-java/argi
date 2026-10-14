@@ -21,9 +21,9 @@ import io.github.agentic.ai.graph.agent.interceptor.StreamingModelInterceptor;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatResponse;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatResponse;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.function.FunctionToolCallback;
@@ -42,8 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class StreamingModelInterceptorTest extends AbstractDashscopeChatModelTest {
 
 	/**
@@ -55,7 +54,7 @@ class StreamingModelInterceptorTest extends AbstractDashscopeChatModelTest {
 		@SuppressWarnings("unchecked")
 		public String apply(Request request, ToolContext toolContext) {
 			Map<String, Object> updateMap = (Map<String, Object>) toolContext.getContext()
-					.get(AGENT_STATE_FOR_UPDATE_CONTEXT_KEY);
+				.get(AGENT_STATE_FOR_UPDATE_CONTEXT_KEY);
 			if (updateMap != null) {
 				updateMap.put("product_1_extra", "苹果手机");
 			}
@@ -63,28 +62,26 @@ class StreamingModelInterceptorTest extends AbstractDashscopeChatModelTest {
 		}
 
 		public record Request(
-				@JsonProperty(required = true, value = "query")
-				@JsonPropertyDescription("查询关键词") String query,
+				@JsonProperty(required = true, value = "query") @JsonPropertyDescription("查询关键词") String query,
 
-				@JsonProperty(required = true, value = "thought")
-				@JsonPropertyDescription("思考为什么要调用这个工具") String thought
-				) {
+				@JsonProperty(required = true,
+						value = "thought") @JsonPropertyDescription("思考为什么要调用这个工具") String thought) {
 		}
 
 		static ToolCallback createCallback() {
 			return FunctionToolCallback.builder("query_product_1", new QueryProduct1Tool())
-					.description("查询商品1的信息，返回id=1的苹果商品")
-					.inputType(Request.class)
-					.build();
+				.description("查询商品1的信息，返回id=1的苹果商品")
+				.inputType(Request.class)
+				.build();
 		}
+
 	}
 
 	/**
-	 * 验证 StreamingModelInterceptor 扩展点端到端工作：
-	 * - 复用 QueryProduct1Tool，让 agent 至少触发两轮模型调用（首轮决定调用工具，第二轮基于工具返回作答）
-	 * - 注册一个计数 interceptor，断言 beforeStreamCall / onStreamChunk / afterStreamComplete 全部被触发
-	 * - 断言 onStreamChunk 累计 chunk 数 ≥ beforeStreamCall 次数（每轮至少 1 个 chunk）
-	 * - 断言 afterStreamComplete 收到的聚合文本非空
+	 * 验证 StreamingModelInterceptor 扩展点端到端工作： - 复用 QueryProduct1Tool，让 agent
+	 * 至少触发两轮模型调用（首轮决定调用工具，第二轮基于工具返回作答） - 注册一个计数 interceptor，断言 beforeStreamCall /
+	 * onStreamChunk / afterStreamComplete 全部被触发 - 断言 onStreamChunk 累计 chunk 数 ≥
+	 * beforeStreamCall 次数（每轮至少 1 个 chunk） - 断言 afterStreamComplete 收到的聚合文本非空
 	 */
 	@Test
 	void streamingModelInterceptor_shouldReceivePerChunkCallbacks() throws Exception {
@@ -98,36 +95,24 @@ class StreamingModelInterceptorTest extends AbstractDashscopeChatModelTest {
 			@Override
 			public ModelRequest beforeStreamCall(ModelRequest request) {
 				int round = beforeCount.incrementAndGet();
-				System.out.println("\n[interceptor] >>> beforeStreamCall round=" + round
-						+ ", messages=" + (request.getMessages() == null ? 0 : request.getMessages().size())
-						+ ", tools=" + request.getTools());
+				System.out.println("\n[interceptor] >>> beforeStreamCall round=" + round + ", messages="
+						+ (request.getMessages() == null ? 0 : request.getMessages().size()) + ", tools="
+						+ request.getTools());
 				return request;
 			}
 
 			@Override
-			public ChatResponse onStreamChunk(ChatResponse chunk, ModelRequest request) {
-				int idx = chunkCount.incrementAndGet();
-				String text = null;
-				boolean hasToolCalls = false;
-				if (chunk != null && chunk.getResult() != null && chunk.getResult().getOutput() != null) {
-					text = chunk.getResult().getOutput().getText();
-					hasToolCalls = chunk.getResult().getOutput().hasToolCalls();
-				}
-				if (hasToolCalls) {
-					System.out.println("[interceptor] chunk#" + idx + " toolCalls="
-							+ chunk.getResult().getOutput().getToolCalls());
-				} else {
-					System.out.println("[interceptor] chunk#" + idx + " text=" + (text == null ? "<null>" : text));
-				}
+			public ChatEvent onStreamChunk(ChatEvent chunk, ModelRequest request) {
+				chunkCount.incrementAndGet();
 				return chunk;
 			}
 
 			@Override
-			public void afterStreamComplete(AssistantMessage aggregatedMessage, ModelRequest request) {
+			public void afterStreamComplete(ChatResponse aggregatedMessage, ModelRequest request) {
 				int round = completeCount.incrementAndGet();
-				String aggregated = aggregatedMessage != null ? aggregatedMessage.getText() : null;
-				System.out.println("[interceptor] <<< afterStreamComplete round=" + round
-						+ ", aggregatedText=" + aggregated);
+				String aggregated = aggregatedMessage.text();
+				System.out
+					.println("[interceptor] <<< afterStreamComplete round=" + round + ", aggregatedText=" + aggregated);
 				if (aggregated != null) {
 					lastAggregatedText.set(aggregated);
 				}
@@ -141,19 +126,19 @@ class StreamingModelInterceptorTest extends AbstractDashscopeChatModelTest {
 		};
 
 		ReactAgent agent = ReactAgent.builder()
-				.name("streaming_interceptor_agent")
-				.model(chatModel)
-				.description("用于测试 StreamingModelInterceptor")
-				.instruction("请调用 query_product_1 工具查询商品信息，并基于返回结果用 500 字内说明这是什么商品，有什么特点等。")
-				.tools(List.of(QueryProduct1Tool.createCallback()))
-				.streamingInterceptors(counting)
-				.build();
+			.name("streaming_interceptor_agent")
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
+			.description("用于测试 StreamingModelInterceptor")
+			.instruction("请调用 query_product_1 工具查询商品信息，并基于返回结果用 500 字内说明这是什么商品，有什么特点等。")
+			.toolRegistry(io.github.agentic.ai.adapter.springai.SpringAiToolAdapter
+				.fromCallbacks(List.of(QueryProduct1Tool.createCallback())))
+			.streamingInterceptors(counting)
+			.build();
 
 		try {
 			// Bounded wait so a hung upstream stream surfaces as a deterministic failure
 			// instead of blocking the test runner forever.
-			agent.stream("查询商品1并简要解读")
-					.blockLast(Duration.ofMinutes(2));
+			agent.stream("查询商品1并简要解读").blockLast(Duration.ofMinutes(2));
 
 			System.out.println();
 			System.out.println("===== Interceptor 计数 =====");
@@ -163,19 +148,19 @@ class StreamingModelInterceptorTest extends AbstractDashscopeChatModelTest {
 			System.out.println("onStreamError      : " + errorCount.get());
 			System.out.println("最后一轮聚合文本    : " + lastAggregatedText.get());
 
-			assertTrue(beforeCount.get() >= 2,
-					"agent 调用了工具，至少应触发 2 轮模型调用，beforeStreamCall 实际=" + beforeCount.get());
+			assertTrue(beforeCount.get() >= 2, "agent 调用了工具，至少应触发 2 轮模型调用，beforeStreamCall 实际=" + beforeCount.get());
 			assertTrue(chunkCount.get() >= beforeCount.get(),
 					"每轮至少应有 1 个 chunk；chunkCount=" + chunkCount.get() + ", beforeCount=" + beforeCount.get());
-			assertTrue(completeCount.get() >= 2,
-					"每轮成功完成时都应触发 afterStreamComplete，实际=" + completeCount.get());
+			assertTrue(completeCount.get() >= 2, "每轮成功完成时都应触发 afterStreamComplete，实际=" + completeCount.get());
 			assertEquals(0, errorCount.get(), "正常路径不应触发 onStreamError");
 			assertNotNull(lastAggregatedText.get(), "聚合文本不应为 null");
 			assertFalse(lastAggregatedText.get().isEmpty(), "最后一轮聚合文本不应为空（说明 chunk text 累加生效）");
 
-		} catch (Exception ex) {
+		}
+		catch (Exception ex) {
 			ex.printStackTrace();
 			fail("流式拦截器测试失败: " + ex.getMessage());
 		}
 	}
+
 }

@@ -18,12 +18,12 @@ package io.github.agentic.ai.graph.agent;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.function.BiFunction;
 
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.KeyStrategy;
@@ -36,20 +36,11 @@ import io.github.agentic.ai.graph.checkpoint.BaseCheckpointSaver;
 import io.github.agentic.ai.graph.checkpoint.config.SaverConfig;
 
 import io.github.agentic.ai.graph.serializer.StateSerializer;
-import io.github.agentic.ai.graph.serializer.std.SpringAIStateSerializer;
 import io.micrometer.observation.ObservationRegistry;
 
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.observation.AdvisorObservationConvention;
-import org.springframework.ai.chat.client.observation.ChatClientObservationConvention;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.support.ToolCallbacks;
-import org.springframework.ai.template.TemplateRenderer;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.execution.ToolExecutionExceptionProcessor;
-import org.springframework.ai.tool.resolution.ToolCallbackResolver;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.GenerationOptions;
+import io.github.agentic.ai.api.tool.ToolRegistry;
 
 import org.springframework.util.Assert;
 
@@ -63,27 +54,17 @@ public abstract class Builder {
 
 	protected String systemPrompt;
 
-	// Provide customized template renderer instance, for example
-	// ArgiStTemplateRenderer.builder().startDelimiterToken("{{").endDelimiterToken("}}").build()
-	protected TemplateRenderer templateRenderer;
+	protected BiFunction<String, Map<String, Object>, String> templateRenderer;
 
-	protected ChatModel model;
-
-	protected ChatOptions chatOptions;
+	protected GenerationOptions generationOptions;
 
 	protected ChatClient chatClient;
 
+	protected ToolRegistry toolRegistry = new ToolRegistry(List.of());
+
 	protected boolean throwOnModelError;
 
-	protected List<ToolCallback> tools = new ArrayList<>();
-
-	protected List<ToolCallbackProvider> toolCallbackProviders = new ArrayList<>();
-
-	protected List<String> toolNames = new ArrayList<>();
-
-	protected ToolCallbackResolver resolver;
-
-	protected ToolExecutionExceptionProcessor toolExecutionExceptionProcessor;
+	protected boolean throwOnToolError;
 
 	protected Map<String, Object> toolContext = new HashMap<>();
 
@@ -94,16 +75,22 @@ public abstract class Builder {
 	protected CompileConfig compileConfig;
 
 	protected List<Hook> hooks = new ArrayList<>();
+
 	protected List<Interceptor> interceptors = new ArrayList<>();
+
 	protected List<ModelInterceptor> modelInterceptors = new ArrayList<>();
+
 	protected List<ToolInterceptor> toolInterceptors = new ArrayList<>();
+
 	protected List<StreamingModelInterceptor> streamingInterceptors = new ArrayList<>();
 
 	protected boolean includeContents = true;
+
 	protected boolean returnReasoningContents;
 
 	// Register AssistantMessageSanitizerInterceptor by default to keep tool-calling
-	// AssistantMessages with null text compatible with strict DeepSeek-compatible backends.
+	// AssistantMessages with null text compatible with strict DeepSeek-compatible
+	// backends.
 	protected boolean assistantMessageSanitizerEnabled = true;
 
 	protected String outputKey;
@@ -111,16 +98,14 @@ public abstract class Builder {
 	protected KeyStrategy outputKeyStrategy;
 
 	protected String inputSchema;
+
 	protected Type inputType;
 
 	protected String outputSchema;
+
 	protected Class<?> outputType;
 
 	protected ObservationRegistry observationRegistry;
-
-	protected ChatClientObservationConvention customObservationConvention;
-
-	protected AdvisorObservationConvention advisorObservationConvention;
 
 	protected boolean enableLogging;
 
@@ -130,9 +115,11 @@ public abstract class Builder {
 
 	// Async tool execution configuration
 	protected boolean parallelToolExecution = false;
+
 	protected int maxParallelTools = 5;
+
 	protected Duration toolExecutionTimeout = Duration.ofMinutes(5);
-	protected boolean wrapSyncToolsAsAsync = false;
+
 	protected boolean validateToolArguments = false;
 
 	public Builder name(String name) {
@@ -140,19 +127,19 @@ public abstract class Builder {
 		return this;
 	}
 
-	@Deprecated
 	public Builder chatClient(ChatClient chatClient) {
-		this.chatClient = chatClient;
+		this.chatClient = Objects.requireNonNull(chatClient, "chatClient must not be null");
 		return this;
 	}
 
-	public Builder model(ChatModel model) {
-		this.model = model;
+	public Builder generationOptions(GenerationOptions generationOptions) {
+		this.generationOptions = generationOptions;
 		return this;
 	}
 
-	public Builder chatOptions(ChatOptions chatOptions) {
-		this.chatOptions = chatOptions;
+	/** Sets immutable, provider-neutral tool bindings executed by the agent runtime. */
+	public Builder toolRegistry(ToolRegistry toolRegistry) {
+		this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
 		return this;
 	}
 
@@ -161,9 +148,10 @@ public abstract class Builder {
 	 * converting them to an {@code AssistantMessage} with an {@code Exception:} prefix.
 	 * Defaults to {@code false} for backward compatibility. When enabled, model
 	 * interceptors receive the original exception, including its type and cause.
-	 * <p>Applies to synchronous calls and synchronous streaming setup failures.
-	 * Errors emitted by a streaming publisher continue to propagate in either mode.
-	 * This option does not change tool exception handling or configure retries.
+	 * <p>
+	 * Applies to synchronous calls and synchronous streaming setup failures. Errors
+	 * emitted by a streaming publisher continue to propagate in either mode. This option
+	 * does not change tool exception handling or configure retries.
 	 * @param throwOnModelError whether to propagate caught model exceptions
 	 * @return this builder
 	 */
@@ -172,48 +160,11 @@ public abstract class Builder {
 		return this;
 	}
 
-	public Builder tools(List<ToolCallback> tools) {
-		Assert.notNull(tools, "tools cannot be null");
-		Assert.noNullElements(tools, "tools cannot contain null elements");
-		this.tools.addAll(tools);
-		return this;
-	}
-
-	public Builder tools(ToolCallback... tools) {
-		Assert.notNull(tools, "tools cannot be null");
-		Assert.noNullElements(tools, "tools cannot contain null elements");
-		this.tools.addAll(List.of(tools));
-		return this;
-	}
-
-	public Builder methodTools(Object... toolObjects) {
-		Assert.notNull(toolObjects, "toolObjects cannot be null");
-		Assert.noNullElements(toolObjects, "toolObjects cannot contain null elements");
-		this.tools.addAll(Arrays.asList(ToolCallbacks.from(toolObjects)));
-		return this;
-	}
-
-	public Builder toolCallbackProviders(ToolCallbackProvider... toolCallbackProviders) {
-		Assert.notNull(toolCallbackProviders, "toolCallbackProviders cannot be null");
-		Assert.noNullElements(toolCallbackProviders, "toolCallbackProviders cannot contain null elements");
-		this.toolCallbackProviders.addAll(List.of(toolCallbackProviders));
-		return this;
-	}
-
-	public Builder toolNames(String... toolNames) {
-		Assert.notNull(toolNames, "toolNames cannot be null");
-		Assert.noNullElements(toolNames, "toolNames cannot contain null elements");
-		this.toolNames.addAll(List.of(toolNames));
-		return this;
-	}
-
-	public Builder resolver(ToolCallbackResolver resolver) {
-		this.resolver = resolver;
-		return this;
-	}
-
-	public Builder toolExecutionExceptionProcessor(ToolExecutionExceptionProcessor toolExecutionExceptionProcessor) {
-		this.toolExecutionExceptionProcessor = toolExecutionExceptionProcessor;
+	/**
+	 * Propagates tool execution failures instead of sending an error result to the model.
+	 */
+	public Builder throwOnToolError(boolean throwOnToolError) {
+		this.throwOnToolError = throwOnToolError;
 		return this;
 	}
 
@@ -257,7 +208,13 @@ public abstract class Builder {
 		return this;
 	}
 
-	public Builder templateRenderer(TemplateRenderer templateRenderer) {
+	/**
+	 * Sets a provider-neutral renderer for instruction templates. The function receives
+	 * the template text and its variables, and must be safe for concurrent calls.
+	 * @param templateRenderer the template renderer
+	 * @return this builder
+	 */
+	public Builder templateRenderer(BiFunction<String, Map<String, Object>, String> templateRenderer) {
 		this.templateRenderer = templateRenderer;
 		return this;
 	}
@@ -303,17 +260,21 @@ public abstract class Builder {
 	}
 
 	/**
-	 * Enables or disables the default {@code AssistantMessageSanitizerInterceptor}.
+	 * Enables or disables opt-in validation of tool-call arguments against the tool's
+	 * declared input schema before dispatch.
 	 * <p>
-	 * When enabled (the default), tool-calling {@code AssistantMessage}s whose text content
-	 * is {@code null} are rewritten with an empty-string content before being sent back to
-	 * the model. This keeps the serialized request compatible with strict
-	 * DeepSeek-compatible backends that reject assistant messages without a {@code content}
-	 * field. Disable this if you need the literal {@code "content": null} form once it is
-	 * supported upstream in Spring AI.
-	 * @param assistantMessageSanitizerEnabled true to register the sanitizer (default), false to disable it
+	 * When enabled, malformed JSON, missing required properties, type/enum/range
+	 * violations and undeclared properties are rejected before the tool callback runs.
+	 * The default is disabled, preserving legacy pass-through behavior.
+	 * @param validate true to validate tool arguments before dispatch, false to pass them
+	 * through unchanged
 	 * @return this builder instance
 	 */
+	public Builder validateToolArguments(boolean validate) {
+		this.validateToolArguments = validate;
+		return this;
+	}
+
 	public Builder assistantMessageSanitizerEnabled(boolean assistantMessageSanitizerEnabled) {
 		this.assistantMessageSanitizerEnabled = assistantMessageSanitizerEnabled;
 		return this;
@@ -361,19 +322,8 @@ public abstract class Builder {
 		return this;
 	}
 
-
 	public Builder observationRegistry(ObservationRegistry observationRegistry) {
 		this.observationRegistry = observationRegistry;
-		return this;
-	}
-
-	public Builder customObservationConvention(ChatClientObservationConvention customObservationConvention) {
-		this.customObservationConvention = customObservationConvention;
-		return this;
-	}
-
-	public Builder advisorObservationConvention(AdvisorObservationConvention advisorObservationConvention) {
-		this.advisorObservationConvention = advisorObservationConvention;
 		return this;
 	}
 
@@ -388,18 +338,6 @@ public abstract class Builder {
 	 * @return this builder instance
 	 */
 	public Builder stateSerializer(StateSerializer stateSerializer) {
-		this.stateSerializer = stateSerializer;
-		return this;
-	}
-
-	/**
-	 * Sets the state serializer for the agent.
-	 * @param stateSerializer the SpringAI state serializer to use
-	 * @return this builder instance
-	 * @deprecated Use {@link #stateSerializer(StateSerializer)} instead
-	 */
-	@Deprecated
-	public Builder stateSerializer(SpringAIStateSerializer stateSerializer) {
 		this.stateSerializer = stateSerializer;
 		return this;
 	}
@@ -423,8 +361,8 @@ public abstract class Builder {
 	 * Enables or disables parallel tool execution.
 	 * <p>
 	 * When enabled, multiple tool calls in a single response will be executed
-	 * concurrently rather than sequentially. This can significantly improve
-	 * performance when tools are I/O-bound or have long execution times.
+	 * concurrently rather than sequentially. This can significantly improve performance
+	 * when tools are I/O-bound or have long execution times.
 	 * @param parallel true to enable parallel execution, false for sequential
 	 * @return this builder instance
 	 */
@@ -436,8 +374,8 @@ public abstract class Builder {
 	/**
 	 * Sets the maximum number of tools that can execute in parallel.
 	 * <p>
-	 * This limit helps prevent resource exhaustion when many tools are
-	 * called simultaneously. The default is 5.
+	 * This limit helps prevent resource exhaustion when many tools are called
+	 * simultaneously. The default is 5.
 	 * @param max the maximum number of parallel tool executions (must be at least 1)
 	 * @return this builder instance
 	 * @throws IllegalArgumentException if max is less than 1
@@ -453,8 +391,8 @@ public abstract class Builder {
 	/**
 	 * Sets the timeout for individual tool executions.
 	 * <p>
-	 * If a tool execution exceeds this timeout, it will be cancelled and
-	 * an error will be returned. The default is 5 minutes.
+	 * If a tool execution exceeds this timeout, it will be cancelled and an error will be
+	 * returned. The default is 5 minutes.
 	 * @param timeout the maximum duration for a single tool execution
 	 * @return this builder instance
 	 * @throws NullPointerException if timeout is null
@@ -464,50 +402,17 @@ public abstract class Builder {
 		return this;
 	}
 
-	/**
-	 * Enables or disables automatic wrapping of synchronous tools as async.
-	 * <p>
-	 * When enabled, tools that implement only {@code ToolCallback} (synchronous)
-	 * will be automatically wrapped in an {@code AsyncToolCallbackAdapter} to
-	 * enable async execution. This allows parallel execution without requiring
-	 * tool implementations to be modified.
-	 * @param wrap true to wrap sync tools as async, false to leave them as-is
-	 * @return this builder instance
-	 */
-	public Builder wrapSyncToolsAsAsync(boolean wrap) {
-		this.wrapSyncToolsAsAsync = wrap;
-		return this;
-	}
-
-	/**
-	 * Enables or disables opt-in validation of tool-call arguments against the tool's
-	 * declared input schema before dispatch.
-	 * <p>
-	 * When enabled, malformed JSON, missing required properties, type/enum/range
-	 * violations and undeclared properties are rejected before the tool callback runs.
-	 * The default is disabled, preserving legacy pass-through behavior.
-	 * @param validate true to validate tool arguments before dispatch, false to pass
-	 * them through unchanged
-	 * @return this builder instance
-	 */
-	public Builder validateToolArguments(boolean validate) {
-		this.validateToolArguments = validate;
-		return this;
-	}
-
 	protected CompileConfig buildConfig() {
 		if (compileConfig != null) {
 			return compileConfig;
 		}
 
-		SaverConfig saverConfig = SaverConfig.builder()
-				.register(saver)
-				.build();
+		SaverConfig saverConfig = SaverConfig.builder().register(saver).build();
 		return CompileConfig.builder()
-				.saverConfig(saverConfig)
-				.recursionLimit(Integer.MAX_VALUE)
-				.releaseThread(releaseThread)
-				.build();
+			.saverConfig(saverConfig)
+			.recursionLimit(Integer.MAX_VALUE)
+			.releaseThread(releaseThread)
+			.build();
 	}
 
 	public abstract ReactAgent build();

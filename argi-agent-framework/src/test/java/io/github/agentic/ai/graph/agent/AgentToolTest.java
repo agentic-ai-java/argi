@@ -18,7 +18,6 @@ package io.github.agentic.ai.graph.agent;
 import io.github.agentic.ai.graph.agent.support.OpenAiCompatibleTestModels;
 import io.github.agentic.ai.graph.OverAllState;
 
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 
 import java.util.List;
@@ -26,21 +25,24 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import io.github.agentic.ai.graph.agent.support.EnabledForRealModel;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@EnabledIfEnvironmentVariable(named = "AI_DASHSCOPE_API_KEY", matches = ".+")
+@EnabledForRealModel
 class AgentToolTest {
 
 	private ChatModel chatModel;
 
 	// Input type for testing inputType parameter
 	public static class ArticleRequest {
+
 		private String topic;
+
 		private int wordCount;
+
 		private String style;
 
 		public String getTopic() {
@@ -66,12 +68,16 @@ class AgentToolTest {
 		public void setStyle(String style) {
 			this.style = style;
 		}
+
 	}
 
 	// Output type for testing outputType parameter
 	public static class ArticleOutput {
+
 		private String title;
+
 		private String content;
+
 		private int characterCount;
 
 		public String getTitle() {
@@ -97,12 +103,16 @@ class AgentToolTest {
 		public void setCharacterCount(int characterCount) {
 			this.characterCount = characterCount;
 		}
+
 	}
 
 	// Review output type
 	public static class ReviewOutput {
+
 		private String comment;
+
 		private boolean approved;
+
 		private List<String> suggestions;
 
 		public String getComment() {
@@ -128,6 +138,7 @@ class AgentToolTest {
 		public void setSuggestions(List<String> suggestions) {
 			this.suggestions = suggestions;
 		}
+
 	}
 
 	@BeforeEach
@@ -139,29 +150,29 @@ class AgentToolTest {
 	public void testAgentToolBasic() throws Exception {
 		ReactAgent writerAgent = ReactAgent.builder()
 			.name("writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("可以写文章。")
 			.instruction("你是一个知名的作家，擅长写作和创作。请根据用户的提问进行回答。")
 			.build();
 
 		ReactAgent reviewerAgent = ReactAgent.builder()
 			.name("reviewer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("可以对文章进行评论和修改。")
 			.instruction("你是一个知名的评论家，擅长对文章进行评论和修改。对于散文类文章，请确保文章中必须包含对于西湖风景的描述。")
 			.build();
 
 		ReactAgent blogAgent = ReactAgent.builder()
 			.name("blog_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.instruction("首先，根据用户给定的主题写一篇文章，然后将文章交给评论员进行审核，必要时做出修改。")
-			.tools(List.of(AgentTool.getFunctionToolCallback(writerAgent),
-					AgentTool.getFunctionToolCallback(reviewerAgent)))
+			.toolRegistry(new io.github.agentic.ai.api.tool.ToolRegistry(
+					List.of(AgentTool.create(writerAgent), AgentTool.create(reviewerAgent))))
 			.build();
 
 		try {
 			Optional<OverAllState> result = blogAgent
-				.invoke(new UserMessage("帮我写一个100字左右的散文"));
+				.invoke(io.github.agentic.ai.api.chat.ChatMessage.user("帮我写一个100字左右的散文"));
 
 			assertTrue(result.isPresent(), "Result should be present");
 
@@ -204,7 +215,7 @@ class AgentToolTest {
 
 		ReactAgent writerAgent = ReactAgent.builder()
 			.name("structured_writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("根据结构化输入写文章")
 			.instruction("你是一个专业作家。请严格按照输入的主题、字数和风格要求创作文章。")
 			.inputSchema(writerInputSchema)
@@ -212,14 +223,13 @@ class AgentToolTest {
 
 		ReactAgent coordinatorAgent = ReactAgent.builder()
 			.name("coordinator_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.instruction("你需要调用写作工具来完成用户的写作请求。请根据用户需求，使用结构化的参数调用写作工具。")
-			.tools(List.of(AgentTool.getFunctionToolCallback(writerAgent)))
+			.toolRegistry(new io.github.agentic.ai.api.tool.ToolRegistry(List.of(AgentTool.create(writerAgent))))
 			.build();
 
 		try {
-			Optional<OverAllState> result = coordinatorAgent
-				.invoke("请写一篇关于春天的散文，大约150字");
+			Optional<OverAllState> result = coordinatorAgent.invoke("请写一篇关于春天的散文，大约150字");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			System.out.println("=== Agent Tool with InputSchema Test ===");
@@ -236,7 +246,7 @@ class AgentToolTest {
 		// 使用 inputType，框架会自动生成 JSON Schema
 		ReactAgent writerAgent = ReactAgent.builder()
 			.name("typed_writer_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("根据类型化输入写文章")
 			.instruction("你是一个专业作家。请严格按照输入的 topic（主题）、wordCount（字数）和 style（风格）要求创作文章。")
 			.inputType(ArticleRequest.class)
@@ -244,14 +254,13 @@ class AgentToolTest {
 
 		ReactAgent coordinatorAgent = ReactAgent.builder()
 			.name("coordinator_with_type_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.instruction("你需要调用写作工具来完成用户的写作请求。工具接收 JSON 格式的参数。")
-			.tools(List.of(AgentTool.getFunctionToolCallback(writerAgent)))
+			.toolRegistry(new io.github.agentic.ai.api.tool.ToolRegistry(List.of(AgentTool.create(writerAgent))))
 			.build();
 
 		try {
-			Optional<OverAllState> result = coordinatorAgent
-				.invoke("请写一篇关于秋天的现代诗，大约100字");
+			Optional<OverAllState> result = coordinatorAgent.invoke("请写一篇关于秋天的现代诗，大约100字");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			System.out.println("=== Agent Tool with InputType Test ===");
@@ -287,7 +296,7 @@ class AgentToolTest {
 
 		ReactAgent writerAgent = ReactAgent.builder()
 			.name("writer_with_output_schema")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("写文章并返回结构化输出")
 			.instruction("你是一个专业作家。请创作文章并严格按照指定的JSON格式返回结果。")
 			.outputSchema(writerOutputSchema)
@@ -295,15 +304,14 @@ class AgentToolTest {
 
 		ReactAgent coordinatorAgent = ReactAgent.builder()
 			.name("coordinator_output_schema")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.instruction("调用写作工具完成用户请求，工具会返回结构化的文章数据。")
-			.tools(List.of(AgentTool.getFunctionToolCallback(writerAgent)))
+			.toolRegistry(new io.github.agentic.ai.api.tool.ToolRegistry(List.of(AgentTool.create(writerAgent))))
 			.outputType(ArticleOutput.class)
 			.build();
 
 		try {
-			Optional<OverAllState> result = coordinatorAgent
-				.invoke("写一篇关于冬天的短文");
+			Optional<OverAllState> result = coordinatorAgent.invoke("写一篇关于冬天的短文");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			System.out.println("=== Agent Tool with OutputSchema Test ===");
@@ -320,7 +328,7 @@ class AgentToolTest {
 		// 使用 outputType，框架会自动生成输出 schema
 		ReactAgent writerAgent = ReactAgent.builder()
 			.name("writer_with_output_type")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("写文章并返回类型化输出")
 			.instruction("你是一个专业作家。请创作文章并返回包含 title、content 和 characterCount 的结构化结果。")
 			.outputType(ArticleOutput.class)
@@ -328,14 +336,13 @@ class AgentToolTest {
 
 		ReactAgent coordinatorAgent = ReactAgent.builder()
 			.name("coordinator_output_type")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.instruction("调用写作工具完成用户请求。")
-			.tools(List.of(AgentTool.getFunctionToolCallback(writerAgent)))
+			.toolRegistry(new io.github.agentic.ai.api.tool.ToolRegistry(List.of(AgentTool.create(writerAgent))))
 			.build();
 
 		try {
-			Optional<OverAllState> result = coordinatorAgent
-				.invoke("写一篇关于夏天的小诗");
+			Optional<OverAllState> result = coordinatorAgent.invoke("写一篇关于夏天的小诗");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			System.out.println("=== Agent Tool with OutputType Test ===");
@@ -352,7 +359,7 @@ class AgentToolTest {
 		// 综合测试：同时使用 inputType 和 outputType
 		ReactAgent writerAgent = ReactAgent.builder()
 			.name("full_typed_writer")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("完整类型化的写作工具")
 			.instruction("根据结构化输入（topic、wordCount、style）创作文章，并返回结构化输出（title、content、characterCount）。")
 			.inputType(ArticleRequest.class)
@@ -361,7 +368,7 @@ class AgentToolTest {
 
 		ReactAgent reviewerAgent = ReactAgent.builder()
 			.name("typed_reviewer")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("完整类型化的评审工具")
 			.instruction("对文章进行评审，返回评审意见（comment、approved、suggestions）。")
 			.outputType(ReviewOutput.class)
@@ -369,16 +376,14 @@ class AgentToolTest {
 
 		ReactAgent orchestratorAgent = ReactAgent.builder()
 			.name("orchestrator")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.instruction("协调写作和评审流程。先调用写作工具创作文章，然后调用评审工具进行评审。")
-			.tools(List.of(
-					AgentTool.getFunctionToolCallback(writerAgent),
-					AgentTool.getFunctionToolCallback(reviewerAgent)))
+			.toolRegistry(new io.github.agentic.ai.api.tool.ToolRegistry(
+					List.of(AgentTool.create(writerAgent), AgentTool.create(reviewerAgent))))
 			.build();
 
 		try {
-			Optional<OverAllState> result = orchestratorAgent
-				.invoke("请写一篇关于友谊的散文，约200字，需要评审");
+			Optional<OverAllState> result = orchestratorAgent.invoke("请写一篇关于友谊的散文，约200字，需要评审");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			System.out.println("=== Agent Tool with All Schema Types Test ===");
@@ -410,7 +415,7 @@ class AgentToolTest {
 
 		ReactAgent reviewerAgent = ReactAgent.builder()
 			.name("mixed_schema_reviewer")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.description("使用混合 schema 的评审工具")
 			.instruction("根据给定的文章内容和评审标准进行评审，返回结构化的评审结果。")
 			.inputSchema(customInputSchema)
@@ -419,14 +424,13 @@ class AgentToolTest {
 
 		ReactAgent mainAgent = ReactAgent.builder()
 			.name("main_agent")
-			.model(chatModel)
+			.chatClient(new io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter(chatModel))
 			.instruction("使用评审工具对用户提供的内容进行评审。")
-			.tools(List.of(AgentTool.getFunctionToolCallback(reviewerAgent)))
+			.toolRegistry(new io.github.agentic.ai.api.tool.ToolRegistry(List.of(AgentTool.create(reviewerAgent))))
 			.build();
 
 		try {
-			Optional<OverAllState> result = mainAgent
-				.invoke("请评审这段话：春天来了，花儿开了。评审标准：文采和表达力");
+			Optional<OverAllState> result = mainAgent.invoke("请评审这段话：春天来了，花儿开了。评审标准：文采和表达力");
 
 			assertTrue(result.isPresent(), "Result should be present");
 			System.out.println("=== Agent Tool with Mixed Schemas Test ===");
@@ -437,4 +441,5 @@ class AgentToolTest {
 			fail("Agent tool with mixed schemas execution failed: " + e.getMessage());
 		}
 	}
+
 }

@@ -21,10 +21,10 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.function.FunctionToolCallback;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.tool.ToolContext;
+import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.agent.tool.TypedTool;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
@@ -37,9 +37,9 @@ import java.util.function.BiFunction;
 /**
  * Tool that enables invoking sub-agents to handle complex, isolated tasks.
  * <p>
- * Inspired by spring ai TaskTool, this allows the main agent to delegate
- * work to specialized sub-agents, each with their own context and capabilities.
- * Supports both synchronous and background execution.
+ * Inspired by spring ai TaskTool, this allows the main agent to delegate work to
+ * specialized sub-agents, each with their own context and capabilities. Supports both
+ * synchronous and background execution.
  */
 public class TaskTool implements BiFunction<TaskTool.Request, ToolContext, String> {
 
@@ -108,8 +108,8 @@ public class TaskTool implements BiFunction<TaskTool.Request, ToolContext, Strin
 
 	private String executeSubAgent(ReactAgent subAgent, String prompt) {
 		try {
-			AssistantMessage result = subAgent.call(prompt);
-			return result != null ? result.getText() : "Sub-agent returned empty response";
+			ChatMessage result = subAgent.call(prompt);
+			return result != null ? result.text() : "Sub-agent returned empty response";
 		}
 		catch (Exception e) {
 			logger.warn("Sub-agent execution failed: {}", e.getMessage());
@@ -121,22 +121,17 @@ public class TaskTool implements BiFunction<TaskTool.Request, ToolContext, Strin
 	 * Request structure for the Task tool.
 	 */
 	@JsonClassDescription("Request to launch a sub-agent task")
-	public record Request(
-			@JsonProperty(required = true)
-			@JsonPropertyDescription("Short (3-5 word) description of what the agent will do")
-			String description,
+	public record Request(@JsonProperty(
+			required = true) @JsonPropertyDescription("Short (3-5 word) description of what the agent will do") String description,
 
-			@JsonProperty(required = true)
-			@JsonPropertyDescription("The detailed task for the sub-agent to perform")
-			String prompt,
+			@JsonProperty(
+					required = true) @JsonPropertyDescription("The detailed task for the sub-agent to perform") String prompt,
 
-			@JsonProperty(required = true, value = "subagent_type")
-			@JsonPropertyDescription("The type of specialized agent to use")
-			String subagentType,
+			@JsonProperty(required = true,
+					value = "subagent_type") @JsonPropertyDescription("The type of specialized agent to use") String subagentType,
 
-			@JsonProperty(value = "run_in_background")
-			@JsonPropertyDescription("Set to true to run in background; use TaskOutput to retrieve results")
-			Boolean runInBackground) {
+			@JsonProperty(
+					value = "run_in_background") @JsonPropertyDescription("Set to true to run in background; use TaskOutput to retrieve results") Boolean runInBackground) {
 	}
 
 	public static Builder builder() {
@@ -183,23 +178,22 @@ public class TaskTool implements BiFunction<TaskTool.Request, ToolContext, Strin
 			return this;
 		}
 
-		public ToolCallback build() {
+		public Tool build() {
 			Assert.notEmpty(this.subAgents, "At least one sub-agent must be configured");
 
 			String desc = this.description;
 			if (!StringUtils.hasText(desc)) {
-				String agentList = this.subAgents.entrySet().stream()
-						.map(e -> "- " + e.getKey() + ": " + e.getValue().description())
-						.reduce("", (a, b) -> a + b + "\n");
+				String agentList = this.subAgents.entrySet()
+					.stream()
+					.map(e -> "- " + e.getKey() + ": " + e.getValue().description())
+					.reduce("", (a, b) -> a + b + "\n");
 				desc = DEFAULT_DESCRIPTION.formatted(agentList);
 			}
 
 			TaskTool taskTool = new TaskTool(this.subAgents, this.taskRepository);
-			return FunctionToolCallback.builder(this.name, taskTool)
-					.description(desc)
-					.inputType(Request.class)
-					.build();
+			return TypedTool.builder(this.name, taskTool).description(desc).inputType(Request.class).build();
 		}
+
 	}
 
 }

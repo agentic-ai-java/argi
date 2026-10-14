@@ -3,7 +3,7 @@
 import React, { useEffect, useState, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { createApiClient } from "@/lib/spring-ai-api";
+import { createApiClient } from "@/lib/argi-api";
 import {
   Card,
   CardContent,

@@ -20,12 +20,12 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ModelResponse;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
+import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.chat.ToolCall;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -37,15 +37,21 @@ import org.slf4j.LoggerFactory;
 /**
  * Middleware to patch dangling tool calls in the messages history.
  *
- * <p>This interceptor handles situations where an AI message contains tool calls
- * that don't have corresponding ToolResponseMessages in the conversation history.
- * This can happen when tool execution is interrupted or when new messages arrive
- * before tool responses can be added.</p>
+ * <p>
+ * This interceptor handles situations where an AI message contains tool calls that don't
+ * have corresponding tool results in the conversation history. This can happen when tool
+ * execution is interrupted or when new messages arrive before tool responses can be
+ * added.
+ * </p>
  *
- * <p>The interceptor automatically adds cancellation messages for any dangling
- * tool calls, preventing errors when the conversation is sent to the model.</p>
+ * <p>
+ * The interceptor automatically adds cancellation messages for any dangling tool calls,
+ * preventing errors when the conversation is sent to the model.
+ * </p>
  *
- * <p>Example usage:</p>
+ * <p>
+ * Example usage:
+ * </p>
  * <pre>
  * PatchToolCallsInterceptor interceptor = PatchToolCallsInterceptor.builder().build();
  * agent.addInterceptor(interceptor);
@@ -55,11 +61,11 @@ public class PatchToolCallsInterceptor extends ModelInterceptor {
 
 	private static final Logger log = LoggerFactory.getLogger(PatchToolCallsInterceptor.class);
 
-	private static final String CANCELLATION_MESSAGE_TEMPLATE =
-			"Tool call %s with id %s was cancelled - another message came in before it could be completed.";
+	private static final String CANCELLATION_MESSAGE_TEMPLATE = "Tool call %s with id %s was cancelled - another message came in before it could be completed.";
 
 	private PatchToolCallsInterceptor(Builder builder) {
-		// Currently no configuration options, but builder pattern allows future extensibility
+		// Currently no configuration options, but builder pattern allows future
+		// extensibility
 	}
 
 	public static Builder builder() {
@@ -73,19 +79,17 @@ public class PatchToolCallsInterceptor extends ModelInterceptor {
 
 	@Override
 	public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
-		List<Message> messages = request.getMessages();
+		List<ChatMessage> messages = request.getMessages();
 
 		if (messages == null || messages.isEmpty()) {
 			return handler.call(request);
 		}
 
-		List<Message> patchedMessages = patchDanglingToolCalls(messages);
+		List<ChatMessage> patchedMessages = patchDanglingToolCalls(messages);
 
 		// If messages were patched, create a new request with the updated messages
 		if (patchedMessages != messages) {
-			ModelRequest patchedRequest = ModelRequest.builder(request)
-					.messages(patchedMessages)
-					.build();
+			ModelRequest patchedRequest = ModelRequest.builder(request).messages(patchedMessages).build();
 			return handler.call(patchedRequest);
 		}
 
@@ -93,68 +97,59 @@ public class PatchToolCallsInterceptor extends ModelInterceptor {
 	}
 
 	/**
-	 * Patch dangling tool calls by adding ToolResponseMessages for any tool calls
-	 * that don't have corresponding responses.
-	 *
+	 * Patch dangling tool calls by adding tool results for any tool calls that don't have
+	 * corresponding responses.
 	 * @param messages The original message list
-	 * @return A new list with patched messages, or the original list if no patching needed
+	 * @return A new list with patched messages, or the original list if no patching
+	 * needed
 	 */
-	private List<Message> patchDanglingToolCalls(List<Message> messages) {
-		List<Message> patchedMessages = new ArrayList<>();
+	private List<ChatMessage> patchDanglingToolCalls(List<ChatMessage> messages) {
+		List<ChatMessage> patchedMessages = new ArrayList<>();
 		boolean hasPatches = false;
-
-		// Build a map of all tool response IDs for quick lookup
-		Set<String> existingToolResponseIds = new HashSet<>();
-		for (Message msg : messages) {
-			if (msg instanceof ToolResponseMessage toolResponseMsg) {
-				for (ToolResponseMessage.ToolResponse response : toolResponseMsg.getResponses()) {
-					existingToolResponseIds.add(response.id());
-				}
-			}
-		}
 
 		// Iterate through messages and patch dangling tool calls
 		for (int i = 0; i < messages.size(); i++) {
-			Message msg = messages.get(i);
+			ChatMessage msg = messages.get(i);
 			patchedMessages.add(msg);
 
-			// Check if this is an AssistantMessage with tool calls
-			if (msg instanceof AssistantMessage assistantMsg) {
-				List<AssistantMessage.ToolCall> toolCalls = assistantMsg.getToolCalls();
+			// Only contiguous results belong to this assistant turn. Earlier or later
+			// turns must not hide a missing result, even if providers reuse call IDs.
+			if (msg.role() == ChatRole.ASSISTANT) {
+				List<ToolCall> toolCalls = msg.toolCalls();
 
 				if (!toolCalls.isEmpty()) {
+					Set<String> existingToolResponseIds = new HashSet<>();
+					while (i + 1 < messages.size() && messages.get(i + 1).role() == ChatRole.TOOL) {
+						ChatMessage result = messages.get(++i);
+						patchedMessages.add(result);
+						existingToolResponseIds.add(result.toolCallId());
+					}
 					// Check each tool call to see if it has a corresponding response
-					List<ToolResponseMessage.ToolResponse> missingResponses = new ArrayList<>();
+					List<ChatMessage> missingResponses = new ArrayList<>();
 
-					for (AssistantMessage.ToolCall toolCall : toolCalls) {
+					for (ToolCall toolCall : toolCalls) {
 						String toolCallId = toolCall.id();
 
-						// Check if a response exists in the remaining messages
+						// Check whether this turn already has a result for the call.
 						boolean hasResponse = existingToolResponseIds.contains(toolCallId);
 
 						if (!hasResponse) {
 							// Found a dangling tool call - create a cancellation response
-							String cancellationMsg = String.format(
-									CANCELLATION_MESSAGE_TEMPLATE,
-									toolCall.name(),
-									toolCallId
-							);
+							String cancellationMsg = String.format(CANCELLATION_MESSAGE_TEMPLATE, toolCall.name(),
+									toolCallId);
 
-							missingResponses.add(new ToolResponseMessage.ToolResponse(
-									toolCallId,
-									toolCall.name(),
-									cancellationMsg
-							));
+							missingResponses
+								.add(new ChatMessage(ChatRole.TOOL, List.of(ContentPart.text(cancellationMsg)),
+										List.of(), toolCallId, toolCall.name(), Map.of("patched", true)));
 
 							log.info("Patching dangling tool call: {} (id: {})", toolCall.name(), toolCallId);
 						}
 					}
 
-					// Add a ToolResponseMessage with all missing responses
+					// Complete the turn before forwarding the next user or assistant
+					// message.
 					if (!missingResponses.isEmpty()) {
-						Map<String, Object> metadata = new HashMap<>();
-						metadata.put("patched", true);
-						patchedMessages.add(ToolResponseMessage.builder().responses(missingResponses).metadata(metadata).build());
+						patchedMessages.addAll(missingResponses);
 						hasPatches = true;
 					}
 				}
@@ -179,6 +174,7 @@ public class PatchToolCallsInterceptor extends ModelInterceptor {
 		public PatchToolCallsInterceptor build() {
 			return new PatchToolCallsInterceptor(this);
 		}
-	}
-}
 
+	}
+
+}

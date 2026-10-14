@@ -17,7 +17,7 @@ package io.github.agentic.ai.graph.agent.node;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.tool.execution.ToolExecutionExceptionProcessor;
+import io.github.agentic.ai.api.tool.ToolRegistry;
 
 import java.time.Duration;
 import java.util.List;
@@ -31,8 +31,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * Tests for AgentToolNode.Builder validation.
  *
  * <p>
- * Covers Issue 4 fix: Builder should validate required fields (toolExecutionTimeout,
- * toolExecutionExceptionProcessor) with requireNonNull checks.
+ * Covers Issue 4 fix: Builder should validate required fields (toolExecutionTimeout, tool
+ * registry) with requireNonNull checks.
  * </p>
  *
  * @author Claude
@@ -41,38 +41,35 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @DisplayName("AgentToolNode Builder Tests")
 class AgentToolNodeBuilderTest {
 
-	private static final ToolExecutionExceptionProcessor DEFAULT_PROCESSOR = e -> "Error: " + e.getMessage();
-
 	@Test
 	@DisplayName("build() should throw NullPointerException when toolExecutionTimeout is null")
 	void build_throwsNPE_whenToolExecutionTimeoutIsNull() {
 		AgentToolNode.Builder builder = AgentToolNode.builder()
 			.agentName("test-agent")
 			.toolExecutionTimeout(null)
-			.toolExecutionExceptionProcessor(DEFAULT_PROCESSOR);
+			.throwOnToolError(false);
 
 		NullPointerException ex = assertThrows(NullPointerException.class, builder::build);
 		assertEquals("toolExecutionTimeout must not be null", ex.getMessage());
 	}
 
 	@Test
-	@DisplayName("build() should throw NullPointerException when toolExecutionExceptionProcessor is null")
-	void build_throwsNPE_whenToolExecutionExceptionProcessorIsNull() {
+	@DisplayName("build() should provide a default error policy")
+	void build_providesDefaultErrorPolicy() {
 		AgentToolNode.Builder builder = AgentToolNode.builder()
 			.agentName("test-agent")
 			.toolExecutionTimeout(Duration.ofMinutes(5));
 
-		NullPointerException ex = assertThrows(NullPointerException.class, builder::build);
-		assertEquals("toolExecutionExceptionProcessor must not be null", ex.getMessage());
+		assertNotNull(assertDoesNotThrow(builder::build));
 	}
 
 	@Test
-	@DisplayName("build() should throw NullPointerException when both required fields are null")
-	void build_throwsNPE_whenBothRequiredFieldsAreNull() {
+	@DisplayName("build() should throw NullPointerException when the timeout is null and throwing is enabled")
+	void build_throwsNPE_whenTimeoutIsNullAndThrowingEnabled() {
 		AgentToolNode.Builder builder = AgentToolNode.builder()
 			.agentName("test-agent")
 			.toolExecutionTimeout(null)
-			.toolExecutionExceptionProcessor(null);
+			.throwOnToolError(true);
 
 		// toolExecutionTimeout is checked first
 		NullPointerException ex = assertThrows(NullPointerException.class, builder::build);
@@ -85,34 +82,29 @@ class AgentToolNodeBuilderTest {
 		AgentToolNode node = assertDoesNotThrow(() -> AgentToolNode.builder()
 			.agentName("test-agent")
 			.toolExecutionTimeout(Duration.ofMinutes(5))
-			.toolExecutionExceptionProcessor(DEFAULT_PROCESSOR)
+			.throwOnToolError(false)
 			.build());
 
 		assertNotNull(node);
 	}
 
 	@Test
-	@DisplayName("build() should succeed with default timeout and explicit processor")
-	void build_succeeds_withDefaultTimeoutAndExplicitProcessor() {
+	@DisplayName("build() should succeed with default timeout and explicit error policy")
+	void build_succeeds_withDefaultTimeoutAndExplicitErrorPolicy() {
 		// Default timeout is already set in builder
-		AgentToolNode node = assertDoesNotThrow(() -> AgentToolNode.builder()
-			.agentName("test-agent")
-			.toolExecutionExceptionProcessor(DEFAULT_PROCESSOR)
-			.build());
+		AgentToolNode node = assertDoesNotThrow(
+				() -> AgentToolNode.builder().agentName("test-agent").throwOnToolError(false).build());
 
 		assertNotNull(node);
 	}
 
 	@Test
-	@DisplayName("build() should fail when only timeout is set without processor")
-	void build_fails_whenOnlyTimeoutIsSet() {
+	@DisplayName("build() should accept a timeout without a native processor")
+	void build_acceptsTimeoutWithoutNativeProcessor() {
 		AgentToolNode.Builder builder = AgentToolNode.builder()
 			.agentName("test-agent")
 			.toolExecutionTimeout(Duration.ofSeconds(30));
-		// processor is not set
-
-		NullPointerException ex = assertThrows(NullPointerException.class, builder::build);
-		assertEquals("toolExecutionExceptionProcessor must not be null", ex.getMessage());
+		assertNotNull(assertDoesNotThrow(builder::build));
 	}
 
 	@Test
@@ -132,7 +124,7 @@ class AgentToolNodeBuilderTest {
 			.agentName("test-agent")
 			.maxParallelTools(1)
 			.toolExecutionTimeout(Duration.ofMinutes(5))
-			.toolExecutionExceptionProcessor(DEFAULT_PROCESSOR)
+			.throwOnToolError(false)
 			.build());
 
 		assertNotNull(node);
@@ -141,7 +133,7 @@ class AgentToolNodeBuilderTest {
 			.agentName("test-agent")
 			.maxParallelTools(100)
 			.toolExecutionTimeout(Duration.ofMinutes(5))
-			.toolExecutionExceptionProcessor(DEFAULT_PROCESSOR)
+			.throwOnToolError(false)
 			.build());
 
 		assertNotNull(node2);
@@ -156,8 +148,8 @@ class AgentToolNodeBuilderTest {
 			.parallelToolExecution(true)
 			.maxParallelTools(10)
 			.toolExecutionTimeout(Duration.ofSeconds(60))
-			.toolCallbacks(List.of())
-			.toolExecutionExceptionProcessor(DEFAULT_PROCESSOR)
+			.toolRegistry(new ToolRegistry(List.of()))
+			.throwOnToolError(false)
 			.build();
 
 		assertNotNull(node);
