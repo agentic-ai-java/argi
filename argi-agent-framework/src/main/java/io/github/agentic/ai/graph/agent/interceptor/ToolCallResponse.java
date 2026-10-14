@@ -29,6 +29,9 @@ public class ToolCallResponse {
 
     public final static String SUCCESS_STATUS = "SUCCESS";
 
+    /** Status of an error response; see {@link ToolOutcome} for the full outcome vocabulary. */
+    public final static String ERROR_STATUS = "error";
+
 	/**
 	 * Metadata key carrying the structured failure kind of an error response. Values are
 	 * one of {@link #FAILURE_KIND_TIMEOUT}, {@link #FAILURE_KIND_CANCELLED},
@@ -71,10 +74,18 @@ public class ToolCallResponse {
 		this.metadata = metadata != null ? new HashMap<>(metadata) : Collections.emptyMap();
 	}
 
+	/**
+	 * Creates a response without an explicit status. Kept for backward compatibility;
+	 * new code should use {@link #success(String, String, String)} or one of the
+	 * {@code error} factories so the outcome is machine-readable (see {@link ToolOutcome}).
+	 * @param toolCallId the tool call ID
+	 * @param toolName the tool name
+	 * @param result the response content
+	 * @return a new ToolCallResponse with no status set
+	 */
 	public static ToolCallResponse of(String toolCallId, String toolName, String result) {
 		return new ToolCallResponse(result, toolName, toolCallId);
 	}
-
     /**
      *  <p>
      *   Rewrite the status field of the source code to SUCCESS, and then make a judgment in the tool interceptor
@@ -96,7 +107,7 @@ public class ToolCallResponse {
 	 * @return a new error ToolCallResponse
 	 */
 	public static ToolCallResponse error(String toolCallId, String toolName, String errorMessage) {
-		return new ToolCallResponse("Error: " + errorMessage, toolName, toolCallId, "error",
+		return new ToolCallResponse("Error: " + errorMessage, toolName, toolCallId, ERROR_STATUS,
 				Map.of("error", true, "errorMessage", errorMessage));
 	}
 
@@ -132,7 +143,7 @@ public class ToolCallResponse {
 		if (additionalMetadata != null) {
 			metadata.putAll(additionalMetadata);
 		}
-		return new ToolCallResponse("Error: " + errorMessage, toolName, toolCallId, "error", metadata);
+		return new ToolCallResponse("Error: " + errorMessage, toolName, toolCallId, ERROR_STATUS, metadata);
 	}
 
 	/**
@@ -179,7 +190,7 @@ public class ToolCallResponse {
 	 * @return true if this is an error response
 	 */
 	public boolean isError() {
-		return "error".equals(status);
+		return ERROR_STATUS.equals(status);
 	}
 
 	/**

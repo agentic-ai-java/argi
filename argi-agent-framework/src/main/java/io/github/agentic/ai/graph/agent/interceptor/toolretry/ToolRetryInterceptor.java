@@ -133,7 +133,7 @@ public class ToolRetryInterceptor extends ToolInterceptor {
 					: "Tool call failed after " + maxAttempts + " attempts: " + lastException.getMessage();
 
 			log.error("Tool '{}' failed after {} attempts: {}", toolName, maxAttempts, lastException.getMessage());
-			return ToolCallResponse.of(request.getToolCallId(), request.getToolName(), errorMessage);
+			return ToolCallResponse.error(request.getToolCallId(), request.getToolName(), errorMessage);
 		}
 	}
 

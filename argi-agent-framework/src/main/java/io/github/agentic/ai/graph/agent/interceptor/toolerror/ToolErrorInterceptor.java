@@ -27,7 +27,7 @@ public class ToolErrorInterceptor extends ToolInterceptor {
 		try {
 			return handler.call(request);
 		} catch (Exception e) {
-			return ToolCallResponse.of(request.getToolCallId(), request.getToolName(),
+			return ToolCallResponse.error(request.getToolCallId(), request.getToolName(),
 					"Tool failed: " + e.getMessage());
 		}
 	}

@@ -993,9 +993,10 @@ public class AgentToolNode implements NodeActionWithConfig {
 
 	/**
 	 * Builds the response for a {@link ToolExecutionException} whose message has already
-	 * been produced by the configured {@link ToolExecutionExceptionProcessor}. The
-	 * response keeps its historical shape (no status) and additionally carries the
-	 * structured failure metadata so interceptors can tell what happened.
+	 * been produced by the configured {@link ToolExecutionExceptionProcessor}. The response
+	 * carries the error status (see {@link ToolOutcome}) plus the structured failure
+	 * metadata so interceptors can tell what happened; historically it shipped without a
+	 * status, which made the failure indistinguishable from a plain result upstream.
 	 */
 	private ToolCallResponse processedFailureResponse(ToolCallRequest request, String result,
 			ToolExecutionException exception) {
@@ -1003,6 +1004,7 @@ public class AgentToolNode implements NodeActionWithConfig {
 			.content(result)
 			.toolName(request.getToolName())
 			.toolCallId(request.getToolCallId())
+			.status(ToolCallResponse.ERROR_STATUS)
 			.metadata(failureMetadata(exception))
 			.build();
 	}

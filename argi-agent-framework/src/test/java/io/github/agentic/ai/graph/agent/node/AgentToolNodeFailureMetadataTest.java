@@ -134,8 +134,8 @@ class AgentToolNodeFailureMetadataTest {
 
 	@Test
 	@Timeout(value = 10, unit = TimeUnit.SECONDS)
-	@DisplayName("ToolExecutionException keeps its historical shape and reports the wrapped exception type")
-	void toolExecutionExceptionKeepsShapeAndReportsWrappedType() throws Exception {
+	@DisplayName("ToolExecutionException is reported as an error and carries the wrapped exception type")
+	void toolExecutionExceptionIsReportedAsErrorAndCarriesWrappedType() throws Exception {
 		ToolDefinition definition = definition("wrappedTool");
 		ToolCallback wrapped = syncTool(definition, () -> {
 			throw new ToolExecutionException(definition, new IllegalArgumentException("bad argument"));
@@ -143,11 +143,30 @@ class AgentToolNodeFailureMetadataTest {
 
 		ToolCallResponse response = runSingleTool(wrapped, "wrappedTool", false);
 
-		// Historical behaviour: processed by ToolExecutionExceptionProcessor, no status.
-		assertThat(response.getStatus()).isNull();
-		assertThat(response.isError()).isFalse();
+		// The processed message is still delivered as the result content, but the
+		// response is now explicitly an error instead of shipping without a status.
+		assertThat(response.getStatus()).isEqualTo(ToolCallResponse.ERROR_STATUS);
+		assertThat(response.isError()).isTrue();
 		assertThat(response.getResult()).contains("bad argument");
-		// New: structured metadata points at the exception thrown by the tool itself.
+		// Structured metadata points at the exception thrown by the tool itself.
+		assertThat(response.getFailureKind()).contains(ToolCallResponse.FAILURE_KIND_EXECUTION);
+		assertThat(response.getExceptionType()).contains(IllegalArgumentException.class.getName());
+	}
+
+	@Test
+	@Timeout(value = 10, unit = TimeUnit.SECONDS)
+	@DisplayName("async ToolExecutionException is reported as an error with the same status contract")
+	void asyncToolExecutionExceptionIsReportedAsError() throws Exception {
+		ToolDefinition definition = definition("asyncWrappedTool");
+		ToolCallback wrapped = asyncTool("asyncWrappedTool", Duration.ofSeconds(5),
+				() -> CompletableFuture.failedFuture(
+						new ToolExecutionException(definition, new IllegalArgumentException("bad async argument"))));
+
+		ToolCallResponse response = runSingleTool(wrapped, "asyncWrappedTool", false);
+
+		assertThat(response.getStatus()).isEqualTo(ToolCallResponse.ERROR_STATUS);
+		assertThat(response.isError()).isTrue();
+		assertThat(response.getResult()).contains("bad async argument");
 		assertThat(response.getFailureKind()).contains(ToolCallResponse.FAILURE_KIND_EXECUTION);
 		assertThat(response.getExceptionType()).contains(IllegalArgumentException.class.getName());
 	}

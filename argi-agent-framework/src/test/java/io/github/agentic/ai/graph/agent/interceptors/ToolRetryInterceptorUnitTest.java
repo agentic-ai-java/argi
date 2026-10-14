@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -55,6 +56,11 @@ class ToolRetryInterceptorUnitTest {
 		});
 		assertEquals(3, calls.get());
 		assertTrue(response.getResult().contains("3 attempts"));
+		// Exhausted retries must surface as an explicit error, not a status-less response.
+		assertEquals(ToolCallResponse.ERROR_STATUS, response.getStatus());
+		assertTrue(response.isError());
+		assertThat(response.getMetadata()).containsEntry("error", true);
+		assertThat(response.getMetadata().get("errorMessage")).asString().contains("boom");
 	}
 
 	@Test
