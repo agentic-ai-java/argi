@@ -37,6 +37,7 @@ import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.MessageProvenance;
 
 import reactor.core.publisher.Flux;
 
@@ -560,13 +561,17 @@ public abstract class Agent {
 	private static List<ChatMessage> chatMessages(Object value) {
 		java.util.Objects.requireNonNull(value, "messages must not be null");
 		if (value instanceof String text) {
-			return text.isEmpty() ? List.of() : List.of(ChatMessage.user(text));
+			return text.isEmpty() ? List.of()
+					: List.of(MessageProvenance.forEntryUser(ChatMessage.user(text)));
 		}
 		if (value instanceof ChatMessage message) {
-			return List.of(message);
+			return List.of(MessageProvenance.forEntryUser(message));
 		}
 		if (value instanceof List<?> messages && messages.stream().allMatch(ChatMessage.class::isInstance)) {
-			return messages.stream().map(ChatMessage.class::cast).toList();
+			return messages.stream()
+				.map(ChatMessage.class::cast)
+				.map(MessageProvenance::forEntryUser)
+				.toList();
 		}
 		throw new IllegalArgumentException("Agent messages must be ARGI ChatMessage values");
 	}

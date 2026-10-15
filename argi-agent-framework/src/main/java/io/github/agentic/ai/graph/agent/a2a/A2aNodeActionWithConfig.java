@@ -16,6 +16,7 @@
 package io.github.agentic.ai.graph.agent.a2a;
 
 import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.MessageProvenance;
 
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.GraphResponse;
@@ -430,8 +431,9 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * output type identifies the event as a model delta rather than a final snapshot.
 	 */
 	private StreamingOutput<?> buildStreamingOutput(String text, OverAllState state) {
-		return new StreamingOutput<>(io.github.agentic.ai.api.chat.ChatMessage.assistant(text), text, "a2aNode",
-				agentName, state, OutputType.AGENT_MODEL_STREAMING);
+		ChatMessage assistant = MessageProvenance
+			.forChildHandoff(io.github.agentic.ai.api.chat.ChatMessage.assistant(text));
+		return new StreamingOutput<>(assistant, text, "a2aNode", agentName, state, OutputType.AGENT_MODEL_STREAMING);
 	}
 
 	/**
@@ -442,7 +444,8 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * their historical string value.
 	 */
 	private Map<String, Object> buildFinalResult(String outputKey, String text) {
-		Object value = "messages".equals(outputKey) ? ChatMessage.assistant(text) : text;
+		Object value = "messages".equals(outputKey)
+				? MessageProvenance.forChildHandoff(ChatMessage.assistant(text)) : text;
 		return Map.of(outputKey, value);
 	}
 

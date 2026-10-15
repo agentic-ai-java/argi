@@ -24,6 +24,8 @@ import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 
 import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatSourceKind;
+import io.github.agentic.ai.api.chat.ChatTrustLevel;
 import io.github.agentic.ai.api.chat.Usage;
 
 import io.a2a.spec.AgentCard;
@@ -460,7 +462,12 @@ class A2aNodeActionWithConfigTests {
 				state);
 
 		assertEquals("hello world", output.text());
-		assertEquals(List.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("hello world")), output.messages());
+		ChatMessage streamed = output.messages().get(0);
+		assertEquals("hello world", streamed.text());
+		assertEquals(ChatSourceKind.CHILD_OUTPUT,
+				io.github.agentic.ai.api.chat.MessageProvenance.sourceOf(streamed).orElseThrow());
+		assertEquals(ChatTrustLevel.UNTRUSTED,
+				io.github.agentic.ai.api.chat.MessageProvenance.trustOf(streamed).orElseThrow());
 		// outputType restores metadata for downstream consumers of getOutputType()
 		assertEquals(OutputType.AGENT_MODEL_STREAMING, output.getOutputType());
 	}
@@ -476,6 +483,10 @@ class A2aNodeActionWithConfigTests {
 
 		ChatMessage message = assertInstanceOf(ChatMessage.class, result.get("messages"));
 		assertEquals("remote reply", message.text());
+		assertEquals(ChatSourceKind.CHILD_OUTPUT,
+				io.github.agentic.ai.api.chat.MessageProvenance.sourceOf(message).orElseThrow());
+		assertEquals(ChatTrustLevel.UNTRUSTED,
+				io.github.agentic.ai.api.chat.MessageProvenance.trustOf(message).orElseThrow());
 	}
 
 	@Test

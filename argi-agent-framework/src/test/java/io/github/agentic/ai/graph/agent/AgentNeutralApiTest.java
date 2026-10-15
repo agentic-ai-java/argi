@@ -21,8 +21,11 @@ import io.github.agentic.ai.api.chat.ChatClientCapabilities;
 import io.github.agentic.ai.api.chat.ChatRequest;
 import io.github.agentic.ai.api.chat.ChatResponse;
 import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.ChatSourceKind;
+import io.github.agentic.ai.api.chat.ChatTrustLevel;
 import io.github.agentic.ai.api.chat.ContentPart;
 import io.github.agentic.ai.api.chat.FinishReason;
+import io.github.agentic.ai.api.chat.MessageProvenance;
 import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.List;
@@ -80,7 +83,9 @@ class AgentNeutralApiTest {
 			assertThat(request).isNotNull();
 			assertThat(request.messages()).hasSize(entry.equals("message") ? 1 : history.size());
 			var last = request.messages().get(request.messages().size() - 1);
-			assertThat(last.metadata()).isEqualTo(input.metadata());
+			assertThat(last.metadata()).containsEntry("source", "caller");
+			assertThat(MessageProvenance.sourceOf(last)).contains(ChatSourceKind.USER_INPUT);
+			assertThat(MessageProvenance.trustOf(last)).contains(ChatTrustLevel.USER);
 			assertThat(last.content().get(1).data()).containsExactly(1, 2);
 			assertThat(last.text()).isEqualTo("question");
 			assertThat(state.get("messages")).isSameAs(history);
@@ -93,9 +98,13 @@ class AgentNeutralApiTest {
 				ChatMessage.user("last"), ChatMessage.tool("id", "lookup", "result"));
 		var input = agent.buildMessageInput(messages);
 		assertThat(input).containsEntry("input", "last");
-		assertThat(restored(input)).isEqualTo(messages);
+		assertThat(restored(input)).containsExactly(ChatMessage.system("system"),
+				MessageProvenance.forEntryUser(ChatMessage.user("first")), ChatMessage.assistant("answer"),
+				MessageProvenance.forEntryUser(ChatMessage.user("last")), ChatMessage.tool("id", "lookup", "result"));
 		assertThat(agent.buildMessageInput(ChatMessage.assistant("answer"))).doesNotContainKey("input");
 		assertThat(agent.buildMessageInput("question")).containsEntry("input", "question");
+		assertThat(MessageProvenance.sourceOf(restored(agent.buildMessageInput("question")).get(0)))
+			.contains(ChatSourceKind.USER_INPUT);
 	}
 
 	@Test
@@ -111,7 +120,7 @@ class AgentNeutralApiTest {
 		var normalized = agent.normalizeMessageInput(input);
 		assertThat(normalized).isNotSameAs(input).containsEntry("input", "explicit").containsEntry("marker", "caller");
 		assertThat(input.get("messages")).isSameAs(messages);
-		assertThat(restored(normalized)).isEqualTo(messages);
+		assertThat(restored(normalized)).containsExactly(MessageProvenance.forEntryUser(ChatMessage.user("question")));
 	}
 
 	@Test

@@ -112,10 +112,10 @@ class SummarizationHookTests {
 
 		String input = summarize(List.of(calls, second, first));
 
-		assertThat(input).contains("Tool call [id=first, name=search]: {\"query\":\"alpha\"}",
-				"Tool call [id=second, name=search]: {\"query\":\"beta\"}",
-				"Tool result [id=second, name=search]: Beta evidence",
-				"Tool result [id=first, name=search]: Alpha evidence");
+		assertThat(input).contains("Tool call: [id=first, name=search]: {\"query\":\"alpha\"}",
+				"Tool call: [id=second, name=search]: {\"query\":\"beta\"}",
+				"Tool result: [id=second, name=search]: Beta evidence",
+				"Tool result: [id=first, name=search]: Alpha evidence");
 	}
 
 	@Test

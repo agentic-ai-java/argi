@@ -17,6 +17,7 @@ package io.github.agentic.ai.graph.agent;
 
 import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.MessageProvenance;
 
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.CompiledGraph;
@@ -1092,7 +1093,7 @@ public class ReactAgent extends BaseAgent {
 				else {
 					newMessages = new ArrayList<>();
 				}
-				stateForChild.put("messages", newMessages);
+				stateForChild.put("messages", canonicalizeMessages(newMessages));
 				subGraphResult = childGraph.graphResponseStream(stateForChild, subGraphRunnableConfig);
 			}
 			else {
@@ -1176,13 +1177,39 @@ public class ReactAgent extends BaseAgent {
 							}
 
 							Map<String, Object> newResultMap = new HashMap<>(resultMap);
-							newResultMap.put("messages", finalMessages);
+							newResultMap.put("messages", tagChildHandoffMessages(finalMessages));
 							return GraphResponse.done(newResultMap);
 						}
 					}
 				}
 			}
 			return lastResponse;
+		}
+
+		private static List<Object> canonicalizeMessages(List<Object> messages) {
+			List<Object> canonical = new ArrayList<>(messages.size());
+			for (Object item : messages) {
+				if (item instanceof ChatMessage chatMessage) {
+					canonical.add(MessageProvenance.canonicalize(chatMessage));
+				}
+				else {
+					canonical.add(item);
+				}
+			}
+			return canonical;
+		}
+
+		private static List<Object> tagChildHandoffMessages(List<Object> messages) {
+			List<Object> tagged = new ArrayList<>(messages.size());
+			for (Object item : messages) {
+				if (item instanceof ChatMessage chatMessage) {
+					tagged.add(MessageProvenance.forChildHandoff(chatMessage));
+				}
+				else {
+					tagged.add(item);
+				}
+			}
+			return tagged;
 		}
 
 		private RunnableConfig getSubGraphRunnableConfig(RunnableConfig config) {

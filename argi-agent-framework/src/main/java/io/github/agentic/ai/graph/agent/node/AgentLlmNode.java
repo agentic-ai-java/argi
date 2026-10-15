@@ -19,6 +19,8 @@ import io.github.agentic.ai.api.chat.Usage;
 
 import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.MessageProvenance;
+import io.github.agentic.ai.api.chat.ModelContextMerger;
 
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
@@ -156,7 +158,7 @@ public class AgentLlmNode implements NodeActionWithConfig {
 			// try with "input" key, which is more commonly used in graph input when agent
 			// is used as a node.
 			if (state.value("input").isPresent()) {
-				messages.add(ChatMessage.user(state.value("input").get().toString()));
+				messages.add(MessageProvenance.forEntryUser(ChatMessage.user(state.value("input").get().toString())));
 			}
 			else {
 				throw new IllegalArgumentException("Either 'instruction' or 'includeContents' must be set for Agent.");
@@ -164,18 +166,17 @@ public class AgentLlmNode implements NodeActionWithConfig {
 		}
 		else {
 			messages = new ArrayList<>((List<ChatMessage>) state.value("messages").get());
+			messages.replaceAll(MessageProvenance::canonicalize);
 		}
 
 		augmentUserMessage(messages, outputSchema);
 		renderTemplatedUserMessage(messages, state.data(), config.metadata());
 
 		// Create ModelRequest; include state in context so interceptors (e.g. handoffs
-		// step-config) can read it
-		Map<String, Object> contextMap = new HashMap<>(state.data());
-		Map<String, Object> metadata = config.metadata().orElse(new HashMap<>());
-		if (!metadata.isEmpty()) {
-			contextMap.putAll(metadata);
-		}
+		// step-config) can read it. Authority keys are accepted only from runtime
+		// metadata so ordinary state payloads cannot forge authorization or secrets.
+		Map<String, Object> contextMap = ModelContextMerger.merge(state.data(),
+				config.metadata().orElse(Map.of()));
 		ModelRequest.Builder requestBuilder = ModelRequest.builder()
 			.messages(messages)
 			.options(this.generationOptions)
@@ -193,7 +194,7 @@ public class AgentLlmNode implements NodeActionWithConfig {
 		}
 
 		if (StringUtils.hasLength(this.systemPrompt)) {
-			requestBuilder.systemMessage(ChatMessage.system(this.systemPrompt));
+			requestBuilder.systemMessage(MessageProvenance.appInstruction(ChatMessage.system(this.systemPrompt)));
 		}
 
 		ModelRequest modelRequest = requestBuilder.build();

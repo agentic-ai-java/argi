@@ -18,6 +18,7 @@ package io.github.agentic.ai.api.tool;
 import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.ContentPart;
+import io.github.agentic.ai.api.chat.MessageProvenance;
 import io.github.agentic.ai.api.chat.ToolCall;
 import java.util.List;
 import java.util.Map;
@@ -39,11 +40,16 @@ public record ToolResult(List<ContentPart> content, boolean error, Map<String, O
 		return new ToolResult(List.of(ContentPart.text(text)), true, Map.of());
 	}
 
-	/** Creates a model-visible result tied to the original invocation identity. */
+	/**
+	 * Creates a model-visible result tied to the original invocation identity.
+	 * Tool payloads are tagged as untrusted external data so later summarization cannot
+	 * elevate them to application instructions.
+	 */
 	public ChatMessage toMessage(ToolCall call) {
 		Objects.requireNonNull(call, "call must not be null");
 		java.util.HashMap<String, Object> properties = new java.util.HashMap<>(metadata);
 		properties.put("tool.error", error);
-		return new ChatMessage(ChatRole.TOOL, content, List.of(), call.id(), call.name(), properties);
+		return MessageProvenance.ensureToolOutput(
+				new ChatMessage(ChatRole.TOOL, content, List.of(), call.id(), call.name(), properties));
 	}
 }
