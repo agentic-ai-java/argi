@@ -47,6 +47,26 @@ public final class LoopMode {
 		return new ArrayLoopStrategy(converter);
 	}
 
+	/**
+	 * Creates an array loop that sends up to {@code batchSize} elements as a JSON array
+	 * on each iteration, including when {@code batchSize} is one.
+	 * @param batchSize maximum number of elements in each iteration; must be positive
+	 * @return the configured array loop strategy
+	 */
+	public static ArrayLoopStrategy array(int batchSize) {
+		return new ArrayLoopStrategy(batchSize);
+	}
+
+	/**
+	 * Creates an array loop with a custom source converter and JSON array batches.
+	 * @param batchSize maximum number of elements in each iteration; must be positive
+	 * @param converter converter used to obtain the source elements
+	 * @return the configured array loop strategy
+	 */
+	public static ArrayLoopStrategy array(int batchSize, Converter<List<ChatMessage>, List<?>> converter) {
+		return new ArrayLoopStrategy(converter, batchSize);
+	}
+
 	public static ConditionLoopStrategy condition(Predicate<List<ChatMessage>> messagePredicate) {
 		return new ConditionLoopStrategy(messagePredicate);
 	}
