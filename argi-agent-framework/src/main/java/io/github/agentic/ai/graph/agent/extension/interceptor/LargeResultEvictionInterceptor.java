@@ -170,6 +170,7 @@ public class LargeResultEvictionInterceptor extends ToolInterceptor {
 			.toolName(response.getToolName())
 			.toolCallId(response.getToolCallId())
 			.status("evicted_to_filesystem")
+			.metadata(response.getMetadata())
 			.build();
 	}
 

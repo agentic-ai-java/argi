@@ -67,6 +67,9 @@ class ToolEmulatorInterceptorTests {
 		assertThat(result.getToolName()).isEqualTo("weather");
 		assertThat(result.getToolCallId()).isEqualTo("call-17");
 		assertThat(result.isError()).isFalse();
+		// Emulated results are successful outcomes and must carry the success status
+		// so retry interceptors do not treat them as failures.
+		assertThat(result.getStatus()).isEqualTo(ToolCallResponse.SUCCESS_STATUS);
 		assertThat(interceptor.getName()).isEqualTo("ToolEmulator");
 		ArgumentCaptor<ChatRequest> captured = ArgumentCaptor.forClass(ChatRequest.class);
 		verify(client).call(captured.capture());

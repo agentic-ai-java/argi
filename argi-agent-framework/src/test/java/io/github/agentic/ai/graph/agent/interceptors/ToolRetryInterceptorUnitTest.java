@@ -20,6 +20,7 @@ import io.github.agentic.ai.graph.agent.interceptor.ToolCallResponse;
 import io.github.agentic.ai.graph.agent.interceptor.toolretry.ToolRetryInterceptor;
 
 import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -61,6 +62,27 @@ class ToolRetryInterceptorUnitTest {
 		assertTrue(response.isError());
 		assertThat(response.getMetadata()).containsEntry("error", true);
 		assertThat(response.getMetadata().get("errorMessage")).asString().contains("boom");
+	}
+
+	@Test
+	void exhaustedRetriesKeepStructuredFailureMetadataOfLastResponse() {
+		ToolCallResponse response = builder(2).build().interceptToolCall(request(), r -> {
+			Map<String, Object> metadata = new HashMap<>();
+			metadata.put(ToolCallResponse.FAILURE_KIND_METADATA_KEY, ToolCallResponse.FAILURE_KIND_TIMEOUT);
+			metadata.put(ToolCallResponse.EXCEPTION_TYPE_METADATA_KEY, "java.util.concurrent.TimeoutException");
+			return ToolCallResponse.builder()
+				.content("backend timeout")
+				.toolName(r.getToolName())
+				.toolCallId(r.getToolCallId())
+				.status(ToolCallResponse.ERROR_STATUS)
+				.metadata(metadata)
+				.build();
+		});
+		assertEquals(ToolCallResponse.ERROR_STATUS, response.getStatus());
+		assertEquals(ToolCallResponse.FAILURE_KIND_TIMEOUT, response.getFailureKind().orElse(null));
+		assertEquals("java.util.concurrent.TimeoutException", response.getExceptionType().orElse(null));
+		// The formatted exhausted-retries message must not be overridden by the carried metadata.
+		assertThat(response.getMetadata().get("errorMessage")).asString().contains("attempts");
 	}
 
 	@Test

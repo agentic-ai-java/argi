@@ -21,7 +21,9 @@ import io.github.agentic.ai.graph.agent.interceptor.ToolCallResponse;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -81,6 +83,7 @@ public class ToolRetryInterceptor extends ToolInterceptor {
 		}
 
 		Exception lastException = null;
+		ToolCallResponse lastFailedResponse = null;
 
 		// maxAttempts counts the initial call plus retries and is always >= 1, so the tool is executed at least once and is never skipped.
 		for (int attempt = 0; attempt < maxAttempts; attempt++) {
@@ -90,6 +93,7 @@ public class ToolRetryInterceptor extends ToolInterceptor {
 					return response;
 				}
 				// A non-success status is treated as a failure so it can be retried.
+				lastFailedResponse = response;
 				String result = response.getResult() != null ? response.getResult() : "unknown error";
 				throw new RuntimeException(result);
 			}
@@ -133,8 +137,28 @@ public class ToolRetryInterceptor extends ToolInterceptor {
 					: "Tool call failed after " + maxAttempts + " attempts: " + lastException.getMessage();
 
 			log.error("Tool '{}' failed after {} attempts: {}", toolName, maxAttempts, lastException.getMessage());
-			return ToolCallResponse.error(request.getToolCallId(), request.getToolName(), errorMessage);
+			// Carry the structured failure metadata (failure kind / exception type) of the
+			// last failed response into the exhausted-retries error response.
+			return ToolCallResponse.error(request.getToolCallId(), request.getToolName(), errorMessage,
+					structuredFailureMetadata(lastFailedResponse));
 		}
+	}
+
+	/**
+	 * Extracts the structured failure kind / exception type entries of the last failed
+	 * response, without its error-message keys, so they can enrich the
+	 * exhausted-retries error response without overriding it.
+	 */
+	private static Map<String, Object> structuredFailureMetadata(ToolCallResponse lastFailedResponse) {
+		if (lastFailedResponse == null) {
+			return null;
+		}
+		Map<String, Object> structured = new HashMap<>();
+		lastFailedResponse.getFailureKind()
+			.ifPresent(kind -> structured.put(ToolCallResponse.FAILURE_KIND_METADATA_KEY, kind));
+		lastFailedResponse.getExceptionType()
+			.ifPresent(type -> structured.put(ToolCallResponse.EXCEPTION_TYPE_METADATA_KEY, type));
+		return structured.isEmpty() ? null : structured;
 	}
 
 	private long calculateDelay(int retryNumber) {

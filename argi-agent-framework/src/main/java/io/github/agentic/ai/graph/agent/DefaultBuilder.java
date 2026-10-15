@@ -110,7 +110,8 @@ public class DefaultBuilder extends Builder {
 			.maxParallelTools(this.maxParallelTools)
 			.toolExecutionTimeout(this.toolExecutionTimeout)
 			.validateToolArguments(this.validateToolArguments)
-			.toolBindingStore(toolBindings);
+			.toolBindingStore(toolBindings)
+			.businessOutcomeMappers(this.businessOutcomeMappers);
 
 		toolBuilder.throwOnToolError(throwOnToolError);
 

@@ -29,6 +29,7 @@ import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.KeyStrategy;
 import io.github.agentic.ai.graph.agent.hook.Hook;
 import io.github.agentic.ai.graph.agent.interceptor.Interceptor;
+import io.github.agentic.ai.graph.agent.interceptor.BusinessOutcomeMapperRegistry;
 import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.StreamingModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
@@ -61,6 +62,8 @@ public abstract class Builder {
 	protected ChatClient chatClient;
 
 	protected ToolRegistry toolRegistry = new ToolRegistry(List.of());
+
+	protected BusinessOutcomeMapperRegistry businessOutcomeMappers = BusinessOutcomeMapperRegistry.empty();
 
 	protected boolean throwOnModelError;
 
@@ -140,6 +143,18 @@ public abstract class Builder {
 	/** Sets immutable, provider-neutral tool bindings executed by the agent runtime. */
 	public Builder toolRegistry(ToolRegistry toolRegistry) {
 		this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
+		return this;
+	}
+
+	/**
+	 * Registers per-tool {@link BusinessOutcomeMapper}s so a business-level failure
+	 * reported inside an otherwise successful tool result can be surfaced with the
+	 * {@link io.github.agentic.ai.graph.agent.interceptor.ToolOutcome#BUSINESS_FAILED}
+	 * outcome. Unregistered tools are never inspected for failure signals.
+	 */
+	public Builder businessOutcomeMappers(BusinessOutcomeMapperRegistry businessOutcomeMappers) {
+		this.businessOutcomeMappers = Objects.requireNonNull(businessOutcomeMappers,
+				"businessOutcomeMappers must not be null");
 		return this;
 	}
 

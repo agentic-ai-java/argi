@@ -113,7 +113,9 @@ public class ToolEmulatorInterceptor extends ToolInterceptor {
 					emulatedResult.length() > 100 ? emulatedResult.substring(0, 100) + "..." : emulatedResult);
 
 			// Short-circuit: return emulated result without executing real tool
-			return ToolCallResponse.of(request.getToolCallId(), toolName, emulatedResult);
+			// An emulated result is a successful outcome: it must carry the success status
+		// so downstream consumers (e.g. retry interceptors) do not treat it as a failure.
+		return ToolCallResponse.success(request.getToolCallId(), toolName, emulatedResult);
 
 		}
 		catch (Exception e) {

@@ -28,6 +28,8 @@ import io.github.agentic.ai.graph.agent.interceptor.InterceptorChain;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallExecutionContext;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallRequest;
+import io.github.agentic.ai.graph.agent.interceptor.BusinessOutcomeMapperRegistry;
+import io.github.agentic.ai.graph.agent.interceptor.ToolOutcome;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallResponse;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
 import io.github.agentic.ai.graph.agent.tool.DefaultCancellationToken;
@@ -119,6 +121,8 @@ public class AgentToolNode implements NodeActionWithConfig {
 
 	private final ToolRegistry toolRegistry;
 
+	private final BusinessOutcomeMapperRegistry businessOutcomeMappers;
+
 	private final ThreadPoolExecutor neutralInvocationExecutor;
 
 	public AgentToolNode(Builder builder) {
@@ -142,6 +146,7 @@ public class AgentToolNode implements NodeActionWithConfig {
 		this.toolExecutionTimeout = builder.toolExecutionTimeout;
 		this.validateToolArguments = builder.validateToolArguments;
 		this.throwOnToolError = builder.throwOnToolError;
+		this.businessOutcomeMappers = builder.businessOutcomeMappers;
 	}
 
 	public void setToolInterceptors(List<ToolInterceptor> toolInterceptors) {
@@ -691,8 +696,14 @@ public class AgentToolNode implements NodeActionWithConfig {
 			if (token.isCancelled()) {
 				throw new CancellationException("Tool execution was cancelled before state publication");
 			}
+			// A registered outcome mapper is the only component allowed to reinterpret a
+			// successful raw result as a business failure; unregistered tools are never guessed.
+			ToolResult outcome = businessOutcomeMappers.mapOutcome(call, result);
+			if (outcome.error() && !result.error() && businessOutcomeMappers.hasMapper(call.name())) {
+				return ToolCallResponse.from(call, outcome, ToolOutcome.BUSINESS_FAILED);
+			}
 			updates.putAll(invocationUpdates);
-			return ToolCallResponse.from(call, result);
+			return ToolCallResponse.from(call, outcome);
 		}
 		catch (InterruptedException failure) {
 			updates.clear();
@@ -859,6 +870,8 @@ public class AgentToolNode implements NodeActionWithConfig {
 
 		private boolean validateToolArguments = false;
 
+		private BusinessOutcomeMapperRegistry businessOutcomeMappers = BusinessOutcomeMapperRegistry.empty();
+
 		private Map<String, Object> toolContext = new HashMap<>();
 
 		private AgentToolBindingStore toolBindingStore = new AgentToolBindingStore();
@@ -926,6 +939,12 @@ public class AgentToolNode implements NodeActionWithConfig {
 		 * @param validate true to validate tool arguments before dispatch
 		 * @return this builder
 		 */
+		public Builder businessOutcomeMappers(BusinessOutcomeMapperRegistry registry) {
+			this.businessOutcomeMappers = Objects.requireNonNull(registry,
+					"businessOutcomeMappers must not be null");
+			return this;
+		}
+
 		public Builder validateToolArguments(boolean validate) {
 			this.validateToolArguments = validate;
 			return this;

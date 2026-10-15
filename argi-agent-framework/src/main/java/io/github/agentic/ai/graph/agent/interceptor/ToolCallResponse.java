@@ -101,6 +101,21 @@ public class ToolCallResponse {
 	}
 
 	/**
+	 * Same as {@link #from(ToolCall, ToolResult)}, but with an explicit outcome status
+	 * (see {@link ToolOutcome}) instead of the two-value mapping of
+	 * {@link ToolResult#error()}.
+	 * @param call the tool call being finalized
+	 * @param result the result produced by the tool
+	 * @param status the outcome status to record
+	 * @return a new ToolCallResponse carrying the given status
+	 */
+	public static ToolCallResponse from(ToolCall call, ToolResult result, String status) {
+		ChatMessage message = result.toMessage(call);
+		return new ToolCallResponse(message.text(), result.content(), call.name(), call.id(), status,
+				result.metadata());
+	}
+
+	/**
 	 * Creates a response without an explicit status. Kept for backward compatibility;
 	 * new code should use {@link #success(String, String, String)} or one of the
 	 * {@code error} factories so the outcome is machine-readable (see {@link ToolOutcome}).
@@ -213,11 +228,12 @@ public class ToolCallResponse {
 	}
 
 	/**
-	 * Checks if this response represents an error.
-	 * @return true if this is an error response
+	 * Checks if this response represents a failure: either a generic error or a
+	 * business-level failure reported by a registered {@link BusinessOutcomeMapper}.
+	 * @return true if this is a failed response
 	 */
 	public boolean isError() {
-		return ERROR_STATUS.equals(status);
+		return ERROR_STATUS.equals(status) || ToolOutcome.BUSINESS_FAILED.equals(status);
 	}
 
 	/**
