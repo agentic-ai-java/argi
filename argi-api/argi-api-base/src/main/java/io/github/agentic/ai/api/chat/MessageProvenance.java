@@ -67,10 +67,16 @@ public final class MessageProvenance {
 		return enumValue(message, ChatMetadataKeys.TRUST_LEVEL, ChatTrustLevel.class);
 	}
 
+	/** Returns {@code true} when the message carries the framework construction seal. */
+	public static boolean isFrameworkSealed(ChatMessage message) {
+		return message != null && Boolean.TRUE.equals(message.metadata().get(ChatMetadataKeys.FRAMEWORK_SEALED));
+	}
+
 	/**
 	 * Resolves an effective source kind after rejecting role-inconsistent forged claims.
 	 * Untagged non-tool messages stay empty so SYSTEM role alone is never treated as
-	 * application authority (summaries also use SYSTEM).
+	 * application authority (summaries also use SYSTEM). {@link ChatSourceKind#APP_INSTRUCTION}
+	 * is honored only when {@link #isFrameworkSealed(ChatMessage)}.
 	 */
 	public static Optional<ChatSourceKind> effectiveSource(ChatMessage message) {
 		Objects.requireNonNull(message, "message must not be null");
@@ -85,9 +91,22 @@ public final class MessageProvenance {
 			return Optional.empty();
 		}
 		ChatSourceKind source = declared.get();
-		if (source == ChatSourceKind.APP_INSTRUCTION && message.role() != ChatRole.SYSTEM) {
-			return Optional.of(message.role() == ChatRole.USER ? ChatSourceKind.USER_INPUT
-					: ChatSourceKind.CHILD_OUTPUT);
+		if (source == ChatSourceKind.APP_INSTRUCTION) {
+			if (!isFrameworkSealed(message)) {
+				// Deserialized forgeries are not application authority.
+				if (message.role() == ChatRole.USER) {
+					return Optional.of(ChatSourceKind.USER_INPUT);
+				}
+				if (message.role() == ChatRole.SYSTEM) {
+					return Optional.empty();
+				}
+				return Optional.of(ChatSourceKind.CHILD_OUTPUT);
+			}
+			if (message.role() != ChatRole.SYSTEM) {
+				return Optional.of(message.role() == ChatRole.USER ? ChatSourceKind.USER_INPUT
+						: ChatSourceKind.CHILD_OUTPUT);
+			}
+			return declared;
 		}
 		return declared;
 	}
@@ -107,19 +126,35 @@ public final class MessageProvenance {
 
 	/**
 	 * Rewrites message metadata so forged authority claims cannot survive assembly or
-	 * summarization. Untagged non-tool messages are left unchanged.
+	 * summarization. Untagged non-tool messages are left unchanged. Forged
+	 * {@link ChatSourceKind#APP_INSTRUCTION} without a framework seal is rewritten to the
+	 * clamped effective source.
 	 */
 	public static ChatMessage canonicalize(ChatMessage message) {
 		Objects.requireNonNull(message, "message must not be null");
 		Optional<ChatSourceKind> source = effectiveSource(message);
 		Optional<ChatTrustLevel> trust = effectiveTrust(message);
 		if (source.isEmpty() || trust.isEmpty()) {
+			if (sourceOf(message).orElse(null) == ChatSourceKind.APP_INSTRUCTION && !isFrameworkSealed(message)) {
+				Map<String, Object> metadata = new HashMap<>(message.metadata());
+				metadata.remove(ChatMetadataKeys.SOURCE_KIND);
+				metadata.remove(ChatMetadataKeys.TRUST_LEVEL);
+				metadata.remove(ChatMetadataKeys.FRAMEWORK_SEALED);
+				return message.withMetadata(metadata);
+			}
 			return message;
 		}
-		if (sourceOf(message).orElse(null) == source.get() && trustOf(message).orElse(null) == trust.get()) {
+		if (sourceOf(message).orElse(null) == source.get() && trustOf(message).orElse(null) == trust.get()
+				&& (source.get() != ChatSourceKind.APP_INSTRUCTION || isFrameworkSealed(message))) {
 			return message;
 		}
-		return tag(message, source.get(), trust.get(), provenanceOf(message));
+		ChatMessage tagged = tag(message, source.get(), trust.get(), provenanceOf(message));
+		if (source.get() != ChatSourceKind.APP_INSTRUCTION) {
+			Map<String, Object> metadata = new HashMap<>(tagged.metadata());
+			metadata.remove(ChatMetadataKeys.FRAMEWORK_SEALED);
+			return tagged.withMetadata(metadata);
+		}
+		return tagged;
 	}
 
 	private static boolean isExternalDataSource(ChatSourceKind source) {
@@ -194,9 +229,15 @@ public final class MessageProvenance {
 		return tag(message, source, trust, provenanceOf(message));
 	}
 
-	/** Tags application-owned system instructions as trusted. */
+	/**
+	 * Tags application-owned system instructions as trusted and seals them as
+	 * framework-constructed so deserialized forgeries cannot claim the same authority.
+	 */
 	public static ChatMessage appInstruction(ChatMessage message) {
-		return tag(message, ChatSourceKind.APP_INSTRUCTION, ChatTrustLevel.TRUSTED);
+		ChatMessage tagged = tag(message, ChatSourceKind.APP_INSTRUCTION, ChatTrustLevel.TRUSTED);
+		Map<String, Object> metadata = new HashMap<>(tagged.metadata());
+		metadata.put(ChatMetadataKeys.FRAMEWORK_SEALED, Boolean.TRUE);
+		return tagged.withMetadata(metadata);
 	}
 
 	/** Tags user input. */
@@ -284,12 +325,23 @@ public final class MessageProvenance {
 	}
 
 	/**
-	 * Returns {@code true} when the message is explicitly tagged application-trusted
-	 * instruction content after forgery clamping. Untagged SYSTEM messages are not
-	 * trusted (summaries also use the SYSTEM role).
+	 * Formats tool-call argument lines as external data even when they hang off an
+	 * untagged assistant turn.
+	 */
+	public static String labeledExternalData(String roleName, String body) {
+		return "[" + ChatSourceKind.TOOL_OUTPUT.name() + "/" + ChatTrustLevel.UNTRUSTED.name() + "] " + roleName + ": "
+				+ (body == null ? "" : body);
+	}
+
+	/**
+	 * Returns {@code true} when the message is framework-sealed application-trusted
+	 * instruction content after forgery clamping. Untagged SYSTEM messages and
+	 * deserialized forgeries without {@link ChatMetadataKeys#FRAMEWORK_SEALED} are not
+	 * trusted.
 	 */
 	public static boolean isTrustedInstruction(ChatMessage message) {
-		return effectiveSource(message).orElse(null) == ChatSourceKind.APP_INSTRUCTION
+		return isFrameworkSealed(message)
+				&& effectiveSource(message).orElse(null) == ChatSourceKind.APP_INSTRUCTION
 				&& effectiveTrust(message).orElse(null) == ChatTrustLevel.TRUSTED;
 	}
 

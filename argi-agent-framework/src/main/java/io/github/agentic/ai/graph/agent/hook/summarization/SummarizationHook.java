@@ -236,7 +236,7 @@ public class SummarizationHook extends MessagesModelHook {
 			messageText.append(MessageProvenance.labeledText(msg, role, msg.text())).append("\n");
 			if (msg.role() == ChatRole.ASSISTANT) {
 				for (io.github.agentic.ai.api.chat.ToolCall toolCall : msg.toolCalls()) {
-					messageText.append(MessageProvenance.labeledText(msg, "Tool call",
+					messageText.append(MessageProvenance.labeledExternalData("Tool call",
 							"[id=" + toolCall.id() + ", name=" + toolCall.name() + "]: " + toolCall.arguments()))
 						.append("\n");
 				}

@@ -16,6 +16,7 @@
 
 package io.github.agentic.ai.graph.internal.node;
 
+import io.github.agentic.ai.api.chat.ContextAuthorityKeys;
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.CompiledGraph;
 import io.github.agentic.ai.graph.GraphResponse;
@@ -129,11 +130,12 @@ public record SubCompiledGraphNodeAction(String nodeId, CompileConfig parentComp
 							scope -> subGraphExecution(state, childConfig, resumeSubgraph, scope));
 				}
 				try {
+					OverAllState childState = stateWithoutAuthority(state);
 					RunnableConfig executionConfig = resumeSubgraph
-							? subGraph.updateState(childConfig, state.data()) : childConfig;
+							? subGraph.updateState(childConfig, childState.data()) : childConfig;
 					AtomicReference<Map<String, Object>> subGraphInputState =
-							new AtomicReference<>(new HashMap<>(state.data()));
-					return subGraph.graphResponseStream(state, executionConfig)
+							new AtomicReference<>(new HashMap<>(childState.data()));
+					return subGraph.graphResponseStream(childState, executionConfig)
 						.map(response -> toParentDeltaResponse(response, subGraphInputState));
 				}
 				catch (Exception e) {
@@ -161,17 +163,43 @@ public record SubCompiledGraphNodeAction(String nodeId, CompileConfig parentComp
 			boolean resumeSubgraph, VersionedCheckpointScope scope) {
 		return Flux.defer(() -> {
 			try {
+				OverAllState childState = stateWithoutAuthority(state);
 				RunnableConfig executionConfig = resumeSubgraph
-						? subGraph.updateState(childConfig, state.data(), null, scope) : childConfig;
+						? subGraph.updateState(childConfig, childState.data(), null, scope) : childConfig;
 				AtomicReference<Map<String, Object>> subGraphInputState =
-						new AtomicReference<>(new HashMap<>(state.data()));
-				return subGraph.graphResponseStream(state, executionConfig)
+						new AtomicReference<>(new HashMap<>(childState.data()));
+				return subGraph.graphResponseStream(childState, executionConfig)
 					.map(response -> toParentDeltaResponse(response, subGraphInputState));
 			}
 			catch (Exception e) {
 				return Flux.error(e);
 			}
 		});
+	}
+
+	/**
+	 * Drops {@link ContextAuthorityKeys protected authority keys} before handing state to
+	 * a subgraph so child nodes cannot read forged runtime secrets from parent state.
+	 * Trusted authority must still arrive through {@link RunnableConfig} metadata.
+	 */
+	static OverAllState stateWithoutAuthority(OverAllState state) {
+		Map<String, Object> filtered = withoutAuthorityKeys(state.data());
+		OverAllState copy = new OverAllState(filtered, state.getStore());
+		copy.registerKeyAndStrategy(state.keyStrategies());
+		return copy;
+	}
+
+	static Map<String, Object> withoutAuthorityKeys(Map<String, Object> data) {
+		Map<String, Object> copy = new HashMap<>();
+		if (data == null) {
+			return copy;
+		}
+		for (Map.Entry<String, Object> entry : data.entrySet()) {
+			if (!ContextAuthorityKeys.isProtected(entry.getKey())) {
+				copy.put(entry.getKey(), entry.getValue());
+			}
+		}
+		return copy;
 	}
 
 	private static GraphResponse<NodeOutput> toParentDeltaResponse(GraphResponse<NodeOutput> response,

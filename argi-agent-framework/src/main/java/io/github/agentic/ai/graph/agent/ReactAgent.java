@@ -17,6 +17,7 @@ package io.github.agentic.ai.graph.agent;
 
 import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
+import io.github.agentic.ai.api.chat.ContextAuthorityKeys;
 import io.github.agentic.ai.api.chat.MessageProvenance;
 
 import io.github.agentic.ai.graph.CompileConfig;
@@ -1085,7 +1086,7 @@ public class ReactAgent extends BaseAgent {
 			// Instruction is always injected by InstructionAgentHook in beforeAgent; do
 			// not add here
 			if (includeContents) {
-				Map<String, Object> stateForChild = new HashMap<>(parentState.data());
+				Map<String, Object> stateForChild = childStateWithoutAuthority(parentState.data());
 				List<Object> newMessages;
 				if (stateForChild.get("messages") != null) {
 					newMessages = new ArrayList<>((List<Object>) stateForChild.remove("messages"));
@@ -1097,7 +1098,7 @@ public class ReactAgent extends BaseAgent {
 				subGraphResult = childGraph.graphResponseStream(stateForChild, subGraphRunnableConfig);
 			}
 			else {
-				Map<String, Object> stateForChild = new HashMap<>(parentState.data());
+				Map<String, Object> stateForChild = childStateWithoutAuthority(parentState.data());
 				parentMessages = stateForChild.remove("messages");
 				subGraphResult = childGraph.graphResponseStream(stateForChild, subGraphRunnableConfig);
 			}
@@ -1184,6 +1185,19 @@ public class ReactAgent extends BaseAgent {
 				}
 			}
 			return lastResponse;
+		}
+
+		private static Map<String, Object> childStateWithoutAuthority(Map<String, Object> parentData) {
+			Map<String, Object> copy = new HashMap<>();
+			if (parentData == null) {
+				return copy;
+			}
+			for (Map.Entry<String, Object> entry : parentData.entrySet()) {
+				if (!ContextAuthorityKeys.isProtected(entry.getKey())) {
+					copy.put(entry.getKey(), entry.getValue());
+				}
+			}
+			return copy;
 		}
 
 		private static List<Object> canonicalizeMessages(List<Object> messages) {

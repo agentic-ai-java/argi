@@ -166,7 +166,8 @@ public class AgentLlmNode implements NodeActionWithConfig {
 		}
 		else {
 			messages = new ArrayList<>((List<ChatMessage>) state.value("messages").get());
-			messages.replaceAll(MessageProvenance::canonicalize);
+			messages.replaceAll(message -> message.role() == ChatRole.USER ? MessageProvenance.forEntryUser(message)
+					: MessageProvenance.canonicalize(message));
 		}
 
 		augmentUserMessage(messages, outputSchema);

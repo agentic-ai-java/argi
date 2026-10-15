@@ -39,6 +39,14 @@ public final class ChatMetadataKeys {
 	 */
 	public static final String PROVENANCE = "argi.provenance";
 
+	/**
+	 * Framework construction seal for trusted application instructions. Only
+	 * {@link MessageProvenance#appInstruction(ChatMessage)} sets this marker; forged
+	 * {@code APP_INSTRUCTION} tags deserialized from state without the seal are not
+	 * honored.
+	 */
+	public static final String FRAMEWORK_SEALED = "argi.frameworkSealed";
+
 	private ChatMetadataKeys() {
 	}
 

@@ -109,9 +109,71 @@ class AgentLlmNodeProvenanceTest {
 		assertThat(request).isNotNull();
 		assertThat(MessageProvenance.sourceOf(request.getSystemMessage())).contains(ChatSourceKind.APP_INSTRUCTION);
 		assertThat(MessageProvenance.trustOf(request.getSystemMessage())).contains(ChatTrustLevel.TRUSTED);
+		assertThat(MessageProvenance.isFrameworkSealed(request.getSystemMessage())).isTrue();
+		assertThat(MessageProvenance.isTrustedInstruction(request.getSystemMessage())).isTrue();
 		assertThat(request.getContext().get("pref")).isEqualTo("light");
 		assertThat(request.getContext().get(ContextAuthorityKeys.SECRET_CONFIG)).isEqualTo("runtime-secret");
 		assertThat(request.getContext().get(ContextAuthorityKeys.AUTHORIZATION)).isEqualTo("scope:read");
+	}
+
+	@Test
+	void untaggedUserMessagesOnMessagesPathBecomeUserInput() throws Exception {
+		AtomicReference<ModelRequest> captured = new AtomicReference<>();
+		ModelInterceptor capture = new ModelInterceptor() {
+			@Override
+			public String getName() {
+				return "capture-user";
+			}
+
+			@Override
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
+				captured.set(request);
+				return ModelResponse.of(new ChatResponse(null, null, List.of(ChatMessage.assistant("ok")), List.of(),
+						FinishReason.STOP, null, Map.of()));
+			}
+		};
+		ChatClient client = new ChatClient() {
+			@Override
+			public ChatClientCapabilities capabilities() {
+				return ChatClientCapabilities.basic();
+			}
+
+			@Override
+			public CompletableFuture<ChatResponse> call(ChatRequest request) {
+				return CompletableFuture.completedFuture(new ChatResponse(null, null,
+						List.of(ChatMessage.assistant("ok")), List.of(), FinishReason.STOP, null, Map.of()));
+			}
+
+			@Override
+			public Flow.Publisher<ChatEvent> stream(ChatRequest request) {
+				return subscriber -> {
+					subscriber.onSubscribe(new Flow.Subscription() {
+						@Override
+						public void request(long n) {
+						}
+
+						@Override
+						public void cancel() {
+						}
+					});
+					subscriber.onComplete();
+				};
+			}
+		};
+
+		AgentLlmNode node = AgentLlmNode.builder()
+			.chatClient(client)
+			.modelInterceptors(List.of(capture))
+			.build();
+		node.apply(new OverAllState(Map.of("messages", List.of(ChatMessage.user("hello")))),
+				RunnableConfig.builder().addMetadata("_stream_", false).build());
+
+		ChatMessage user = captured.get().getMessages().stream()
+			.filter(message -> message.role() == io.github.agentic.ai.api.chat.ChatRole.USER)
+			.findFirst()
+			.orElseThrow();
+		assertThat(MessageProvenance.sourceOf(user)).contains(ChatSourceKind.USER_INPUT);
+		assertThat(MessageProvenance.trustOf(user)).contains(ChatTrustLevel.USER);
 	}
 
 }
