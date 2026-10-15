@@ -16,9 +16,6 @@
 package io.github.agentic.ai.graph.agent;
 
 import com.google.adk.models.ApigeeLlm;
-import io.agentscope.core.model.ExecutionConfig;
-import io.agentscope.core.model.GenerateOptions;
-import io.github.agentic.ai.adapter.agentscope.AgentScopeChatClientAdapter;
 import io.github.agentic.ai.adapter.googleadk.GoogleAdkChatClientAdapter;
 import io.github.agentic.ai.adapter.langchain4j.LangChain4jChatClientAdapter;
 import io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter;
@@ -164,16 +161,6 @@ class RealModelAdapterAgentIntegrationTest {
 				.proxyUrl(baseUrl)
 				.customHeaders(Map.of("Authorization", "Bearer " + key))
 				.build());
-			case AGENTSCOPE ->
-				new AgentScopeChatClientAdapter(io.agentscope.extensions.model.openai.OpenAIChatModel.builder()
-					.apiKey(key)
-					.baseUrl(baseUrl)
-					.modelName(model)
-					.stream(streaming)
-					.generateOptions(GenerateOptions.builder()
-						.executionConfig(ExecutionConfig.builder().timeout(MODEL_TIMEOUT).maxAttempts(1).build())
-						.build())
-					.build());
 		};
 	}
 

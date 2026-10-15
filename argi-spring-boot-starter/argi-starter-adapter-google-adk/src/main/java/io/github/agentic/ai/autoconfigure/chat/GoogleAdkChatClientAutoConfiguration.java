@@ -49,12 +49,11 @@ public class GoogleAdkChatClientAutoConfiguration {
 			if (selected == null) {
 				return true;
 			}
-			Map<String, String> adapters = Map.of("spring-ai", "SpringAi", "langchain4j", "LangChain4j", "google-adk",
-					"GoogleAdk", "agentscope", "AgentScope");
+			Map<String, String> adapters = Map.of("spring-ai", "SpringAi", "langchain4j", "LangChain4j", "google-adk", "GoogleAdk");
 			String name = adapters.get(selected);
 			if (name == null) {
 				throw new IllegalStateException("Invalid argi.chat.adapter '" + selected
-						+ "'; expected spring-ai, langchain4j, google-adk, or agentscope");
+						+ "'; expected spring-ai, langchain4j, or google-adk");
 			}
 			if (!ClassUtils.isPresent("io.github.agentic.ai.autoconfigure.chat." + name + "ChatClientAutoConfiguration",
 					context.getClassLoader())) {
@@ -78,7 +77,7 @@ public class GoogleAdkChatClientAutoConfiguration {
 			return;
 		}
 		int installed = 0;
-		for (String name : new String[] { "SpringAi", "LangChain4j", "GoogleAdk", "AgentScope" }) {
+		for (String name : new String[] { "SpringAi", "LangChain4j", "GoogleAdk" }) {
 			if (ClassUtils.isPresent("io.github.agentic.ai.autoconfigure.chat." + name + "ChatClientAutoConfiguration",
 					loader.getClassLoader())) {
 				installed++;
@@ -86,7 +85,7 @@ public class GoogleAdkChatClientAutoConfiguration {
 		}
 		if (installed > 1) {
 			throw new IllegalStateException("Multiple ARGI adapter starters are installed; set argi.chat.adapter "
-					+ "to spring-ai, langchain4j, google-adk, or agentscope, or provide an ARGI ChatClient bean");
+					+ "to spring-ai, langchain4j, or google-adk, or provide an ARGI ChatClient bean");
 		}
 	}
 

@@ -67,12 +67,6 @@
         </dependency>
         <dependency>
             <groupId>io.github.agentic-ai-java</groupId>
-            <artifactId>argi-adapter-agentscope</artifactId>
-            <version>${project.parent.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.github.agentic-ai-java</groupId>
             <artifactId>argi-graph-core</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
@@ -158,13 +152,6 @@
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-open-ai</artifactId>
             <version>${langchain4j.version}</version>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>io.agentscope</groupId>
-            <artifactId>agentscope-extensions-model-openai</artifactId>
-            <version>${agentscope.version}</version>
             <scope>test</scope>
         </dependency>
 

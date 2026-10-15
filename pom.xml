@@ -52,7 +52,6 @@
         <module>argi-api/argi-adapter-spring-ai</module>
         <module>argi-api/argi-adapter-langchain4j</module>
         <module>argi-api/argi-adapter-google-adk</module>
-        <module>argi-api/argi-adapter-agentscope</module>
         <module>argi-graph-core</module>
         <module>argi-agent-framework</module>
         <module>argi-studio</module>
@@ -63,7 +62,6 @@
         <module>argi-spring-boot-starter/argi-starter-adapter-spring-ai</module>
         <module>argi-spring-boot-starter/argi-starter-adapter-langchain4j</module>
         <module>argi-spring-boot-starter/argi-starter-adapter-google-adk</module>
-        <module>argi-spring-boot-starter/argi-starter-adapter-agentscope</module>
     </modules>
 
     <scm>
@@ -99,7 +97,6 @@
         <!-- Adapter versions -->
         <langchain4j.version>1.22.0</langchain4j.version>
         <google-adk.version>1.11.0</google-adk.version>
-        <agentscope.version>2.0.4</agentscope.version>
 
         <!-- Keep security patch families aligned with the published ARGI BOM. -->
         <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
@@ -233,11 +230,6 @@
             </dependency>
             <dependency>
                 <groupId>io.github.agentic-ai-java</groupId>
-                <artifactId>argi-starter-adapter-agentscope</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.github.agentic-ai-java</groupId>
                 <artifactId>argi-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -254,11 +246,6 @@
             <dependency>
                 <groupId>io.github.agentic-ai-java</groupId>
                 <artifactId>argi-adapter-google-adk</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.github.agentic-ai-java</groupId>
-                <artifactId>argi-adapter-agentscope</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

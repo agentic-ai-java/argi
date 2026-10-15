@@ -30,7 +30,7 @@ class SpringAiChatClientAutoConfigurationTests {
 	private final ApplicationContextRunner runner = new ApplicationContextRunner()
 		.withConfiguration(AutoConfigurations.of(SpringAiChatClientAutoConfiguration.class))
 		.withClassLoader(new FilteredClassLoader(LangChain4jChatClientAutoConfiguration.class,
-				GoogleAdkChatClientAutoConfiguration.class, AgentScopeChatClientAutoConfiguration.class));
+				GoogleAdkChatClientAutoConfiguration.class));
 
 	@Test
 	void prefersNativeChatClientEvenWithAmbiguousModels() {
@@ -74,7 +74,7 @@ class SpringAiChatClientAutoConfigurationTests {
 			.run(context -> assertThat(context).hasFailed()
 				.getFailure()
 				.hasMessage(
-						"Invalid argi.chat.adapter 'other'; expected spring-ai, langchain4j, google-adk, or agentscope"));
+						"Invalid argi.chat.adapter 'other'; expected spring-ai, langchain4j, or google-adk"));
 	}
 
 	@Test

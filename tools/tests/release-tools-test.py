@@ -59,13 +59,11 @@ class ModuleLayoutTest(unittest.TestCase):
         "argi-api/argi-adapter-spring-ai": "argi-adapter-spring-ai",
         "argi-api/argi-adapter-langchain4j": "argi-adapter-langchain4j",
         "argi-api/argi-adapter-google-adk": "argi-adapter-google-adk",
-        "argi-api/argi-adapter-agentscope": "argi-adapter-agentscope",
         "argi-spring-boot-starter/argi-starter-builtin-nodes": "argi-starter-builtin-nodes",
         "argi-spring-boot-starter/argi-starter-graph-observation": "argi-starter-graph-observation",
         "argi-spring-boot-starter/argi-starter-adapter-spring-ai": "argi-starter-adapter-spring-ai",
         "argi-spring-boot-starter/argi-starter-adapter-langchain4j": "argi-starter-adapter-langchain4j",
         "argi-spring-boot-starter/argi-starter-adapter-google-adk": "argi-starter-adapter-google-adk",
-        "argi-spring-boot-starter/argi-starter-adapter-agentscope": "argi-starter-adapter-agentscope",
     }
 
     def test_root_aggregates_grouped_children_without_extra_artifacts(self):

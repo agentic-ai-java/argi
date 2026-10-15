@@ -29,14 +29,6 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.ChatModelStreamingEvent;
 import dev.langchain4j.model.chat.response.CompleteResponse;
 import dev.langchain4j.model.chat.response.PartialResponse;
-import io.agentscope.core.message.Msg;
-import io.agentscope.core.message.TextBlock;
-import io.agentscope.core.message.ToolResultBlock;
-import io.agentscope.core.message.ToolUseBlock;
-import io.agentscope.core.model.GenerateOptions;
-import io.agentscope.core.model.Model;
-import io.agentscope.core.model.ToolSchema;
-import io.github.agentic.ai.adapter.agentscope.AgentScopeChatClientAdapter;
 import io.github.agentic.ai.adapter.googleadk.GoogleAdkChatClientAdapter;
 import io.github.agentic.ai.adapter.langchain4j.LangChain4jChatClientAdapter;
 import io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter;
@@ -105,7 +97,7 @@ class AdapterAgentIntegrationTest {
 
 	enum Framework {
 
-		SPRING_AI, LANGCHAIN4J, GOOGLE_ADK, AGENTSCOPE
+		SPRING_AI, LANGCHAIN4J, GOOGLE_ADK
 
 	}
 
@@ -408,7 +400,6 @@ class AdapterAgentIntegrationTest {
 			case LANGCHAIN4J -> new LangChain4jChatClientAdapter(new LangChainModel(turn), new LangChainStream(turn));
 			case GOOGLE_ADK -> new GoogleAdkChatClientAdapter(new AdkModel(turn),
 					new ChatClientCapabilities(true, true, true, false, true, true));
-			case AGENTSCOPE -> new AgentScopeChatClientAdapter(new ScopeModel(turn));
 		};
 	}
 
@@ -587,37 +578,6 @@ class AdapterAgentIntegrationTest {
 			throw new AssertionError("Chat turns must not open live connections");
 		}
 
-	}
-
-	private record ScopeModel(NativeTurn turn) implements Model {
-		@Override
-		public Flux<io.agentscope.core.model.ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools,
-				GenerateOptions options) {
-			messages.forEach(message -> {
-				TextBlock text = message.getFirstContentBlock(TextBlock.class);
-				if (message.getRole() == io.agentscope.core.message.MsgRole.USER && text != null
-						&& !"question".equals(text.getText())) {
-					turn.instructions.add(text.getText());
-				}
-				ToolResultBlock result = message.getFirstContentBlock(ToolResultBlock.class);
-				if (result != null) {
-					turn.result(result.getId(), result.getName(), ((TextBlock) result.getOutput().get(0)).getText());
-				}
-			});
-			if (turn.tools) {
-				assertEquals("lookup", tools.get(0).getName());
-			}
-			boolean tool = turn.toolTurn();
-			var block = tool ? ToolUseBlock.builder().id("lookup_1").name("lookup").input(Map.of()).build()
-					: TextBlock.builder().text(turn.answer).build();
-			return turn
-				.chunks(Flux.just(io.agentscope.core.model.ChatResponse.builder().content(List.of(block)).build()));
-		}
-
-		@Override
-		public String getModelName() {
-			return "test-model";
-		}
 	}
 
 }

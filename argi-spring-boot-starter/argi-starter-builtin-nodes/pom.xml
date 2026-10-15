@@ -121,11 +121,6 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>io.github.agentic-ai-java</groupId>
-            <artifactId>argi-adapter-agentscope</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-openai</artifactId>
             <scope>test</scope>
@@ -134,12 +129,6 @@
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-open-ai</artifactId>
             <version>${langchain4j.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.agentscope</groupId>
-            <artifactId>agentscope-extensions-model-openai</artifactId>
-            <version>${agentscope.version}</version>
             <scope>test</scope>
         </dependency>
 

@@ -69,7 +69,7 @@ class LangChain4jChatClientAutoConfigurationTests {
 			.run(context -> assertThat(context).hasFailed()
 				.getFailure()
 				.hasMessage(
-						"Invalid argi.chat.adapter 'other'; expected spring-ai, langchain4j, google-adk, or agentscope"));
+						"Invalid argi.chat.adapter 'other'; expected spring-ai, langchain4j, or google-adk"));
 	}
 
 	@Test
