@@ -15,8 +15,10 @@
  */
 package io.github.agentic.ai.contract;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.RunnableConfig;
@@ -35,6 +37,8 @@ import io.github.agentic.ai.graph.agent.interceptor.ToolCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallRequest;
 import io.github.agentic.ai.graph.agent.interceptor.ToolCallResponse;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
+import io.github.agentic.ai.graph.agent.tools.task.BoundedTaskRepository;
+import io.github.agentic.ai.graph.agent.tools.task.TaskToolsBuilder;
 
 import io.github.agentic.ai.api.chat.ChatClient;
 
@@ -96,6 +100,18 @@ final class AgentApiFixture {
 		parallelAgent.stream(Map.of("messages", "hello"), config);
 		loopAgent.invoke(Map.of("messages", "hello"), config);
 		routingAgent.invoke(Map.of("messages", "hello"), config);
+	}
+
+	static void boundedTasks(ReactAgent agent, ExecutorService callerExecutor) {
+		try (BoundedTaskRepository owned = new BoundedTaskRepository(2, 4, 8, Duration.ofMinutes(5));
+				BoundedTaskRepository borrowed = new BoundedTaskRepository(callerExecutor, 2, 4, 8,
+						Duration.ofMinutes(5))) {
+			TaskToolsBuilder.builder().taskRepository(owned).subAgent("worker", agent).build();
+			borrowed.putTask("task", () -> "result");
+			borrowed.getTask("task");
+			borrowed.removeTask("task");
+			borrowed.clear();
+		}
 	}
 
 	static final class SampleAgentHook extends AgentHook {

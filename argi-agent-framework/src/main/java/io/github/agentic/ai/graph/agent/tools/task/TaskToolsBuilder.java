@@ -85,7 +85,10 @@ public final class TaskToolsBuilder {
 	}
 
 	/**
-	 * Set the task repository (required for background execution).
+	 * Set the task repository (required for background execution). Use
+	 * {@link BoundedTaskRepository} to opt into bounded execution and result retention.
+	 * The caller manages the supplied repository's lifecycle, for example through a
+	 * Spring bean with an explicit destroy method.
 	 */
 	public TaskToolsBuilder taskRepository(TaskRepository taskRepository) {
 		Assert.notNull(taskRepository, "taskRepository must not be null");
