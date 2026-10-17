@@ -20,10 +20,14 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import io.github.agentic.ai.api.tool.ToolContext;
 import io.github.agentic.ai.api.tool.Tool;
+import io.github.agentic.ai.graph.RunnableConfig;
 import io.github.agentic.ai.graph.agent.tool.TypedTool;
+import io.github.agentic.ai.graph.execution.TrustedExecutionContext;
 import org.springframework.util.Assert;
 
 import java.util.function.BiFunction;
+
+import static io.github.agentic.ai.graph.agent.tools.ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY;
 
 /**
  * Tool for retrieving output from running or completed background tasks.
@@ -57,7 +61,17 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 
 	@Override
 	public String apply(Request request, ToolContext toolContext) {
-		BackgroundTask bgTask = this.taskRepository.getTask(request.taskId());
+		// Extract caller tenant for tenant isolation
+		String callerTenantId = null;
+		Object configObj = toolContext.attributes().get(AGENT_CONFIG_CONTEXT_KEY);
+		if (configObj instanceof RunnableConfig config) {
+			TrustedExecutionContext trustCtx = config.trustedExecutionContext().orElse(null);
+			if (trustCtx != null && trustCtx.tenant() != null) {
+				callerTenantId = trustCtx.tenant().id();
+			}
+		}
+
+		BackgroundTask bgTask = this.taskRepository.getTask(request.taskId(), callerTenantId);
 
 		if (bgTask == null) {
 			return "Error: No background task found with ID: " + request.taskId();

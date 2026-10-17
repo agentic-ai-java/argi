@@ -34,6 +34,26 @@ public interface TaskRepository {
 	BackgroundTask getTask(String taskId);
 
 	/**
+	 * Get a background task by its ID with tenant isolation.
+	 * <p>
+	 * Implementations may enforce tenant-scoped access: a task is returned only if its
+	 * {@code tenantId} matches the supplied {@code callerTenantId}, or when the caller
+	 * tenant is null (unrestricted access). When the stored task has a non-null tenant ID
+	 * that differs from {@code callerTenantId}, the implementation may return {@code null}
+	 * to hide the task's existence from callers of other tenants.
+	 * <p>
+	 * Default implementations delegate to {@link #getTask(String)} without isolation. To
+	 * enforce tenant boundaries, implementations must override this method.
+	 * @param taskId the task identifier
+	 * @param callerTenantId the tenant identifier of the caller, or null for unrestricted
+	 * access
+	 * @return the background task, or null if not found or not accessible by the caller
+	 */
+	default BackgroundTask getTask(String taskId, String callerTenantId) {
+		return getTask(taskId);
+	}
+
+	/**
 	 * Add a new background task to the repository.
 	 * @param taskId the task identifier
 	 * @param taskExecution the supplier that executes the task and returns its output

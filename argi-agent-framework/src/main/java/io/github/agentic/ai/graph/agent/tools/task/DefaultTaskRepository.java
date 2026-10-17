@@ -68,9 +68,35 @@ public class DefaultTaskRepository implements TaskRepository {
 	}
 
 	@Override
+	public BackgroundTask getTask(String taskId, String callerTenantId) {
+		BackgroundTask task = this.backgroundTasks.get(taskId);
+		if (task == null) {
+			return null;
+		}
+		// Tenant isolation: allow access only when caller tenant matches task tenant,
+		// or when caller tenant is null (unrestricted access, e.g. admin or no trusted context)
+		String taskTenant = task.getTenantId();
+		if (callerTenantId != null && taskTenant != null && !taskTenant.equals(callerTenantId)) {
+			return null;
+		}
+		return task;
+	}
+
+	@Override
 	public BackgroundTask putTask(String taskId, Supplier<String> taskExecution) {
+		return putTask(taskId, taskExecution, null);
+	}
+
+	/**
+	 * Add a new background task with tenant ownership.
+	 * @param taskId the task identifier
+	 * @param taskExecution the supplier that executes the task and returns its output
+	 * @param tenantId the tenant identifier of the creating principal, or null
+	 * @return the created background task
+	 */
+	public BackgroundTask putTask(String taskId, Supplier<String> taskExecution, String tenantId) {
 		CompletableFuture<String> future = CompletableFuture.supplyAsync(taskExecution, this.executor);
-		BackgroundTask backgroundTask = new BackgroundTask(taskId, future);
+		BackgroundTask backgroundTask = new BackgroundTask(taskId, future, tenantId);
 		this.backgroundTasks.put(taskId, backgroundTask);
 		return backgroundTask;
 	}

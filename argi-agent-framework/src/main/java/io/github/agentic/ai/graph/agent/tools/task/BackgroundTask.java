@@ -34,13 +34,30 @@ public class BackgroundTask {
 	private final CompletableFuture<String> future;
 
 	/**
+	 * Tenant identifier of the principal that created this task; may be null when the
+	 * task was created outside a trusted execution context.
+	 */
+	private final String tenantId;
+
+	/**
 	 * Create a BackgroundTask with an existing future.
 	 * @param taskId the task identifier
 	 * @param future the completable future to wrap
 	 */
 	public BackgroundTask(String taskId, CompletableFuture<String> future) {
+		this(taskId, future, null);
+	}
+
+	/**
+	 * Create a BackgroundTask with an existing future and owner tenant.
+	 * @param taskId the task identifier
+	 * @param future the completable future to wrap
+	 * @param tenantId the tenant identifier of the creating principal, or null
+	 */
+	public BackgroundTask(String taskId, CompletableFuture<String> future, String tenantId) {
 		this.taskId = taskId;
 		this.future = future;
+		this.tenantId = tenantId;
 	}
 
 	/**
@@ -128,6 +145,15 @@ public class BackgroundTask {
 	 */
 	public String getTaskId() {
 		return this.taskId;
+	}
+
+	/**
+	 * Get the tenant ID of the task owner.
+	 * @return the tenant identifier, or null if the task was created outside a trusted
+	 * context
+	 */
+	public String getTenantId() {
+		return this.tenantId;
 	}
 
 }
