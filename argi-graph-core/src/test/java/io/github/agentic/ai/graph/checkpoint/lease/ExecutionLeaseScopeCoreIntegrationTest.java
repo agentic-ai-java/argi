@@ -254,6 +254,98 @@ class ExecutionLeaseScopeCoreIntegrationTest {
 	}
 
 	@Test
+	void cancellingInitialBorrowedRenewalDisposesDiscardedScopeWithoutReleasingOwner() throws Exception {
+		BlockingRenewSaver saver = new BlockingRenewSaver(new MemoryLeasedCheckpointSaver());
+		RunnableConfig config = config("borrowed-acquisition-cancel");
+		ExecutionLease owned = saver.acquireLease(config, UUID.randomUUID());
+		CountDownLatch discarded = new CountDownLatch(1);
+		AtomicReference<ExecutionLeaseScope> discardedScope = new AtomicReference<>();
+		AtomicInteger calls = new AtomicInteger();
+		Disposable subscription = ExecutionLeaseScope.withBorrowedLease(saver, config, owned, scope -> {
+			calls.incrementAndGet();
+			return Flux.just("unexpected");
+		}).doOnDiscard(ExecutionLeaseScope.class, scope -> {
+			discardedScope.set(scope);
+			discarded.countDown();
+		}).subscribeOn(Schedulers.boundedElastic()).subscribe();
+		try {
+			assertTrue(saver.renewStarted.await(5, TimeUnit.SECONDS));
+			subscription.dispose();
+		}
+		finally {
+			saver.allowRenew.countDown();
+		}
+		assertTrue(discarded.await(5, TimeUnit.SECONDS));
+		assertThrows(LeaseLostException.class, () -> discardedScope.get().assertActive());
+		assertEquals(0, calls.get());
+		assertEquals(0, saver.releaseCalls.get());
+		assertTrue(saver.releaseLease(config, owned));
+	}
+
+	@Test
+	void borrowedOwnerIsRenewedAndNestedScopesNeverReleaseIt() throws Exception {
+		MemoryLeasedCheckpointSaver backend = new MemoryLeasedCheckpointSaver();
+		CountingLeasedSaver saver = new CountingLeasedSaver(backend);
+		RunnableConfig config = config("borrowed");
+		ExecutionLease owned = saver.acquireLease(config, UUID.randomUUID());
+		AtomicReference<ExecutionGuard> guard = new AtomicReference<>();
+		assertEquals("done", ExecutionLeaseScope.withBorrowedLease(saver, config, owned, outer -> {
+			guard.set(outer.guard());
+			return ExecutionLeaseScope.withLease(saver, config, inner -> {
+				assertSame(outer, inner);
+				return ExecutionLeaseScope.withBorrowedLease(saver, config, owned, nested -> {
+					assertSame(outer, nested);
+					return Flux.just("done");
+				});
+			});
+		}).blockLast());
+		assertEquals(1, saver.acquireCalls.get());
+		assertEquals(1, saver.renewCalls.get());
+		assertEquals(0, saver.releaseCalls.get());
+		assertThrows(LeaseLostException.class, () -> guard.get().assertActive());
+		assertTrue(saver.releaseLease(config, owned));
+	}
+
+	@Test
+	void borrowedScopeFailureAndCancellationKeepWorkerReleaseResponsibility() throws Exception {
+		CountingLeasedSaver saver = new CountingLeasedSaver(new MemoryLeasedCheckpointSaver());
+		RunnableConfig config = config("borrowed-cleanup");
+		ExecutionLease owned = saver.acquireLease(config, UUID.randomUUID());
+		assertThrows(IllegalStateException.class, () -> ExecutionLeaseScope.withBorrowedLease(saver, config,
+				owned, scope -> Flux.error(new IllegalStateException("failure"))).blockLast());
+		AtomicReference<ExecutionGuard> guard = new AtomicReference<>();
+		Disposable subscription = ExecutionLeaseScope.withBorrowedLease(saver, config, owned, scope -> {
+			guard.set(scope.guard());
+			return Flux.never();
+		}).subscribe();
+		subscription.dispose();
+		assertThrows(LeaseLostException.class, () -> guard.get().assertActive());
+		assertEquals(0, saver.releaseCalls.get());
+		assertTrue(saver.releaseLease(config, owned));
+	}
+
+	@Test
+	void borrowedScopeRejectsOtherNamespaceAndNestedOwner() throws Exception {
+		CountingLeasedSaver saver = new CountingLeasedSaver(new MemoryLeasedCheckpointSaver());
+		RunnableConfig config = config("borrowed-mismatch");
+		ExecutionLease owned = saver.acquireLease(config, UUID.randomUUID());
+		assertThrows(IllegalArgumentException.class, () -> ExecutionLeaseScope.withBorrowedLease(saver,
+				config("other"), owned, scope -> Flux.empty()));
+		ExecutionLease other = new ExecutionLease(owned.namespace(), UUID.randomUUID(), owned.fencingToken(),
+				owned.expiresAtMillis());
+		assertThrows(IllegalArgumentException.class, () -> ExecutionLeaseScope.withBorrowedLease(saver, config,
+				owned, outer -> ExecutionLeaseScope.withBorrowedLease(saver, config, other, inner -> Flux.empty()))
+			.blockLast());
+		ExecutionLease otherFence = new ExecutionLease(owned.namespace(), owned.ownerId(), owned.fencingToken() + 1,
+				owned.expiresAtMillis());
+		assertThrows(IllegalArgumentException.class, () -> ExecutionLeaseScope.withBorrowedLease(saver, config,
+				owned, outer -> ExecutionLeaseScope.withBorrowedLease(saver, config, otherFence, inner -> Flux.empty()))
+			.blockLast());
+		assertEquals(0, saver.releaseCalls.get());
+		assertTrue(saver.releaseLease(config, owned));
+	}
+
+	@Test
 	void runnableConfigGuardIsRunLocalAndClearedAtPublicBoundaries() throws Exception {
 		AtomicInteger guardCalls = new AtomicInteger();
 		ExecutionGuard guard = new ExecutionGuard() {

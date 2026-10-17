@@ -296,6 +296,119 @@ not as in-memory state. `RunDefinitionOptInBoundaryTest` asserts that the existi
 contracts carry no definition type and that no recovery entry point accepts an
 instance handle.
 
+## Explicit durable whole-run execution
+
+`execution.durable.DurableRunRunner` is an opt-in worker that reuses `CompiledGraph`.
+One worker holds the entire run; existing `invoke`, `stream`, checkpoint formats,
+configuration prefixes and local `ParallelAgent` execution remain unchanged.
+Core has no Redis or Extensions dependency. A production `RunStore` must satisfy
+every durable capability, including persistence and atomic fenced commits.
+`MemoryRunStore` is rejected by the public runner constructor.
+
+Register a `DurableGraphDefinition` under the recorded graph reference, and a
+`DurableStateCodec` under the recorded codec reference. The graph factory receives
+the fully resolved, pinned definitions and the run's checkpoint saver. Compile
+with that saver and `releaseThread=false`. Factories must rebuild application
+clients locally without running tools or other side effects during construction.
+Do not close over an admitting JVM's mutable state. The tool catalog and
+application definitions are application-owned objects passed to the factory.
+
+`ReplaySafety.READ_ONLY` or `ReplaySafety.REPLAYABLE` is mandatory. This explicit
+application guarantee covers **all** reachable nodes, tools, routing functions
+and lifecycle callbacks, including dynamically selected tools in the pinned
+catalog. `UNSAFE`, missing declarations and instance-bound component roles fail
+before execution. `DATA_ONLY` alone does not make external writes replay-safe.
+Uncommitted work can run again after a crash; arbitrary write-tool recovery and
+model-plan reuse are outside this runner's guarantees.
+
+```java
+DurableGraphDefinition definition = new DurableGraphDefinition(
+    (resolved, saver) -> new StateGraph()
+        .addNode("read", (state, config) ->
+            CompletableFuture.completedFuture(Map.of("answer", 42)))
+        .addEdge(StateGraph.START, "read")
+        .addEdge("read", StateGraph.END)
+        .compile(CompileConfig.builder()
+            .saverConfig(new SaverConfig().register(saver)).build()),
+    ReplaySafety.READ_ONLY,
+    List.of(
+        RuntimeComponentDeclaration.dataOnly(RuntimeComponentRole.CUSTOM_NODE, "read"),
+        RuntimeComponentDeclaration.notApplicable(RuntimeComponentRole.CHAT_MEMORY),
+        RuntimeComponentDeclaration.notApplicable(RuntimeComponentRole.STORE),
+        RuntimeComponentDeclaration.notApplicable(RuntimeComponentRole.BACKGROUND_TOOL)));
+
+DefinitionRegistry registry = DefinitionRegistry.builder()
+    .register(record.graph(), definition)
+    .register(record.toolCatalog(), toolCatalog)
+    .register(record.codec(), new JsonDurableStateCodec())
+    .register(record.application(), applicationDefinition)
+    .build();
+DurableRunRunner runner = new DurableRunRunner(persistentRunStore, registry,
+    workerCapabilities, LeaseOptions.defaults(), event -> recordMetrics(event));
+RunSnapshot admitted = runner.submit(spec, record, authenticatedContext);
+// Resolve a live authenticated context for the admitted run before recovery.
+Mono<RunSnapshot> completion = runner.run(admitted.spec().namespace(),
+    admitted.spec().runId(), recoveredContext);
+```
+
+`submit` atomically stores an `argi.durable.input` envelope containing the original
+input and all definition references. Its canonical hash covers both, so changing
+a recorded definition under the same submission key conflicts. This is an additive
+payload type, not a change to `RunSpec` or existing checkpoint/Store schemas. Runs
+submitted through the ordinary `RunStore` API are not silently converted. Retain
+the original definition versions for the recovery and rollback windows above.
+`JsonDurableStateCodec` accepts JSON-native maps, lists and scalar values; register
+an application codec for typed messages and other domain values.
+
+Each checkpoint advances the run revision and appends a progress outbox event in
+the same `RunStore.commit`. A recovery starts from that committed boundary with
+the original definitions. A committed initial boundary restarts graph entry; a
+boundary pointing to `END` can finalize without repeating completed nodes.
+The first implementation retains the latest committed checkpoint, does not expose
+historical rewind, and rejects independent task records. Independent child saver
+state and instance-bound background tasks are outside the supported recovery model.
+
+`run` acquires once when subscribed. `runOwned` accepts an already acquired worker
+owner/fence; after identity validation and acceptance of a free local execution
+slot, the runner owns renewal and release, including definition-resolution failure
+cleanup. Rejected identity or an already-active local slot leaves ownership with
+the caller. Do not concurrently manage an accepted lease from the caller.
+`ExecutionLeaseScope.withBorrowedLease` refreshes the existing owner to establish
+a local deadline, renews it, and stops its timers when the scope ends; it never
+releases the physical lease. Nested scopes reuse the same owner. The outer worker
+releases with its original owner/fence, which cannot release a replacement owner.
+Lease loss stops new work, signals cooperative cancellation and leaves the last
+committed boundary available for another worker. Late writes remain backend-fenced.
+
+`query` returns the stored snapshot. `cancel` accepts a cancellation request only
+for an execution on this runner instance; applications authenticate requests and
+route them to the current worker. A true result means locally accepted, not yet
+durably cancelled. Poll `query` for the committed terminal state. Cancelling the
+execution subscription also commits `CANCELLED` while its lease remains valid.
+It retains committed progress rather than invoking the ordinary ReactAgent turn
+rewind. A client transport disconnect must not cancel the worker subscription
+unless cancellation is intended. Deadlines cancel in-flight execution and commit
+`TIMED_OUT`; graph interruptions commit `WAITING` and retain session reservation.
+Resuming `WAITING` is an application-authorized operation, not an approval protocol.
+
+Structured `RunExecutionEvent` observations contain run identity, revision, state,
+event kind and elapsed time. Listener failures cannot change commits. The outbox
+contains atomic progress events; delivery belongs to the application. No metrics
+deployment, MQ, general exactly-once guarantee or usage-budget ledger is introduced.
+
+Reference tests exercise the engine with an explicitly nonpersistent store through
+a package-private test seam; this does not weaken the public durable gate:
+
+```shell
+./mvnw -B -pl :argi-graph-core -am \
+  -Dtest='io.github.agentic.ai.graph.execution.durable.*Test,ExecutionLeaseScopeCoreIntegrationTest' test
+```
+
+Backend integrations must additionally verify real transactions, lease takeover
+from independent JVMs and persistence across process termination. Disabling this
+opt-in path restores ordinary entry points; drain or cancel admitted runs and keep
+their pinned definitions before removing a durable worker deployment.
+
 ## Interruption Support
 
 ARGI Graph supports interrupting workflow execution at specific points, enabling human-in-the-loop scenarios.

@@ -63,6 +63,8 @@ public final class ExecutionLeaseScope {
 
 	private final Scheduler rpcScheduler;
 
+	private final boolean releaseOnClose;
+
 	private final AtomicReference<ExecutionLease> lease;
 
 	private final AtomicBoolean active = new AtomicBoolean(true);
@@ -85,6 +87,12 @@ public final class ExecutionLeaseScope {
 
 	ExecutionLeaseScope(LeasedCheckpointSaver saver, RunnableConfig config, ExecutionLease lease,
 			long requestStartNanos, LongSupplier nanoTime, Scheduler timerScheduler, Scheduler rpcScheduler) {
+		this(saver, config, lease, requestStartNanos, nanoTime, timerScheduler, rpcScheduler, true);
+	}
+
+	private ExecutionLeaseScope(LeasedCheckpointSaver saver, RunnableConfig config, ExecutionLease lease,
+			long requestStartNanos, LongSupplier nanoTime, Scheduler timerScheduler, Scheduler rpcScheduler,
+			boolean releaseOnClose) {
 		this.saver = Objects.requireNonNull(saver, "saver cannot be null");
 		this.config = Objects.requireNonNull(config, "config cannot be null");
 		this.lease = new AtomicReference<>(Objects.requireNonNull(lease, "lease cannot be null"));
@@ -92,6 +100,7 @@ public final class ExecutionLeaseScope {
 		this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime cannot be null");
 		this.timerScheduler = Objects.requireNonNull(timerScheduler, "timerScheduler cannot be null");
 		this.rpcScheduler = Objects.requireNonNull(rpcScheduler, "rpcScheduler cannot be null");
+		this.releaseOnClose = releaseOnClose;
 		this.deadlineNanos = deadlineAfter(requestStartNanos);
 		scheduleDeadline();
 		scheduleHeartbeat();
@@ -99,6 +108,27 @@ public final class ExecutionLeaseScope {
 
 	public static <T> Flux<T> withLease(LeasedCheckpointSaver saver, RunnableConfig config,
 			Function<ExecutionLeaseScope, Flux<T>> operation) {
+		return withLease(saver, config, null, operation);
+	}
+
+	/**
+	 * Bind a worker's existing owner without acquiring a second lease. This scope renews
+	 * the lease, starting with a synchronous renewal to establish a conservative local
+	 * deadline. The worker remains responsible for release, including failed renewal and
+	 * cancelled subscription cleanup. Nested matching scopes neither renew nor release
+	 * independently. Lease credentials stay in Reactor context, never graph state.
+	 */
+	public static <T> Flux<T> withBorrowedLease(LeasedCheckpointSaver saver, RunnableConfig config,
+			ExecutionLease lease, Function<ExecutionLeaseScope, Flux<T>> operation) {
+		Objects.requireNonNull(lease, "lease cannot be null");
+		if (!saver.checkpointThreadId(config).equals(lease.namespace())) {
+			throw new IllegalArgumentException("Borrowed lease belongs to a different namespace");
+		}
+		return withLease(saver, config, lease, operation);
+	}
+
+	private static <T> Flux<T> withLease(LeasedCheckpointSaver saver, RunnableConfig config,
+			ExecutionLease borrowed, Function<ExecutionLeaseScope, Flux<T>> operation) {
 		Objects.requireNonNull(saver, "saver cannot be null");
 		Objects.requireNonNull(config, "config cannot be null");
 		Objects.requireNonNull(operation, "operation cannot be null");
@@ -108,14 +138,19 @@ public final class ExecutionLeaseScope {
 			ExecutionLeaseScope existing = inherited.get(key);
 			if (existing != null) {
 				existing.assertActive();
+				if (borrowed != null && (!existing.lease().ownerId().equals(borrowed.ownerId())
+						|| existing.lease().fencingToken() != borrowed.fencingToken())) {
+					return Flux.error(new IllegalArgumentException("Nested scope belongs to a different owner"));
+				}
 				return Flux.defer(() -> operation.apply(existing));
 			}
 			return Flux.usingWhen(Mono.fromCallable(() -> {
 				long requestStartNanos = System.nanoTime();
-				ExecutionLease lease = saver.acquireLease(config, UUID.randomUUID());
+				ExecutionLease lease = borrowed == null ? saver.acquireLease(config, UUID.randomUUID())
+						: saver.renewLease(config, borrowed);
 				return new ExecutionLeaseScope(saver, config, lease, requestStartNanos, System::nanoTime,
-						Schedulers.parallel(), Schedulers.boundedElastic());
-			}), scope -> {
+						Schedulers.parallel(), Schedulers.boundedElastic(), borrowed == null);
+			}).doOnDiscard(ExecutionLeaseScope.class, ExecutionLeaseScope::close), scope -> {
 				Map<ScopeKey, ExecutionLeaseScope> scopes = new HashMap<>(inherited);
 				scopes.put(key, scope);
 				Flux<T> operationFlux = Flux.defer(() -> operation.apply(scope))
@@ -286,6 +321,9 @@ public final class ExecutionLeaseScope {
 		}
 		dispose(heartbeatTask);
 		dispose(deadlineTask);
+		if (!releaseOnClose) {
+			return;
+		}
 		try {
 			saver.releaseLease(config, lease.get());
 		}

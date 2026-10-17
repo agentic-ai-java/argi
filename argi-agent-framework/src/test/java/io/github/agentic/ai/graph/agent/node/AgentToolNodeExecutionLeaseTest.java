@@ -29,10 +29,13 @@ import io.github.agentic.ai.api.tool.ToolContext;
 import io.github.agentic.ai.api.tool.ToolRegistry;
 import io.github.agentic.ai.api.tool.ToolResult;
 import io.github.agentic.ai.graph.checkpoint.lease.ExecutionGuard;
+import io.github.agentic.ai.graph.checkpoint.lease.ExecutionLeaseScope;
+import io.github.agentic.ai.graph.checkpoint.savers.MemoryLeasedCheckpointSaver;
 import io.github.agentic.ai.graph.checkpoint.lease.LeaseLostException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -48,6 +51,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -62,6 +66,54 @@ class AgentToolNodeExecutionLeaseTest {
 	@AfterEach
 	void shutdownExecutors() {
 		executors.forEach(ExecutorService::shutdownNow);
+	}
+
+	@Test
+	void borrowedWorkerScopeStopsSequentialToolsWithoutReleasingWorkerLease() throws Exception {
+		verifyBorrowedWorkerTools(false);
+	}
+
+	@Test
+	void borrowedWorkerScopeStopsQueuedParallelToolsWithoutReleasingWorkerLease() throws Exception {
+		verifyBorrowedWorkerTools(true);
+	}
+
+	private void verifyBorrowedWorkerTools(boolean parallel) throws Exception {
+		MemoryLeasedCheckpointSaver saver = new MemoryLeasedCheckpointSaver();
+		RunnableConfig runConfig = RunnableConfig.builder().threadId("borrowed-tool-owner").build();
+		var owned = saver.acquireLease(runConfig, UUID.randomUUID());
+		AtomicReference<ExecutionLeaseScope> scopeRef = new AtomicReference<>();
+		AtomicInteger firstCalls = new AtomicInteger();
+		AtomicInteger secondCalls = new AtomicInteger();
+		Tool first = tool("first", ignored -> {
+			firstCalls.incrementAndGet();
+			scopeRef.get().invalidate(new LeaseLostException(owned.namespace(), owned.ownerId(),
+					owned.fencingToken(), "borrowed worker lost ownership"));
+			return "late";
+		});
+		Tool second = tool("second", ignored -> {
+			secondCalls.incrementAndGet();
+			return "unexpected";
+		});
+		AgentToolNode node = builder().toolRegistry(new ToolRegistry(List.of(first, second)))
+			.parallelToolExecution(parallel).maxParallelTools(1).build();
+		ExecutorService executor = remember(Executors.newSingleThreadExecutor());
+		try {
+			assertThrows(LeaseLostException.class, () -> ExecutionLeaseScope.withBorrowedLease(saver,
+					runConfig, owned, scope -> {
+						scopeRef.set(scope);
+						RunnableConfig guarded = RunnableConfig.builder(runConfig).executionGuard(scope.guard())
+							.addParallelNodeExecutor(RunnableConfig.AGENT_TOOL_NAME, executor).build();
+						return Mono.fromCallable(() -> node.apply(state(toolCall("one", "first"),
+								toolCall("two", "second")), guarded)).flux();
+					}).blockLast(Duration.ofSeconds(5)));
+			assertEquals(1, firstCalls.get());
+			assertEquals(0, secondCalls.get());
+			assertEquals(owned.ownerId(), saver.renewLease(runConfig, owned).ownerId());
+		}
+		finally {
+			assertTrue(saver.releaseLease(runConfig, owned));
+		}
 	}
 
 	@Test
