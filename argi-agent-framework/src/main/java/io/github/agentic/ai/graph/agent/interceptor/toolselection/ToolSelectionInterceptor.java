@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.graph.agent.interceptor.toolselection;
 
+import io.github.agentic.ai.graph.agent.action.ActionDecision;
+import io.github.agentic.ai.graph.agent.action.ActionReasonCodes;
+import io.github.agentic.ai.graph.agent.action.ActionType;
 import io.github.agentic.ai.graph.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ModelRequest;
@@ -25,7 +28,9 @@ import io.github.agentic.ai.api.chat.ChatRequest;
 
 import io.github.agentic.ai.api.chat.ChatRole;
 
+import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -47,6 +52,11 @@ import org.slf4j.LoggerFactory;
  *
  * Example: ToolSelectionInterceptor interceptor = ToolSelectionInterceptor.builder()
  * .chatClient(selectionClient) .maxTools(3) .build();
+ *
+ * <p>By default a failed or malformed selection falls back to exposing every available
+ * tool. Strict runs can opt in to a bounded failure behavior with
+ * {@link Builder#failurePolicy(ToolSelectionFailurePolicy)}: either restrict the
+ * fallback to the always-include tools or abort the model call.</p>
  */
 public class ToolSelectionInterceptor extends ModelInterceptor {
 
@@ -64,12 +74,15 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 
 	private final ObjectMapper objectMapper;
 
+	private final ToolSelectionFailurePolicy failurePolicy;
+
 	private ToolSelectionInterceptor(Builder builder) {
 		this.chatClient = builder.chatClient;
 		this.systemPrompt = builder.systemPrompt;
 		this.maxTools = builder.maxTools;
 		this.alwaysInclude = builder.alwaysInclude != null ? new HashSet<>(builder.alwaysInclude) : new HashSet<>();
 		this.objectMapper = new ObjectMapper();
+		this.failurePolicy = builder.failurePolicy;
 	}
 
 	public static Builder builder() {
@@ -94,20 +107,25 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 		}
 
 		// Perform tool selection
-		Set<String> selectedToolNames = selectTools(availableTools, lastUserQuery, request.getToolDescriptions());
+		SelectionOutcome outcome = selectTools(availableTools, lastUserQuery, request.getToolDescriptions());
 
-		log.info("Selected {} tools from {} available: {}", selectedToolNames.size(), availableTools.size(),
-				selectedToolNames);
+		log.info("Selected {} tools from {} available: {}", outcome.selectedTools().size(), availableTools.size(),
+				outcome.selectedTools());
 
 		// Filter tools based on selection
 		List<String> filteredTools = availableTools.stream()
-			.filter(selectedToolNames::contains)
+			.filter(outcome.selectedTools()::contains)
 			.collect(Collectors.toList());
 
-		// Create new request with filtered tools
-		ModelRequest filteredRequest = ModelRequest.builder(request).tools(filteredTools).build();
+		// Create new request with filtered tools, publishing the recorded decision when one exists
+		ModelRequest.Builder filteredRequest = ModelRequest.builder(request).tools(filteredTools);
+		if (outcome.decision() != null) {
+			Map<String, Object> context = new HashMap<>(request.getContext());
+			context.put(ActionDecision.CONTEXT_KEY, outcome.decision());
+			filteredRequest.context(context);
+		}
 
-		return handler.call(filteredRequest);
+		return handler.call(filteredRequest.build());
 	}
 
 	private String findLastUserMessage(List<ChatMessage> messages) {
@@ -120,55 +138,104 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 		return null;
 	}
 
-	private Set<String> selectTools(List<String> toolNames, String userQuery, Map<String, String> toolDescriptions) {
+	private SelectionOutcome selectTools(List<String> toolNames, String userQuery, Map<String, String> toolDescriptions) {
+		// Build tool list for prompt with descriptions
+		StringBuilder toolList = new StringBuilder();
+		for (String toolName : toolNames) {
+			toolList.append("- ").append(toolName);
+			if (toolDescriptions != null) {
+				String description = toolDescriptions.get(toolName);
+				if (description != null && !description.isEmpty()) {
+					toolList.append(": ").append(description);
+				}
+			}
+			toolList.append("\n");
+		}
+
+		String maxToolsInstruction = maxTools != null ? "\nIMPORTANT: List the tool names in order of relevance. "
+				+ "Select at most " + maxTools + " tools." : "";
+
+		// Create selection prompt
+		List<ChatMessage> selectionMessages = List
+			.of(ChatMessage.system(systemPrompt + maxToolsInstruction), ChatMessage.user("Available tools:\n"
+					+ toolList + "\nUser query: " + userQuery
+					+ "\n\nRespond with a JSON object containing a 'tools' array with the selected tool names: {\"tools\": [\"tool1\", \"tool2\"]}"));
+
+		String responseText;
 		try {
-			// Build tool list for prompt with descriptions
-			StringBuilder toolList = new StringBuilder();
-			for (String toolName : toolNames) {
-				toolList.append("- ").append(toolName);
-				if (toolDescriptions != null) {
-					String description = toolDescriptions.get(toolName);
-					if (description != null && !description.isEmpty()) {
-						toolList.append(": ").append(description);
-					}
-				}
-				toolList.append("\n");
-			}
-
-			String maxToolsInstruction = maxTools != null ? "\nIMPORTANT: List the tool names in order of relevance. "
-					+ "Select at most " + maxTools + " tools." : "";
-
-			// Create selection prompt
-			List<ChatMessage> selectionMessages = List
-				.of(ChatMessage.system(systemPrompt + maxToolsInstruction), ChatMessage.user("Available tools:\n"
-						+ toolList + "\nUser query: " + userQuery
-						+ "\n\nRespond with a JSON object containing a 'tools' array with the selected tool names: {\"tools\": [\"tool1\", \"tool2\"]}"));
-
-			String responseText = chatClient.callBlocking(ChatRequest.of(selectionMessages)).text();
-
-			// Parse JSON response
-			Set<String> selected = new LinkedHashSet<>();
-			for (String toolName : toolNames) {
-				if (alwaysInclude.contains(toolName)) {
-					selected.add(toolName);
-				}
-			}
-			for (String toolName : parseToolSelection(responseText)) {
-				if (maxTools != null && selected.size() >= maxTools) {
-					break;
-				}
-				if (toolNames.contains(toolName)) {
-					selected.add(toolName);
-				}
-			}
-
-			return selected;
-
+			responseText = chatClient.callBlocking(ChatRequest.of(selectionMessages)).text();
 		}
 		catch (Exception e) {
-			log.warn("Tool selection failed, using all tools: {}", e.getMessage());
-			return new HashSet<>(toolNames);
+			return handleSelectionFailure(ActionReasonCodes.TOOL_SELECTION_MODEL_FAILED, toolNames, e);
 		}
+
+		Set<String> parsedSelection;
+		try {
+			parsedSelection = parseToolSelection(responseText);
+		}
+		catch (IOException | IllegalArgumentException e) {
+			return handleSelectionFailure(ActionReasonCodes.TOOL_SELECTION_MALFORMED, toolNames, e);
+		}
+
+		Set<String> selected = new LinkedHashSet<>();
+		for (String toolName : toolNames) {
+			if (alwaysInclude.contains(toolName)) {
+				selected.add(toolName);
+			}
+		}
+		for (String toolName : parsedSelection) {
+			if (maxTools != null && selected.size() >= maxTools) {
+				break;
+			}
+			if (toolNames.contains(toolName)) {
+				selected.add(toolName);
+			}
+		}
+
+		if (selected.isEmpty()) {
+			log.info("Tool selection resolved to an empty tool set, proceeding without tools");
+			ActionDecision decision = ActionDecision.of(ActionType.FINAL_RESPONSE,
+					ActionReasonCodes.TOOL_SELECTION_EMPTY, "Tool selection resolved to an empty tool set");
+			return new SelectionOutcome(selected, decision);
+		}
+		return new SelectionOutcome(selected, null);
+	}
+
+	/**
+	 * Applies the configured {@link ToolSelectionFailurePolicy} to a failed selection,
+	 * distinguishing the failure reason for logging and recorded decisions.
+	 */
+	private SelectionOutcome handleSelectionFailure(String reasonCode, List<String> toolNames, Exception cause) {
+		final String causeDescription = cause.getMessage() != null ? cause.getMessage()
+				: cause.getClass().getSimpleName();
+		return switch (failurePolicy) {
+			case FAIL_OPEN_ALL_TOOLS -> {
+				log.warn("Tool selection failed ({}), using all tools: {}", reasonCode, causeDescription);
+				yield new SelectionOutcome(new HashSet<>(toolNames), null);
+			}
+			case FAIL_CLOSED_ALWAYS_INCLUDE -> {
+				Set<String> boundedTools = new LinkedHashSet<>();
+				for (String toolName : toolNames) {
+					if (alwaysInclude.contains(toolName)) {
+						boundedTools.add(toolName);
+					}
+				}
+				ActionType actionType = boundedTools.isEmpty() ? ActionType.FINAL_RESPONSE : ActionType.TOOL_CALL;
+				ActionDecision decision = ActionDecision.of(actionType, reasonCode,
+						"Tool selection failed; restricted to always-include tools " + boundedTools);
+				log.warn("Tool selection failed ({}), restricted to always-include tools {}: {}", reasonCode,
+						boundedTools, causeDescription);
+				yield new SelectionOutcome(boundedTools, decision);
+			}
+			case FAIL_CLOSED_THROW -> throw new ToolSelectionFailedException(
+					ActionDecision.of(ActionType.STOP, reasonCode, causeDescription), cause);
+		};
+	}
+
+	/**
+	 * The selected tool names plus the decision recorded for this selection, if any.
+	 */
+	private record SelectionOutcome(Set<String> selectedTools, ActionDecision decision) {
 	}
 
 	private Set<String> parseToolSelection(String responseText) throws java.io.IOException {
@@ -204,6 +271,8 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 
 		private Set<String> alwaysInclude;
 
+		private ToolSelectionFailurePolicy failurePolicy = ToolSelectionFailurePolicy.FAIL_OPEN_ALL_TOOLS;
+
 		/** Set the provider-neutral chat client used to select tools. */
 		public Builder chatClient(ChatClient chatClient) {
 			this.chatClient = chatClient;
@@ -237,6 +306,19 @@ public class ToolSelectionInterceptor extends ModelInterceptor {
 
 		public Builder alwaysInclude(String... toolNames) {
 			this.alwaysInclude = new HashSet<>(Arrays.asList(toolNames));
+			return this;
+		}
+
+		/**
+		 * Sets what happens when tool selection fails or returns a malformed response.
+		 * Defaults to the legacy fail-open behavior that exposes every available tool.
+		 * @param failurePolicy the failure policy to apply, {@code null} resets to the
+		 * default
+		 * @return this builder
+		 */
+		public Builder failurePolicy(ToolSelectionFailurePolicy failurePolicy) {
+			this.failurePolicy = failurePolicy != null ? failurePolicy
+					: ToolSelectionFailurePolicy.FAIL_OPEN_ALL_TOOLS;
 			return this;
 		}
 
