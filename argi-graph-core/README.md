@@ -197,6 +197,105 @@ the actual storage service. The in-memory suite is not evidence of those propert
   -Dtest=MemoryRunStoreTest,RunDataContractTest test
 ```
 
+## Version-Pinned Run Definitions and Recovery Capability
+
+`io.github.agentic.ai.graph.execution.definition` adds the second half of the
+opt-in recovery story: recovery must load the graph, tool catalog/schema, codec and
+application definition versions the run was admitted with, and it must never
+silently fall back to the currently registered latest version. `RunSpec` already
+carries `graphId`/`graphVersion`; this package adds the resolver, the registration
+and the worker capability check around it.
+
+### Opt-in boundary
+
+Nothing here is required by the existing run, task or checkpoint APIs:
+
+- `RunSpec`, `TaskSpec`, `RunStore`, the checkpoint savers and every `argi.*`
+  setting keep their current shape and defaults. `RunSpec` still has schema version
+  1 and the same JSON codec; no existing caller needs a registry.
+- A `RunDefinitionRecord` is recorded only when an application opts in, and only
+  `RunDefinitionAdmission.resolve` reads it. `RunStore.submit` never consults it.
+- Definitions are data identifiers. `DefinitionResolver` returns framework-neutral
+  objects, so `argi-graph-core` gains no model SDK or Extensions dependency, and the
+  neutral-API consumer gate compiles the contract without either.
+
+### Types
+
+| Type | Role |
+| --- | --- |
+| `DefinitionKind` | The four pinned domains: `graph`, `tool_catalog`, `codec`, `application`. |
+| `DefinitionReference` | `(kind, id, version)`, e.g. `graph[checkout@1]`. |
+| `RunDefinitionRecord` | The four references committed with a run. `forRun` derives the graph reference from the run spec itself, so it cannot drift. |
+| `DefinitionResolver` / `DefinitionRegistry` | Application-owned resolution. The registry retains every version an application wants to keep recoverable and rejects duplicate registration, so a retained version can never be overwritten. |
+| `WorkerCapabilities` | What a worker build implements: the highest envelope version it reads, the definition kinds it supports and the data codecs it can execute. |
+| `RunDefinitionAdmission` | The single admission point: resolve the record, or reject it before anything executes. |
+
+### Fail-before-tool semantics
+
+`RunDefinitionAdmission.resolve` verifies the envelope version, the worker's kind
+support, every recorded version and finally the data codec, and it returns a
+complete `ResolvedRunDefinitions` only when all of them succeed. A worker therefore
+cannot dispatch a tool with a partially resolved or newer definition: the failure
+happens before the definitions are handed over.
+
+| Failure | Structured error | Code |
+| --- | --- | --- |
+| Recorded version not retained | `DefinitionResolutionException` | `NOT_REGISTERED` |
+| Worker lacks the kind | `DefinitionResolutionException` | `KIND_UNSUPPORTED` |
+| Registered object is the wrong type | `DefinitionResolutionException` | `TYPE_MISMATCH` |
+| Record pins a different graph than the run | `DefinitionResolutionException` | `RECORD_MISMATCH` |
+| Envelope version unreadable | `CodecIncompatibilityException` | `ENVELOPE_VERSION_UNSUPPORTED` |
+| Recorded data codec unsupported | `CodecIncompatibilityException` | `CODEC_VERSION_UNSUPPORTED` |
+| Component cannot be rebuilt from data | `RecoveryCapabilityException` | `COMPONENT_NOT_RECOVERABLE` |
+
+Branch on `code()` and on `reference()`, `recorded()` or `supported()`; the message
+is for humans only.
+
+### Definition retention and rollback window
+
+A definition version may be unregistered only when no non-terminal run still pins
+it. Treat the two windows as operational constraints:
+
+- **Retention window**: keep every version referenced by a non-terminal run, and
+  for a terminal run keep it for at least the period in which its journal, outbox
+  and checkpoint may still be replayed. A practical default is to retain the
+  current version plus every version still referenced by a non-terminal run, and to
+  retain the previous version for one full release cycle after the last run pinned
+  to it reaches a terminal state.
+- **Rollback window**: rolling an application back requires the older definition
+  version to still be registered, because recovery resolves the recorded version
+  rather than the rebuilt one. Deploy the new definition version additively, keep
+  the previous version registered for the length of the rollback window, and only
+  then drop it. Removing a version early turns future recovery of those runs into a
+  `NOT_REGISTERED` failure instead of a silent upgrade.
+
+`DefinitionRegistry.references()` lists the retained set for audit and for a
+retention check in application startup.
+
+### Durable mode requires recoverable components
+
+`RunDefinitionAdmission.requireDurableMode` composes the existing fail-closed store
+gate (`RunStoreCapabilities.requireDurableMode`) with an explicit recovery
+declaration for every `RuntimeComponentRole`: `CUSTOM_NODE`, `CHAT_MEMORY`,
+`STORE` and `BACKGROUND_TOOL`. A component that declares `INSTANCE_BOUND` — an
+in-JVM cache, a callback, a `Future`, a `Supplier`-backed task repository — rejects
+durable mode. So does a role that was never declared: an undeclared role means the
+capability was not established, and a role the application does not use is declared
+`NOT_APPLICABLE` on purpose.
+
+### Reference validation
+
+```shell
+./mvnw -B -pl :argi-graph-core -am \
+  -Dtest='io.github.agentic.ai.graph.execution.definition.*Test' test
+```
+
+`JvmRestartRecoveryTest` starts a second JVM that receives only the committed
+record file and rebuilds the run there, so restart recovery is verified as data,
+not as in-memory state. `RunDefinitionOptInBoundaryTest` asserts that the existing
+contracts carry no definition type and that no recovery entry point accepts an
+instance handle.
+
 ## Interruption Support
 
 ARGI Graph supports interrupting workflow execution at specific points, enabling human-in-the-loop scenarios.
