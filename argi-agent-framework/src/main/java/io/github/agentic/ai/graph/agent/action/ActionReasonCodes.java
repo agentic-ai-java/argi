@@ -19,9 +19,8 @@ package io.github.agentic.ai.graph.agent.action;
 /**
  * Short, stable reason codes carried by {@link ActionDecision}.
  *
- * <p>Reason codes are operational labels, never private model reasoning. Additional
- * codes for routing and bounded-exit policies arrive with later slices of the action
- * decision work.</p>
+ * <p>Reason codes are operational labels, never private model reasoning. Codes cover tool
+ * selection outcomes and the bounded-exit policies of the task completion work.</p>
  */
 public final class ActionReasonCodes {
 
@@ -40,6 +39,30 @@ public final class ActionReasonCodes {
 	 * The tool selection model call itself failed.
 	 */
 	public static final String TOOL_SELECTION_MODEL_FAILED = "TOOL_SELECTION_MODEL_FAILED";
+
+	/**
+	 * Required tasks are still unfinished and the bounded re-ask budget is exhausted, so
+	 * the run terminates with an explicit state instead of a plain success.
+	 */
+	public static final String UNFINISHED_REQUIRED_TASKS = "UNFINISHED_REQUIRED_TASKS";
+
+	/**
+	 * The bounded re-ask budget is exhausted and every no-tool answer in the sequence was
+	 * identical: the run is not making progress.
+	 */
+	public static final String NO_PROGRESS = "NO_PROGRESS";
+
+	/**
+	 * The same decision fingerprint (identical tool calls or identical final answer)
+	 * repeated for too many consecutive model turns.
+	 */
+	public static final String REPEATED_DECISION = "REPEATED_DECISION";
+
+	/**
+	 * More tool calls to unresolvable tool names occurred in this run than the configured
+	 * bound allows.
+	 */
+	public static final String UNKNOWN_TOOL = "UNKNOWN_TOOL";
 
 	private ActionReasonCodes() {
 	}
