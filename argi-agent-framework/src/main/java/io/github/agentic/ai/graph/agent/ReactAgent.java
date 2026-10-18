@@ -19,6 +19,7 @@ import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.ContextAuthorityKeys;
 import io.github.agentic.ai.api.chat.MessageProvenance;
+import io.github.agentic.ai.api.chat.Usage;
 
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.CompiledGraph;
@@ -50,6 +51,7 @@ import io.github.agentic.ai.graph.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.StreamingModelInterceptor;
 import io.github.agentic.ai.graph.agent.interceptor.ToolInterceptor;
 import io.github.agentic.ai.graph.agent.node.AgentLlmNode;
+import io.github.agentic.ai.graph.agent.result.StructuredOutputFinalizer;
 import io.github.agentic.ai.graph.agent.node.AgentToolNode;
 import io.github.agentic.ai.graph.checkpoint.BaseCheckpointSaver;
 import io.github.agentic.ai.graph.checkpoint.Checkpoint;
@@ -106,6 +108,10 @@ import static java.lang.String.format;
 public class ReactAgent extends BaseAgent {
 
 	Logger logger = LoggerFactory.getLogger(ReactAgent.class);
+
+	private static final String MODEL_ERROR_MESSAGE_PREFIX = "Exception: ";
+
+	private final StructuredOutputFinalizer structuredOutputFinalizer = new StructuredOutputFinalizer();
 
 	private final ConcurrentMap<String, Map<String, Object>> threadIdStateMap;
 
@@ -240,6 +246,140 @@ public class ReactAgent extends BaseAgent {
 	 */
 	public ChatMessage call(Map<String, Object> inputs, RunnableConfig config) throws GraphRunnerException {
 		return doMessageInvoke(inputs, config);
+	}
+
+	/**
+	 * Calls the agent and returns a structured {@link AgentResult} that parses and
+	 * validates the configured output schema instead of returning the raw assistant
+	 * message. The run contract is identical to {@link #call(String)}; only the delivery
+	 * boundary differs. Requires no new switch: a configured output schema signals the
+	 * validation intent, this entry signals the delivery intent. Terminal paths (normal
+	 * final message, returnDirect synthesis, hook {@code JumpTo.end}) all finalize
+	 * through the same boundary; an unfinished run is never reported as completed.
+	 * @param message the user input message
+	 * @return the structured delivery result; never {@code null}
+	 */
+	public AgentResult callResult(String message) {
+		return doResultInvoke(message, null);
+	}
+
+	/**
+	 * Calls the agent with a runtime configuration and returns a structured
+	 * {@link AgentResult}, mirroring {@link #call(String, RunnableConfig)}.
+	 * @param message the user input message
+	 * @param config runtime configuration controlling execution behavior
+	 * @return the structured delivery result; never {@code null}
+	 */
+	public AgentResult callResult(String message, RunnableConfig config) {
+		return doResultInvoke(message, config);
+	}
+
+	/**
+	 * Calls the agent with a {@link ChatMessage} input and returns a structured
+	 * {@link AgentResult}, mirroring {@link #call(ChatMessage)}.
+	 * @param message the input message
+	 * @return the structured delivery result; never {@code null}
+	 */
+	public AgentResult callResult(ChatMessage message) {
+		return doResultInvoke(message, null);
+	}
+
+	/**
+	 * Calls the agent with a {@link ChatMessage} input and runtime configuration and
+	 * returns a structured {@link AgentResult}, mirroring
+	 * {@link #call(ChatMessage, RunnableConfig)}.
+	 * @param message the input message
+	 * @param config runtime configuration controlling execution behavior
+	 * @return the structured delivery result; never {@code null}
+	 */
+	public AgentResult callResult(ChatMessage message, RunnableConfig config) {
+		return doResultInvoke(message, config);
+	}
+
+	/**
+	 * Calls the agent with a message list input and returns a structured
+	 * {@link AgentResult}, mirroring {@link #call(List)}.
+	 * @param messages the input messages
+	 * @return the structured delivery result; never {@code null}
+	 */
+	public AgentResult callResult(List<ChatMessage> messages) {
+		return doResultInvoke(messages, null);
+	}
+
+	/**
+	 * Calls the agent with a message list input and runtime configuration and returns a
+	 * structured {@link AgentResult}, mirroring {@link #call(List, RunnableConfig)}.
+	 * @param messages the input messages
+	 * @param config runtime configuration controlling execution behavior
+	 * @return the structured delivery result; never {@code null}
+	 */
+	public AgentResult callResult(List<ChatMessage> messages, RunnableConfig config) {
+		return doResultInvoke(messages, config);
+	}
+
+	/**
+	 * Calls the agent with an inputs map and returns a structured {@link AgentResult},
+	 * mirroring {@link #call(Map)}.
+	 * @param inputs the input map (reserved: messages, input; other keys as state)
+	 * @return the structured delivery result; never {@code null}
+	 */
+	public AgentResult callResult(Map<String, Object> inputs) {
+		return doResultInvoke(inputs, null);
+	}
+
+	/**
+	 * Calls the agent with an inputs map and runtime configuration and returns a
+	 * structured {@link AgentResult}, mirroring {@link #call(Map, RunnableConfig)}.
+	 * @param inputs the input map (reserved: messages, input; other keys as state)
+	 * @param config runtime configuration controlling execution behavior
+	 * @return the structured delivery result; never {@code null}
+	 */
+	public AgentResult callResult(Map<String, Object> inputs, RunnableConfig config) {
+		return doResultInvoke(inputs, config);
+	}
+
+	private AgentResult doResultInvoke(Object message, RunnableConfig config) {
+		try {
+			return finalizeResult(doInvokeAndGetOutput(buildMessageInput(message), config));
+		}
+		catch (RuntimeException ex) {
+			return AgentResult.error(null, Usage.unknown(),
+					List.of(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_EXECUTION_FAILED, "",
+							ex.getMessage())));
+		}
+	}
+
+	private AgentResult doResultInvoke(Map<String, Object> inputs, RunnableConfig config) {
+		try {
+			return finalizeResult(doInvokeAndGetOutput(normalizeMessageInput(inputs), config));
+		}
+		catch (RuntimeException ex) {
+			return AgentResult.error(null, Usage.unknown(),
+					List.of(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_EXECUTION_FAILED, "",
+							ex.getMessage())));
+		}
+	}
+
+	private AgentResult finalizeResult(Optional<NodeOutput> output) {
+		// The runner strips the reserved usage key from the state and attaches it to the
+		// NodeOutput instead, so the usage comes from the final output record.
+		Usage usage = output.map(NodeOutput::tokenUsage).orElseGet(Usage::unknown);
+		ChatMessage terminal;
+		try {
+			terminal = extractAssistantMessage(output.map(NodeOutput::state));
+		}
+		catch (AgentException | IllegalStateException unfinished) {
+			// The run ended without a terminal message (for example after an
+			// interruption): report it as unfinished, never as completed.
+			return AgentResult.interrupted(usage);
+		}
+		if (terminal.text() != null && terminal.text().startsWith(MODEL_ERROR_MESSAGE_PREFIX)) {
+			// throwOnModelError=false surfaces model failures as assistant text.
+			return AgentResult.error(terminal, usage,
+					List.of(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_MODEL_FAILED, "",
+							terminal.text())));
+		}
+		return structuredOutputFinalizer.finalizeOutput(terminal, outputSchema, usage);
 	}
 
 	public void interrupt(RunnableConfig config) {
