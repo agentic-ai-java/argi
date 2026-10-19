@@ -20,11 +20,13 @@ import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.GenerationOptions;
 import io.github.agentic.ai.api.tool.ToolRegistry;
+import io.github.agentic.ai.graph.execution.TrustedExecutionContext;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Request object for model calls. Contains all information needed to make a model
@@ -56,10 +58,22 @@ public class ModelRequest {
 	// tool descriptions for tool selection, mapping tool name to description.
 	private final Map<String, String> toolDescriptions;
 
+	// Typed runtime trust boundary; never read from or written to the loosely-typed
+	// context map.
+	private final TrustedExecutionContext trustedExecutionContext;
+
 	public ModelRequest(ChatMessage systemMessage, List<ChatMessage> messages, GenerationOptions options,
 			ChatClient chatClient, ToolRegistry toolRegistry, List<String> tools, boolean toolSelectionSpecified,
 			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
 			Map<String, Object> attributes) {
+		this(systemMessage, messages, options, chatClient, toolRegistry, tools, toolSelectionSpecified,
+				dynamicToolRegistry, toolDescriptions, context, attributes, null);
+	}
+
+	public ModelRequest(ChatMessage systemMessage, List<ChatMessage> messages, GenerationOptions options,
+			ChatClient chatClient, ToolRegistry toolRegistry, List<String> tools, boolean toolSelectionSpecified,
+			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
+			Map<String, Object> attributes, TrustedExecutionContext trustedExecutionContext) {
 		if (systemMessage != null && systemMessage.role() != ChatRole.SYSTEM) {
 			throw new IllegalArgumentException("systemMessage must have the SYSTEM role");
 		}
@@ -75,6 +89,7 @@ public class ModelRequest {
 		this.toolDescriptions = java.util.Collections.unmodifiableMap(new HashMap<>(toolDescriptions));
 		this.context = new HashMap<>(context);
 		this.attributes = Map.copyOf(attributes);
+		this.trustedExecutionContext = trustedExecutionContext;
 	}
 
 	public static Builder builder() {
@@ -91,7 +106,8 @@ public class ModelRequest {
 			.dynamicToolRegistry(request.dynamicToolRegistry)
 			.toolDescriptions(request.toolDescriptions)
 			.context(request.context)
-			.attributes(request.attributes);
+			.attributes(request.attributes)
+			.trustedExecutionContext(request.trustedExecutionContext);
 		copy.toolSelectionSpecified = request.toolSelectionSpecified;
 		return copy;
 	}
@@ -142,6 +158,15 @@ public class ModelRequest {
 		return dynamicToolRegistry;
 	}
 
+	/**
+	 * Trusted execution context of the run that issued this model call, when the
+	 * application supplied one through {@code RunnableConfig}. It cannot be set from
+	 * graph state or runtime metadata maps.
+	 */
+	public Optional<TrustedExecutionContext> getTrustedExecutionContext() {
+		return Optional.ofNullable(trustedExecutionContext);
+	}
+
 	public Map<String, String> getToolDescriptions() {
 		return toolDescriptions;
 	}
@@ -181,6 +206,8 @@ public class ModelRequest {
 		private Map<String, Object> context = new HashMap<>();
 
 		private Map<String, Object> attributes = Map.of();
+
+		private TrustedExecutionContext trustedExecutionContext;
 
 		public Builder systemMessage(ChatMessage systemMessage) {
 			this.systemMessage = systemMessage;
@@ -244,9 +271,16 @@ public class ModelRequest {
 			return this;
 		}
 
+		/** Sets the trusted execution context propagated from the run configuration. */
+		public Builder trustedExecutionContext(TrustedExecutionContext trustedExecutionContext) {
+			this.trustedExecutionContext = trustedExecutionContext;
+			return this;
+		}
+
 		public ModelRequest build() {
 			return new ModelRequest(systemMessage, messages, options, chatClient, toolRegistry, tools,
-					toolSelectionSpecified, dynamicToolRegistry, toolDescriptions, context, attributes);
+					toolSelectionSpecified, dynamicToolRegistry, toolDescriptions, context, attributes,
+					trustedExecutionContext);
 		}
 
 	}

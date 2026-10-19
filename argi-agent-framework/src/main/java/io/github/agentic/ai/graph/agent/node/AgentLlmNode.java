@@ -182,7 +182,8 @@ public class AgentLlmNode implements NodeActionWithConfig {
 			.messages(messages)
 			.options(this.generationOptions)
 			.toolRegistry(configuredRegistry())
-			.context(contextMap);
+			.context(contextMap)
+			.trustedExecutionContext(config.trustedExecutionContext().orElse(null));
 
 		// Extract tool names and descriptions from toolCallbacks and pass them to
 		// ModelRequest
