@@ -111,7 +111,7 @@ public class ReactAgent extends BaseAgent {
 
 	private static final String MODEL_ERROR_MESSAGE_PREFIX = "Exception: ";
 
-	private final StructuredOutputFinalizer structuredOutputFinalizer = new StructuredOutputFinalizer();
+	private volatile StructuredOutputFinalizer structuredOutputFinalizer;
 
 	private final ConcurrentMap<String, Map<String, Object>> threadIdStateMap;
 
@@ -379,7 +379,23 @@ public class ReactAgent extends BaseAgent {
 					List.of(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_MODEL_FAILED, "",
 							terminal.text())));
 		}
-		return structuredOutputFinalizer.finalizeOutput(terminal, outputSchema, usage);
+		return finalizer().finalizeOutput(terminal, outputSchema, usage);
+	}
+
+	/**
+	 * Lazily creates the delivery finalizer. The finalizer's class initialization loads
+	 * the JSON Schema validator classes, which are not guaranteed to be on every
+	 * consumer's classpath (the studio module, for one, resolves an older
+	 * json-schema-validator for its MCP client); agents that never finalize a
+	 * schema-constrained output must not trigger that load.
+	 */
+	private StructuredOutputFinalizer finalizer() {
+		StructuredOutputFinalizer finalizer = this.structuredOutputFinalizer;
+		if (finalizer == null) {
+			finalizer = new StructuredOutputFinalizer();
+			this.structuredOutputFinalizer = finalizer;
+		}
+		return finalizer;
 	}
 
 	public void interrupt(RunnableConfig config) {
