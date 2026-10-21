@@ -21,6 +21,16 @@ import io.github.agentic.ai.graph.agent.AgentResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.api.chat.ChatClientCapabilities;
+import io.github.agentic.ai.api.chat.ChatRequest;
+import io.github.agentic.ai.api.chat.ChatResponse;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -119,6 +129,83 @@ class StructuredOutputFinalizerTest {
 
 		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
 		assertThat(result.issues().get(0).errorCode()).isEqualTo(AgentResult.ERROR_CODE_INVALID_JSON);
+	}
+
+	@Test
+	@DisplayName("one bounded repair attempt turns an invalid output into a completed delivery")
+	void repairProducesValidOutput() {
+		RepairStub client = new RepairStub("{\"status\":\"ok\"}", null);
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, Usage.unknown());
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(result.data()).isNotNull();
+		assertThat(result.message().text()).isEqualTo("{\"status\":\"ok\"}");
+		assertThat(client.calls.get()).isEqualTo(1);
+	}
+
+	@Test
+	@DisplayName("a repair that still fails is marked and never retried a second time")
+	void repairStillInvalidIsMarkedAndNotRetried() {
+		RepairStub client = new RepairStub("still not json", null);
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, Usage.unknown());
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
+		assertThat(result.issues().get(0).errorCode()).isEqualTo(AgentResult.ERROR_CODE_REPAIRED_STILL_INVALID);
+		assertThat(client.calls.get()).isEqualTo(1);
+	}
+
+	@Test
+	@DisplayName("a failing repair client keeps the original validation failure")
+	void repairClientFailureKeepsOriginalFailure() {
+		RepairStub client = new RepairStub(null, new IllegalStateException("repair backend down"));
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, Usage.unknown());
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
+		assertThat(result.issues()).hasSize(1);
+		assertThat(result.issues().get(0).errorCode()).isEqualTo(AgentResult.ERROR_CODE_INVALID_JSON);
+		assertThat(client.calls.get()).isEqualTo(1);
+	}
+
+	private static final class RepairStub implements ChatClient {
+
+		private final AtomicInteger calls = new AtomicInteger();
+
+		private final String repairedText;
+
+		private final RuntimeException failure;
+
+		RepairStub(String repairedText, RuntimeException failure) {
+			this.repairedText = repairedText;
+			this.failure = failure;
+		}
+
+		@Override
+		public java.util.concurrent.CompletionStage<ChatResponse> call(ChatRequest request) {
+			this.calls.incrementAndGet();
+			if (this.failure != null) {
+				throw this.failure;
+			}
+			return CompletableFuture.completedFuture(new ChatResponse("repair-id", "test-model",
+					java.util.List.of(ChatMessage.assistant(this.repairedText)), java.util.List.of(), null,
+					new Usage(1L, 1L, 2L), java.util.Map.of()));
+		}
+
+		@Override
+		public Flow.Publisher<ChatEvent> stream(ChatRequest request) {
+			throw new UnsupportedOperationException("Streaming is unavailable");
+		}
+
+		@Override
+		public ChatClientCapabilities capabilities() {
+			return ChatClientCapabilities.basic();
+		}
+
 	}
 
 }

@@ -73,8 +73,11 @@ class ReactAgentCallResultTest {
 		AgentResult result = agent.callResult("give me the status");
 
 		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
-		assertThat(result.issues()).hasSize(1);
-		assertThat(result.issues().get(0).errorCode()).isEqualTo(AgentResult.ERROR_CODE_INVALID_JSON);
+		// The stub answers the bounded repair with the same invalid text, so the
+		// REPAIRED_STILL_INVALID marker is prepended to the original issue.
+		assertThat(result.issues()).hasSize(2);
+		assertThat(result.issues().get(0).errorCode()).isEqualTo(AgentResult.ERROR_CODE_REPAIRED_STILL_INVALID);
+		assertThat(result.issues().get(1).errorCode()).isEqualTo(AgentResult.ERROR_CODE_INVALID_JSON);
 	}
 
 	@Test
@@ -85,8 +88,9 @@ class ReactAgentCallResultTest {
 		AgentResult result = agent.callResult("give me the status");
 
 		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
-		assertThat(result.issues()).isNotEmpty();
-		assertThat(result.issues()).allMatch(issue -> AgentResult.ERROR_CODE_SCHEMA_VIOLATION.equals(issue.errorCode()));
+		// Repair re-asks with the same payload: the marker precedes the actual violations.
+		assertThat(result.issues()).anyMatch(issue -> AgentResult.ERROR_CODE_REPAIRED_STILL_INVALID.equals(issue.errorCode()));
+		assertThat(result.issues()).anyMatch(issue -> AgentResult.ERROR_CODE_SCHEMA_VIOLATION.equals(issue.errorCode()));
 	}
 
 	@Test

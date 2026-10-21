@@ -20,6 +20,8 @@ import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.ContextAuthorityKeys;
 import io.github.agentic.ai.api.chat.MessageProvenance;
 import io.github.agentic.ai.api.chat.Usage;
+import io.github.agentic.ai.api.chat.ChatClient;
+import io.github.agentic.ai.api.chat.ChatResponse;
 
 import io.github.agentic.ai.graph.CompileConfig;
 import io.github.agentic.ai.graph.CompiledGraph;
@@ -65,6 +67,8 @@ import io.github.agentic.ai.graph.exception.GraphStateException;
 import io.github.agentic.ai.graph.internal.node.Node;
 import io.github.agentic.ai.graph.internal.node.ResumableSubGraphAction;
 import io.github.agentic.ai.graph.serializer.AgentInstructionMessage;
+import io.github.agentic.ai.graph.streaming.OutputType;
+import io.github.agentic.ai.graph.streaming.StreamingOutput;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
 import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
 import io.github.agentic.ai.graph.state.strategy.AppendStrategy;
@@ -89,6 +93,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
@@ -110,6 +115,10 @@ public class ReactAgent extends BaseAgent {
 	Logger logger = LoggerFactory.getLogger(ReactAgent.class);
 
 	private static final String MODEL_ERROR_MESSAGE_PREFIX = "Exception: ";
+
+	private static final String FINAL_RESPONSE_METADATA_KEY = "argiFinalResponse";
+
+	private final ChatClient chatClient;
 
 	private volatile StructuredOutputFinalizer structuredOutputFinalizer;
 
@@ -151,6 +160,7 @@ public class ReactAgent extends BaseAgent {
 		this.inputType = builder.inputType;
 		this.outputSchema = builder.outputSchema;
 		this.outputType = builder.outputType;
+		this.chatClient = builder.chatClient;
 
 		// Set state serializer from builder, or use default
 		// Default to Jackson serializer for better compatibility and features
@@ -338,6 +348,139 @@ public class ReactAgent extends BaseAgent {
 		return doResultInvoke(inputs, config);
 	}
 
+	/**
+	 * Streams the agent run as provisional {@link AgentResult} chunks followed by the
+	 * final validated delivery. Chunks with a {@code null} status are provisional and
+	 * explicitly unvalidated; the last element of the stream carries the delivery
+	 * outcome of the terminal message (one of the four terminal statuses), finalized
+	 * through the same boundary as {@link #callResult(String)}. A run that ends without
+	 * a terminal response is reported as INTERRUPTED, never as completed.
+	 * @param message the user input message
+	 * @return the provisional chunk stream terminated by the validated result
+	 */
+	public Flux<AgentResult> streamResult(String message) {
+		return doStreamResult(message, null);
+	}
+
+	/**
+	 * Streams the agent run with a runtime configuration, mirroring
+	 * {@link #streamResult(String)}.
+	 * @param message the user input message
+	 * @param config runtime configuration controlling execution behavior
+	 * @return the provisional chunk stream terminated by the validated result
+	 */
+	public Flux<AgentResult> streamResult(String message, RunnableConfig config) {
+		return doStreamResult(message, config);
+	}
+
+	/**
+	 * Streams the agent run with a {@link ChatMessage} input, mirroring
+	 * {@link #streamResult(String)}.
+	 * @param message the input message
+	 * @return the provisional chunk stream terminated by the validated result
+	 */
+	public Flux<AgentResult> streamResult(ChatMessage message) {
+		return doStreamResult(message, null);
+	}
+
+	/**
+	 * Streams the agent run with a {@link ChatMessage} input and runtime configuration,
+	 * mirroring {@link #streamResult(String)}.
+	 * @param message the input message
+	 * @param config runtime configuration controlling execution behavior
+	 * @return the provisional chunk stream terminated by the validated result
+	 */
+	public Flux<AgentResult> streamResult(ChatMessage message, RunnableConfig config) {
+		return doStreamResult(message, config);
+	}
+
+	/**
+	 * Streams the agent run with a message list input, mirroring
+	 * {@link #streamResult(String)}.
+	 * @param messages the input messages
+	 * @return the provisional chunk stream terminated by the validated result
+	 */
+	public Flux<AgentResult> streamResult(List<ChatMessage> messages) {
+		return doStreamResult(messages, null);
+	}
+
+	/**
+	 * Streams the agent run with a message list input and runtime configuration,
+	 * mirroring {@link #streamResult(String)}.
+	 * @param messages the input messages
+	 * @param config runtime configuration controlling execution behavior
+	 * @return the provisional chunk stream terminated by the validated result
+	 */
+	public Flux<AgentResult> streamResult(List<ChatMessage> messages, RunnableConfig config) {
+		return doStreamResult(messages, config);
+	}
+
+	/**
+	 * Streams the agent run with an inputs map, mirroring {@link #streamResult(String)}.
+	 * @param inputs the input map (reserved: messages, input; other keys as state)
+	 * @return the provisional chunk stream terminated by the validated result
+	 */
+	public Flux<AgentResult> streamResult(Map<String, Object> inputs) {
+		return doStreamResult(inputs, null);
+	}
+
+	/**
+	 * Streams the agent run with an inputs map and runtime configuration, mirroring
+	 * {@link #streamResult(String)}.
+	 * @param inputs the input map (reserved: messages, input; other keys as state)
+	 * @param config runtime configuration controlling execution behavior
+	 * @return the provisional chunk stream terminated by the validated result
+	 */
+	public Flux<AgentResult> streamResult(Map<String, Object> inputs, RunnableConfig config) {
+		return doStreamResult(inputs, config);
+	}
+
+	private Flux<AgentResult> doStreamResult(Object message, RunnableConfig config) {
+		return doStream(buildMessageInput(message), config).transform(this::finalizeStream);
+	}
+
+	private Flux<AgentResult> doStreamResult(Map<String, Object> inputs, RunnableConfig config) {
+		return doStream(normalizeMessageInput(inputs), config).transform(this::finalizeStream);
+	}
+
+	/**
+	 * Consumes the node-output stream: text-delta chunks are re-published as provisional
+	 * results (status {@code null}); the final aggregated response (marked by the
+	 * existing {@code argiFinalResponse} protocol convention) is buffered and finalized
+	 * once the stream completes, so unverified chunks are never reported as a delivery.
+	 */
+	private Flux<AgentResult> finalizeStream(Flux<NodeOutput> outputs) {
+		AtomicReference<ChatResponse> finalResponse = new AtomicReference<>();
+		return outputs.concatMap(output -> {
+			if (!(output instanceof StreamingOutput<?> streamed)) {
+				return Flux.empty();
+			}
+			if (streamed.getOriginData() instanceof ChatResponse response
+					&& Boolean.TRUE.equals(response.metadata().get(FINAL_RESPONSE_METADATA_KEY))) {
+				finalResponse.set(response);
+				return Flux.empty();
+			}
+			if (streamed.getOutputType() == OutputType.AGENT_MODEL_STREAMING) {
+				return Flux.fromIterable(streamed.messages())
+					.map(message -> new AgentResult(message, null, Usage.unknown(), null, List.of()));
+			}
+			return Flux.empty();
+		}).concatWith(Flux.defer(() -> {
+			ChatResponse response = finalResponse.get();
+			if (response == null) {
+				return Flux.just(AgentResult.interrupted(Usage.unknown()));
+			}
+			ChatMessage terminal = response.messages().stream()
+				.filter(message -> message.role() == ChatRole.ASSISTANT)
+				.reduce((first, second) -> second)
+				.orElse(null);
+			if (terminal == null) {
+				return Flux.just(AgentResult.interrupted(response.usage()));
+			}
+			return Flux.just(deliver(terminal, response.usage()));
+		}));
+	}
+
 	private AgentResult doResultInvoke(Object message, RunnableConfig config) {
 		try {
 			return finalizeResult(doInvokeAndGetOutput(buildMessageInput(message), config));
@@ -373,6 +516,11 @@ public class ReactAgent extends BaseAgent {
 			// interruption): report it as unfinished, never as completed.
 			return AgentResult.interrupted(usage);
 		}
+		return deliver(terminal, usage);
+	}
+
+	/** Maps a terminal message onto the delivery boundary shared by call and stream paths. */
+	private AgentResult deliver(ChatMessage terminal, Usage usage) {
 		if (terminal.text() != null && terminal.text().startsWith(MODEL_ERROR_MESSAGE_PREFIX)) {
 			// throwOnModelError=false surfaces model failures as assistant text.
 			return AgentResult.error(terminal, usage,
@@ -387,12 +535,15 @@ public class ReactAgent extends BaseAgent {
 	 * the JSON Schema validator classes, which are not guaranteed to be on every
 	 * consumer's classpath (the studio module, for one, resolves an older
 	 * json-schema-validator for its MCP client); agents that never finalize a
-	 * schema-constrained output must not trigger that load.
+	 * schema-constrained output must not trigger that load. When the agent has a chat
+	 * client, the finalizer gains the bounded repair capability.
 	 */
 	private StructuredOutputFinalizer finalizer() {
 		StructuredOutputFinalizer finalizer = this.structuredOutputFinalizer;
 		if (finalizer == null) {
-			finalizer = new StructuredOutputFinalizer();
+			finalizer = this.chatClient != null
+					? new StructuredOutputFinalizer(this.chatClient)
+					: new StructuredOutputFinalizer();
 			this.structuredOutputFinalizer = finalizer;
 		}
 		return finalizer;

@@ -56,6 +56,9 @@ public record AgentResult(ChatMessage message, Status status, Usage usage, Objec
 	/** Error code for a terminal message that only reports a model failure. */
 	public static final String ERROR_CODE_MODEL_FAILED = "MODEL_FAILED";
 
+	/** Error code marking that the single bounded repair attempt still failed validation. */
+	public static final String ERROR_CODE_REPAIRED_STILL_INVALID = "REPAIRED_STILL_INVALID";
+
 	/**
 	 * Delivery status of the run.
 	 */
