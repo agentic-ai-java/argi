@@ -22,6 +22,7 @@ import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -145,6 +146,27 @@ class TrustedExecutionContextTest {
 
 		assertThat(encoded).doesNotContain("tenant-secret", "principal-secret", "run-secret",
 				"trustedExecutionContext");
+	}
+
+	/** The fixture was encoded by the pre-extraction Graph jar, not by the code under test. */
+	@Test
+	void preExtractionReferenceRemainsReadableAndByteStable() throws Exception {
+		String encoded;
+		try (var input = java.util.Objects.requireNonNull(getClass().getResourceAsStream(
+				"/execution/trusted-context-v1-before-runtime-extraction.json"))) {
+			encoded = new String(input.readAllBytes(), StandardCharsets.UTF_8).strip();
+		}
+		TrustedExecutionContextCodec codec = new TrustedExecutionContextCodec();
+		TrustedExecutionContextReference reference = codec.decode(encoded);
+		assertThat(reference.tenant()).isEqualTo(new TenantReference("fixture-iam", "tenant-a"));
+		assertThat(reference.principal()).isEqualTo(new PrincipalReference("fixture-iam", "principal-a"));
+		assertThat(reference.runId()).isEqualTo("run-a");
+		assertThat(reference.correlationId()).isEqualTo("correlation-a");
+		assertThat(reference.deadlineEpochMillis()).isEqualTo(Instant.parse("2030-01-01T00:00:00Z").toEpochMilli());
+		assertThat(reference.budgetLimits()).containsExactlyInAnyOrderEntriesOf(
+			Map.of("model_calls", 10L, "tool_calls", 5L));
+		assertThat(reference.delegationPermissions()).containsExactlyInAnyOrder("agents:delegate", "tools:read");
+		assertThat(codec.encode(reference)).isEqualTo(encoded);
 	}
 
 	private TrustedExecutionContext context(String tenantId, String principalId, String runId) {

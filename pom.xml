@@ -52,6 +52,7 @@
         <module>argi-api/argi-adapter-spring-ai</module>
         <module>argi-api/argi-adapter-langchain4j</module>
         <module>argi-api/argi-adapter-google-adk</module>
+        <module>argi-runtime-api</module>
         <module>argi-graph-core</module>
         <module>argi-agent-framework</module>
         <module>argi-studio</module>
@@ -231,6 +232,11 @@
             <dependency>
                 <groupId>io.github.agentic-ai-java</groupId>
                 <artifactId>argi-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-runtime-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

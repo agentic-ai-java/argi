@@ -24,7 +24,7 @@ import static java.util.Objects.requireNonNull;
 
 /**
  * Immutable authentication facts and execution constraints created by an application
- * authentication boundary. Ordinary graph state, model arguments and RunnableConfig
+ * authentication boundary. Ordinary execution state, model arguments and adapter
  * metadata cannot create or replace this context implicitly.
  */
 public final class TrustedExecutionContext {

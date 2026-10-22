@@ -1,5 +1,14 @@
 # ARGI Graph
 
+## Runtime contract extraction
+
+Identity, immutable execution limits and delegation contracts are now provided by
+[`argi-runtime-api`](../argi-runtime-api/README.md), a JDK-only dependency that can
+be consumed without Graph. Existing fully qualified names and persisted formats
+are retained in this first slice. Graph supplies the dependency transitively.
+The linked ownership map distinguishes this completed extraction from the remaining
+Loop, runtime service and serialization migrations.
+
 ## What's ARGI Graph
 
 ARGI Graph is a **workflow and multi-agent framework** for Java developers to build complex applications composed of multiple AI models or steps.

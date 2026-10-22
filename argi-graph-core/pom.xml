@@ -57,6 +57,10 @@
             <artifactId>argi-api</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.github.agentic-ai-java</groupId>
+            <artifactId>argi-runtime-api</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.antlr</groupId>
             <artifactId>ST4</artifactId>
             <version>4.3.4</version>

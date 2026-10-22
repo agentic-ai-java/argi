@@ -1,0 +1,1 @@
+{"budgetLimits":{"model_calls":10,"tool_calls":5},"correlationId":"correlation-a","deadlineEpochMillis":1893456000000,"delegationPermissions":["agents:delegate","tools:read"],"principal":{"authority":"fixture-iam","id":"principal-a"},"runId":"run-a","schemaVersion":1,"tenant":{"authority":"fixture-iam","id":"tenant-a"}}
