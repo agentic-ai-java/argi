@@ -163,3 +163,117 @@ test("Studio settings are reachable from agent and graph workspaces", () => {
   assert.match(threadSource, /StudioSettingsButton/);
   assert.match(graphSource, /StudioSettingsButton/);
 });
+
+function chunkedStreamResponse(chunks) {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) {
+          controller.enqueue(new TextEncoder().encode(chunk));
+        }
+        controller.close();
+      },
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    },
+  );
+}
+
+const TRICKY_MESSAGE =
+  'quote " backslash \\ path C:\\temp\\new tab\tcr\rlf\n unicode 中文 ✓';
+
+for (const [label, method] of [
+  ["agent", "_processSSEStream"],
+  ["graph", "_processGraphSSEStream"],
+]) {
+  test(`${label} SSE error with special characters round-trips`, async () => {
+    installSessionStorage();
+    const api = loadApiModule();
+    const client = new api.default("http://studio");
+    const data = JSON.stringify({
+      error: true,
+      errorType: "IllegalStateException",
+      errorMessage: TRICKY_MESSAGE,
+    });
+    const response = streamResponse(`event:error\ndata:${data}\n\n`);
+
+    await assert.rejects(
+      () => drain(client[method](response)),
+      (error) => error.message === TRICKY_MESSAGE,
+    );
+  });
+
+  test(`${label} SSE malformed error event fails instead of ending normally`, async () => {
+    installSessionStorage();
+    const api = loadApiModule();
+    const client = new api.default("http://studio");
+    const response = streamResponse(
+      'data:{"node":"a"}\n\nevent:error\ndata:{"error":true,"errorMessage":"bad\tjson\n\n',
+    );
+
+    await assert.rejects(
+      () => drain(client[method](response)),
+      /malformed error event/,
+    );
+  });
+
+  test(`${label} SSE skips malformed data but keeps empty and normal events`, async () => {
+    installSessionStorage();
+    const api = loadApiModule();
+    const client = new api.default("http://studio");
+    const response = streamResponse(
+      'data:{not json}\n\ndata:{}\n\ndata:{"node":"a"}\n\n',
+    );
+
+    const values = await drain(client[method](response));
+    assert.deepEqual(JSON.parse(JSON.stringify(values)), [{}, { node: "a" }]);
+  });
+
+  test(`${label} SSE parses events split across network chunks`, async () => {
+    installSessionStorage();
+    const api = loadApiModule();
+    const client = new api.default("http://studio");
+    const data = JSON.stringify({ error: true, errorMessage: TRICKY_MESSAGE });
+    const payload = `data:{"node":"a"}\r\n\r\nevent:error\r\ndata:${data}\r\n\r\n`;
+    const bytes = new TextEncoder().encode(payload);
+    const chunks = [];
+    // Split into 3-byte slices to also cut through multi-byte UTF-8 characters.
+    for (let i = 0; i < bytes.length; i += 3) {
+      chunks.push(bytes.slice(i, i + 3));
+    }
+    const response = new Response(
+      new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) {
+            controller.enqueue(chunk);
+          }
+          controller.close();
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+
+    const seen = [];
+    await assert.rejects(
+      async () => {
+        for await (const value of client[method](response)) {
+          seen.push(value);
+        }
+      },
+      (error) => error.message === TRICKY_MESSAGE,
+    );
+    assert.deepEqual(JSON.parse(JSON.stringify(seen)), [{ node: "a" }]);
+  });
+
+  test(`${label} SSE yields a final event without trailing newline`, async () => {
+    installSessionStorage();
+    const api = loadApiModule();
+    const client = new api.default("http://studio");
+    const response = chunkedStreamResponse(['data:{"node"', ':"last"}']);
+
+    const values = await drain(client[method](response));
+    assert.deepEqual(JSON.parse(JSON.stringify(values)), [{ node: "last" }]);
+  });
+}

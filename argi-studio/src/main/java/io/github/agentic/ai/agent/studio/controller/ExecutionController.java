@@ -350,26 +350,7 @@ public class ExecutionController {
 			.onErrorResume(error -> {
 				// Handle errors from the agent stream and convert to SSE error event
 				log.error("Error occurred during agent stream execution", error);
-
-				// Create error response
-				String errorMessage = error.getMessage() != null ? error.getMessage() : "Unknown error occurred";
-				String errorType = error.getClass().getSimpleName();
-
-				try {
-					// Create a structured error response
-					String errorJson = String.format("{\"error\":true,\"errorType\":\"%s\",\"errorMessage\":\"%s\"}",
-							errorType.replace("\"", "\\\""), errorMessage.replace("\"", "\\\"").replace("\n", "\\n"));
-
-					// Return the error as an SSE event and complete the stream
-					return Flux.just(ServerSentEvent.<String>builder().event("error").data(errorJson).build());
-				}
-				catch (Exception e) {
-					log.error("Failed to create error SSE event", e);
-					return Flux.just(ServerSentEvent.<String>builder()
-						.event("error")
-						.data("{\"error\":true,\"errorMessage\":\"Internal error occurred\"}")
-						.build());
-				}
+				return Flux.just(StreamErrorEvents.of(mapper, error));
 			});
 	}
 

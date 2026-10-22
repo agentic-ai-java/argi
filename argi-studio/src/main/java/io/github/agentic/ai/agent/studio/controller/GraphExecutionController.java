@@ -179,11 +179,7 @@ public class GraphExecutionController {
 			})
 			.onErrorResume(error -> {
 				log.error("Error occurred during graph stream execution", error);
-				String errorMessage = error.getMessage() != null ? error.getMessage() : "Unknown error occurred";
-				String errorType = error.getClass().getSimpleName();
-				String errorJson = String.format("{\"error\":true,\"errorType\":\"%s\",\"errorMessage\":\"%s\"}",
-						errorType.replace("\"", "\\\""), errorMessage.replace("\"", "\\\"").replace("\n", "\\n"));
-				return Flux.just(ServerSentEvent.<String>builder().event("error").data(errorJson).build());
+				return Flux.just(StreamErrorEvents.of(mapper, error));
 			});
 	}
 

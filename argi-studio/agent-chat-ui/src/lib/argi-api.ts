@@ -205,6 +205,92 @@ function toStreamError(payload: StudioStreamError): Error | null {
   return new Error(message);
 }
 
+/**
+ * Reads a Studio SSE response and yields each parsed data payload. Error payloads,
+ * and `error` events whose data cannot be parsed, are thrown so a failed stream is
+ * never mistaken for a normal end. Malformed non-error data lines are skipped.
+ */
+async function* readStudioSSE<T>(
+  response: Response,
+): AsyncGenerator<T, void, unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Response body is not readable");
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "";
+
+  const parseLine = (rawLine: string): T | null => {
+    const line = (
+      rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine
+    ).trimStart();
+    if (line === "") {
+      // Blank line terminates the current event.
+      eventName = "";
+      return null;
+    }
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+      return null;
+    }
+    if (!line.startsWith("data:")) {
+      return null;
+    }
+    const data = line.slice(5).trim();
+    if (!data) {
+      return null;
+    }
+    let parsed: T & StudioStreamError;
+    try {
+      parsed = JSON.parse(data);
+    } catch (e) {
+      if (eventName === "error") {
+        throw new Error(
+          `Studio stream failed with a malformed error event: ${data}`,
+        );
+      }
+      console.warn("Skipping malformed Studio SSE data line", e);
+      return null;
+    }
+    const streamError = toStreamError(parsed);
+    if (streamError) {
+      throw streamError;
+    }
+    if (eventName === "error") {
+      throw new Error("Studio stream failed");
+    }
+    return parsed;
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        buffer += decoder.decode();
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const parsed = parseLine(line);
+        if (parsed !== null) {
+          yield parsed;
+        }
+      }
+    }
+    if (buffer) {
+      const parsed = parseLine(buffer);
+      if (parsed !== null) {
+        yield parsed;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 class ArgiApiClient {
   private baseUrl: string;
 
@@ -392,44 +478,7 @@ class ArgiApiClient {
   private async *_processGraphSSEStream(
     response: Response,
   ): AsyncGenerator<GraphRunResponse, void, unknown> {
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error("Response body is not readable");
-    }
-    const decoder = new TextDecoder();
-    let buffer = "";
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (line.trim().startsWith("data:")) {
-            const data = line.slice(5).trim();
-            if (data) {
-              try {
-                const parsed = JSON.parse(data) as GraphRunResponse &
-                  StudioStreamError;
-                const streamError = toStreamError(parsed);
-                if (streamError) {
-                  throw streamError;
-                }
-                yield parsed as GraphRunResponse;
-              } catch (e) {
-                if (e instanceof SyntaxError) {
-                  continue;
-                }
-                throw e;
-              }
-            }
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
+    yield* readStudioSSE<GraphRunResponse>(response);
   }
 
   // 获取会话列表
@@ -615,50 +664,7 @@ class ArgiApiClient {
   private async *_processSSEStream(
     response: Response,
   ): AsyncGenerator<AgentRunResponse, void, unknown> {
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error("Response body is not readable");
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.trim().startsWith("data:")) {
-            const data = line.slice(5).trim();
-            if (data) {
-              try {
-                const agentResponse = JSON.parse(data) as AgentRunResponse &
-                  StudioStreamError;
-                const streamError = toStreamError(agentResponse);
-                if (streamError) {
-                  throw streamError;
-                }
-                yield agentResponse;
-              } catch (e) {
-                if (e instanceof SyntaxError) {
-                  continue;
-                }
-                throw e;
-              }
-            }
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
+    yield* readStudioSSE<AgentRunResponse>(response);
   }
 }
 
