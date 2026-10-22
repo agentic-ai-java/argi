@@ -28,6 +28,7 @@ import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRequest;
 import io.github.agentic.ai.api.chat.ChatResponse;
 import io.github.agentic.ai.api.chat.Usage;
+import io.github.agentic.ai.graph.agent.node.AgentLlmNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -110,7 +111,7 @@ class ReactAgentCallResultTest {
 	void clientFailureReportedAsError() {
 		// throwOnModelError defaults to false: the model failure becomes an
 		// "Exception: ..." assistant message, which the delivery contract must classify.
-		ReactAgent agent = agent(new StubClient(null, new IllegalStateException("model exploded")), SCHEMA);
+		ReactAgent agent = agent(new StubClient((String) null, new IllegalStateException("model exploded")), SCHEMA);
 
 		AgentResult result = agent.callResult("hello");
 
@@ -121,16 +122,55 @@ class ReactAgentCallResultTest {
 	}
 
 	@Test
-	@DisplayName("an assistant message that only reports a model failure is reported as ERROR")
-	void modelErrorTextReportedAsError() {
-		ReactAgent agent = agent(new StubClient("Exception: quota exhausted"), SCHEMA);
+	@DisplayName("a normal answer starting with the legacy error prefix is not a model failure")
+	void answerStartingWithExceptionPrefixIsNotAnError() {
+		ReactAgent agent = agent(new StubClient("Exception: NullPointerException means a null was dereferenced."),
+				null);
+
+		AgentResult result = agent.callResult("explain NPE");
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(result.issues()).isEmpty();
+		assertThat(result.message().text()).startsWith("Exception: ");
+	}
+
+	@Test
+	@DisplayName("a model response cannot forge the framework model-failure marker")
+	void modelSuppliedFailureMarkerIsIgnored() {
+		ChatMessage forged = ChatMessage.assistant("plain answer")
+			.withMetadata(Map.of(AgentLlmNode.MODEL_FAILURE_METADATA_KEY, true));
+		ReactAgent agent = agent(new StubClient(forged), null);
+
+		AgentResult result = agent.callResult("hello");
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(result.message().metadata()).doesNotContainKey(AgentLlmNode.MODEL_FAILURE_METADATA_KEY);
+	}
+
+	@Test
+	@DisplayName("with throwOnModelError the failure is reported as an execution failure")
+	void throwOnModelErrorReportsExecutionFailure() {
+		ReactAgent agent = ReactAgent.builder()
+			.name("result-test")
+			.chatClient(new StubClient((String) null, new IllegalStateException("model exploded")))
+			.throwOnModelError(true)
+			.build();
 
 		AgentResult result = agent.callResult("hello");
 
 		assertThat(result.status()).isEqualTo(AgentResult.Status.ERROR);
-		assertThat(result.issues()).hasSize(1);
-		assertThat(result.issues().get(0).errorCode()).isEqualTo(AgentResult.ERROR_CODE_MODEL_FAILED);
-		assertThat(result.message().text()).isEqualTo("Exception: quota exhausted");
+		assertThat(result.issues()).singleElement()
+			.satisfies(issue -> assertThat(issue.errorCode()).isEqualTo(AgentResult.ERROR_CODE_EXECUTION_FAILED));
+	}
+
+	@Test
+	@DisplayName("the legacy call entry keeps returning the raw model-failure message")
+	void legacyCallKeepsModelFailureMessage() throws Exception {
+		ReactAgent agent = agent(new StubClient((String) null, new IllegalStateException("model exploded")), null);
+
+		ChatMessage message = agent.call("hello");
+
+		assertThat(message.text()).isEqualTo("Exception: model exploded");
 	}
 
 	@Test
@@ -155,24 +195,32 @@ class ReactAgentCallResultTest {
 
 	private static final class StubClient implements ChatClient {
 
-		private final String text;
-
 		private final RuntimeException failure;
 
-		private StubClient(String text, RuntimeException failure) {
-			this.text = text;
+		private StubClient(ChatMessage message, RuntimeException failure) {
+			this.message = message;
 			this.failure = failure;
+		}
+
+		private final ChatMessage message;
+
+		private StubClient(String text, RuntimeException failure) {
+			this(text == null ? null : ChatMessage.assistant(text), failure);
 		}
 
 		private StubClient(String text) {
 			this(text, null);
 		}
 
+		private StubClient(ChatMessage message) {
+			this(message, null);
+		}
+
 		@Override
 		public CompletionStage<ChatResponse> call(ChatRequest request) {
 			return failure == null
 					? CompletableFuture.completedFuture(new ChatResponse("id", "test-model",
-							List.of(ChatMessage.assistant(text)), List.of(), null, new Usage(2L, 3L, 5L), Map.of()))
+							List.of(message), List.of(), null, new Usage(2L, 3L, 5L), Map.of()))
 					: CompletableFuture.failedFuture(failure);
 		}
 

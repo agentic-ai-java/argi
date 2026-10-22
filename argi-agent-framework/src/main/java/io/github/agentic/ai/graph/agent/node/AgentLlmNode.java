@@ -64,6 +64,13 @@ public class AgentLlmNode implements NodeActionWithConfig {
 
 	public static final String MODEL_ITERATION_KEY = "_MODEL_ITERATION_";
 
+	/**
+	 * Message metadata key the node sets on the assistant message it substitutes for a
+	 * caught model failure when {@code throwOnModelError} is disabled. The key is removed
+	 * from every model-produced message, so only the framework can set it.
+	 */
+	public static final String MODEL_FAILURE_METADATA_KEY = "argiModelFailure";
+
 	private String agentName;
 
 	private final AgentToolBindingStore toolBindings;
@@ -419,7 +426,7 @@ public class AgentLlmNode implements NodeActionWithConfig {
 
 	private ModelResponse invokeModelChain(ModelCallHandler handler, ModelRequest request) {
 		try {
-			return handler.call(request);
+			return withoutFailureMarker(handler.call(request));
 		}
 		catch (RuntimeException failure) {
 			// Interceptors must see failures before the optional user-facing error
@@ -428,9 +435,45 @@ public class AgentLlmNode implements NodeActionWithConfig {
 					|| Thread.currentThread().isInterrupted()) {
 				throw failure;
 			}
-			return ModelResponse
-				.of(io.github.agentic.ai.api.chat.ChatMessage.assistant("Exception: " + failure.getMessage()));
+			return ModelResponse.of(ChatMessage.assistant("Exception: " + failure.getMessage())
+				.withMetadata(Map.of(MODEL_FAILURE_METADATA_KEY, true)));
 		}
+	}
+
+	private static ModelResponse withoutFailureMarker(ModelResponse response) {
+		if (response == null) {
+			return null;
+		}
+		if (!response.isStreaming()) {
+			return ModelResponse.of(withoutFailureMarker(response.getChatResponse()));
+		}
+		Flux<io.github.agentic.ai.api.chat.ChatEvent> events = reactor.adapter.JdkFlowAdapter
+			.flowPublisherToFlux(response.getStream())
+			.map(event -> new io.github.agentic.ai.api.chat.ChatEvent(event.type(), event.text(), event.toolCall(),
+					event.response() == null ? null : withoutFailureMarker(event.response()), event.usage(),
+					withoutFailureMarker(event.metadata())));
+		return ModelResponse.stream(reactor.adapter.JdkFlowAdapter.publisherToFlowPublisher(events));
+	}
+
+	private static ChatResponse withoutFailureMarker(ChatResponse response) {
+		if (response.messages().stream().noneMatch(message -> message.metadata().containsKey(MODEL_FAILURE_METADATA_KEY))) {
+			return response;
+		}
+		List<ChatMessage> messages = response.messages()
+			.stream()
+			.map(message -> message.withMetadata(withoutFailureMarker(message.metadata())))
+			.toList();
+		return new ChatResponse(response.id(), response.model(), messages, response.toolCalls(),
+				response.finishReason(), response.usage(), response.metadata());
+	}
+
+	private static Map<String, Object> withoutFailureMarker(Map<String, Object> metadata) {
+		if (!metadata.containsKey(MODEL_FAILURE_METADATA_KEY)) {
+			return metadata;
+		}
+		Map<String, Object> copy = new HashMap<>(metadata);
+		copy.remove(MODEL_FAILURE_METADATA_KEY);
+		return copy;
 	}
 
 	private io.github.agentic.ai.api.tool.ToolRegistry configuredRegistry() {

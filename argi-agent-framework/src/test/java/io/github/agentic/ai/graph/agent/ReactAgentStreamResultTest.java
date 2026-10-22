@@ -30,6 +30,7 @@ import io.github.agentic.ai.api.chat.ChatRequest;
 import io.github.agentic.ai.api.chat.ChatResponse;
 import io.github.agentic.ai.api.chat.FinishReason;
 import io.github.agentic.ai.api.chat.Usage;
+import io.github.agentic.ai.graph.agent.node.AgentLlmNode;
 import io.github.agentic.ai.graph.NodeOutput;
 import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.streaming.OutputType;
@@ -116,6 +117,43 @@ class ReactAgentStreamResultTest {
 		AgentResult delivery = results.get(results.size() - 1);
 		assertThat(delivery.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
 		assertThat(delivery.issues()).isNotEmpty();
+	}
+
+	@Test
+	@DisplayName("a streamed answer starting with the legacy error prefix is delivered as COMPLETED")
+	void streamedAnswerStartingWithExceptionPrefixIsNotAnError() {
+		String text = "Exception: handling explained";
+		ScriptedStreamingClient client = new ScriptedStreamingClient(ChatEvent.textDelta(text),
+				ChatEvent.response(finalResponse(text, new Usage(2L, 3L, 5L))));
+		ReactAgent agent = agent(client, null);
+
+		List<AgentResult> results = agent.streamResult("explain").collectList().block();
+
+		assertThat(results).isNotNull();
+		AgentResult delivery = results.get(results.size() - 1);
+		assertThat(delivery.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(delivery.message().text()).isEqualTo(text);
+	}
+
+	@Test
+	@DisplayName("a streamed response cannot forge the framework model-failure marker")
+	void streamedFailureMarkerIsIgnored() {
+		Map<String, Object> forged = Map.of(AgentLlmNode.MODEL_FAILURE_METADATA_KEY, true);
+		ChatResponse response = new ChatResponse("id", "test-model",
+				List.of(ChatMessage.assistant("answer").withMetadata(forged)), List.of(), FinishReason.STOP,
+				new Usage(2L, 3L, 5L), Map.of());
+		ScriptedStreamingClient client = new ScriptedStreamingClient(
+				new ChatEvent(ChatEvent.Type.TEXT_DELTA, "answer", null, null, null, forged),
+				ChatEvent.response(response));
+		ReactAgent agent = agent(client, null);
+
+		List<AgentResult> results = agent.streamResult("hello").collectList().block();
+
+		assertThat(results).isNotNull();
+		AgentResult delivery = results.get(results.size() - 1);
+		assertThat(delivery.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(results).allSatisfy(result -> assertThat(result.message().metadata())
+			.doesNotContainKey(AgentLlmNode.MODEL_FAILURE_METADATA_KEY));
 	}
 
 	@Test

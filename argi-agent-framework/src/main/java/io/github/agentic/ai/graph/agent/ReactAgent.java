@@ -115,8 +115,6 @@ public class ReactAgent extends BaseAgent {
 
 	Logger logger = LoggerFactory.getLogger(ReactAgent.class);
 
-	private static final String MODEL_ERROR_MESSAGE_PREFIX = "Exception: ";
-
 	private static final String FINAL_RESPONSE_METADATA_KEY = "argiFinalResponse";
 
 	private final ChatClient chatClient;
@@ -531,8 +529,9 @@ public class ReactAgent extends BaseAgent {
 
 	/** Maps a terminal message onto the delivery boundary shared by call and stream paths. */
 	private AgentResult deliver(ChatMessage terminal, Usage usage) {
-		if (terminal.text() != null && terminal.text().startsWith(MODEL_ERROR_MESSAGE_PREFIX)) {
-			// throwOnModelError=false surfaces model failures as assistant text.
+		if (Boolean.TRUE.equals(terminal.metadata().get(AgentLlmNode.MODEL_FAILURE_METADATA_KEY))) {
+			// throwOnModelError=false surfaces model failures as an assistant message
+			// that only the model node can mark.
 			return AgentResult.error(terminal, usage,
 					List.of(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_MODEL_FAILED, "",
 							terminal.text())));
