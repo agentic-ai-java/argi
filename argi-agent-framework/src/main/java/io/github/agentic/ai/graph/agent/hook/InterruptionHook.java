@@ -70,13 +70,9 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 			return CompletableFuture.completedFuture(Map.of());
 		}
 
-		// Atomically get and remove the feedback key using remove()
-		// ConcurrentHashMap.remove() is thread-safe and returns the removed value
-		// This ensures thread-safety: if updateAgentState() is called concurrently,
-		// it will either see the old value (before removal) or set a new value (after
-		// removal)
-		// The remove() operation is atomic, preventing race conditions
-		Object feedback = agentThreadState.remove(INTERRUPTION_FEEDBACK_KEY);
+		// Read the feedback without consuming it: it is only claimed once it can be
+		// applied, so a pass that cannot apply it leaves it pending for a later pass.
+		Object feedback = agentThreadState.get(INTERRUPTION_FEEDBACK_KEY);
 
 		if (feedback == null) {
 			log.debug("No interruption feedback found in state, continue reasoning with no updates.");
@@ -100,6 +96,7 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 			if (feedbackMessages.isEmpty()) {
 				log.warn(
 						"Feedback list is empty or contains no valid ChatMessage instances, stop and wait for more input.");
+				claim(agentThreadState, feedback);
 				return CompletableFuture.completedFuture(Map.of());
 			}
 		}
@@ -111,8 +108,9 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 		}
 		else {
 			log.warn(
-					"Interruption feedback is neither List<ChatMessage>, ChatMessage nor String, stop and wait for more input. Type: {}",
+					"Interruption feedback is neither List<ChatMessage>, ChatMessage nor String, discarding it. Type: {}",
 					feedback.getClass().getName());
+			claim(agentThreadState, feedback);
 			return CompletableFuture.completedFuture(Map.of());
 		}
 
@@ -123,10 +121,19 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 		if (!messages.isEmpty() && messages.get(messages.size() - 1).role() == ChatRole.ASSISTANT) {
 			ChatMessage assistantMessage = messages.get(messages.size() - 1);
 			if (assistantMessage.hasToolCalls()) {
+				// Feedback cannot be placed between tool calls and their results; keep it
+				// pending until the next model pass.
 				log.info(
-						"Last message is an ChatMessage with tool calls, not adding interruption feedback to messages list.");
+						"Last message is an ChatMessage with tool calls, keeping interruption feedback pending for the next model pass.");
 				return CompletableFuture.completedFuture(Map.of());
 			}
+		}
+
+		if (!claim(agentThreadState, feedback)) {
+			// Newer feedback replaced this value after it was read; leave the newer
+			// value for the next pass instead of applying the superseded one.
+			log.debug("Interruption feedback was replaced concurrently, deferring to the newer feedback.");
+			return CompletableFuture.completedFuture(Map.of());
 		}
 
 		// Create new messages list with the feedback messages appended
@@ -140,6 +147,14 @@ public class InterruptionHook extends AbstractInterruptableModelHook {
 				feedbackMessages.size());
 
 		return CompletableFuture.completedFuture(updates);
+	}
+
+	/**
+	 * Removes the feedback only if it is still the value that was read, so feedback
+	 * written concurrently by {@code updateAgentState} is never deleted unseen.
+	 */
+	private static boolean claim(Map<String, Object> agentThreadState, Object feedback) {
+		return agentThreadState.remove(INTERRUPTION_FEEDBACK_KEY, feedback);
 	}
 
 	@Override

@@ -352,6 +352,117 @@ public class InterruptionHookTest {
 	}
 
 	@Test
+	public void testApply_PendingToolCalls_KeepsFeedbackForNextPass() throws Exception {
+		String threadId = "test-thread-pending-tool-calls";
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+		mockAgent.updateAgentState("Please also check the weather", config);
+		ChatMessage toolCalling = ChatMessage.assistant("",
+				List.of(new io.github.agentic.ai.api.chat.ToolCall("call-1", "poem", "{}")));
+		OverAllState pendingTools = new OverAllState(
+				Map.of("messages", List.of(ChatMessage.user("Initial message"), toolCalling)));
+
+		Map<String, Object> deferred = hook.apply(pendingTools, config).get();
+
+		Assertions.assertTrue(deferred.isEmpty(), "Feedback must not be applied while tool calls are pending");
+		Assertions.assertEquals("Please also check the weather",
+				mockAgent.getThreadState(threadId).get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY),
+				"Feedback must stay pending when it cannot be applied");
+
+		OverAllState afterTools = new OverAllState(Map.of("messages", List.of(ChatMessage.user("Initial message"),
+				toolCalling, ChatMessage.tool("call-1", "poem", "a poem"))));
+		Map<String, Object> applied = hook.apply(afterTools, config).get();
+
+		@SuppressWarnings("unchecked")
+		List<ChatMessage> messages = (List<ChatMessage>) applied.get("messages");
+		Assertions.assertEquals(1, messages.size());
+		Assertions.assertEquals(ChatRole.USER, messages.get(0).role());
+		Assertions.assertEquals("Please also check the weather", messages.get(0).text());
+		Assertions.assertNull(mockAgent.getThreadState(threadId).get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY));
+
+		Assertions.assertTrue(hook.apply(afterTools, config).get().isEmpty(),
+				"Consumed feedback must not be applied twice");
+	}
+
+	@Test
+	public void testApply_InvalidFeedbackWithPendingToolCalls_IsDiscarded() throws Exception {
+		String threadId = "test-thread-invalid-pending-tool-calls";
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+		mockAgent.updateAgentState(123, config);
+		ChatMessage toolCalling = ChatMessage.assistant("",
+				List.of(new io.github.agentic.ai.api.chat.ToolCall("call-1", "poem", "{}")));
+		OverAllState pendingTools = new OverAllState(Map.of("messages", List.of(toolCalling)));
+
+		Assertions.assertTrue(hook.apply(pendingTools, config).get().isEmpty());
+		Assertions.assertNull(mockAgent.getThreadState(threadId).get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY),
+				"Invalid feedback is discarded rather than replayed forever");
+	}
+
+	@Test
+	public void testApply_ConcurrentNewFeedback_IsNotRemovedByOlderClaim() throws Exception {
+		String threadId = "test-thread-concurrent-feedback";
+		RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+		CountDownLatch read = new CountDownLatch(1);
+		CountDownLatch replaced = new CountDownLatch(1);
+		// The feedback list signals the read, then waits until newer feedback is written
+		// before the hook tries to claim it.
+		List<ChatMessage> older = new java.util.AbstractList<>() {
+			private final List<ChatMessage> delegate = List.of(ChatMessage.user("older"));
+
+			@Override
+			public ChatMessage get(int index) {
+				return delegate.get(index);
+			}
+
+			@Override
+			public int size() {
+				return delegate.size();
+			}
+
+			@Override
+			public java.util.Iterator<ChatMessage> iterator() {
+				read.countDown();
+				try {
+					Assertions.assertTrue(replaced.await(5, TimeUnit.SECONDS));
+				}
+				catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+					throw new IllegalStateException(ex);
+				}
+				return delegate.iterator();
+			}
+
+			@Override
+			public boolean equals(Object other) {
+				return this == other;
+			}
+
+			@Override
+			public int hashCode() {
+				return System.identityHashCode(this);
+			}
+		};
+		mockAgent.updateAgentState(older, config);
+
+		CompletableFuture<Map<String, Object>> pending = CompletableFuture
+			.supplyAsync(() -> hook.apply(state, config).join());
+		Assertions.assertTrue(read.await(5, TimeUnit.SECONDS));
+		mockAgent.updateAgentState("newer", config);
+		replaced.countDown();
+		Map<String, Object> first = pending.get(5, TimeUnit.SECONDS);
+
+		Assertions.assertTrue(first.isEmpty(), "Superseded feedback must not be applied");
+		Assertions.assertEquals("newer",
+				mockAgent.getThreadState(threadId).get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY),
+				"Newer feedback must survive the older claim");
+
+		Map<String, Object> second = hook.apply(state, config).get();
+		@SuppressWarnings("unchecked")
+		List<ChatMessage> messages = (List<ChatMessage>) second.get("messages");
+		Assertions.assertEquals("newer", messages.get(0).text());
+		Assertions.assertNull(mockAgent.getThreadState(threadId).get(InterruptionHook.INTERRUPTION_FEEDBACK_KEY));
+	}
+
+	@Test
 	public void testGetName() {
 		// When: getName is called
 		String name = Hook.getFullHookName(hook);
