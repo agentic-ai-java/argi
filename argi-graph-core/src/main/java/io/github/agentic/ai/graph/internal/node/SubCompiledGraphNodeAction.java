@@ -206,7 +206,8 @@ public record SubCompiledGraphNodeAction(String nodeId, CompileConfig parentComp
 			AtomicReference<Map<String, Object>> subGraphInputState) {
 		if (response.getOutput() != null && !response.getOutput().isCompletedExceptionally()) {
 			NodeOutput output = response.getOutput().join();
-			if (START.equals(output.node())) {
+			// Nested starts describe descendant inputs, not this child's inherited history.
+			if (START.equals(output.node()) && !output.isSubGraph()) {
 				subGraphInputState.set(new HashMap<>(output.state().data()));
 			}
 		}

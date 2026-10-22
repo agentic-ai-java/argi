@@ -71,6 +71,7 @@ import io.github.agentic.ai.graph.streaming.OutputType;
 import io.github.agentic.ai.graph.streaming.StreamingOutput;
 import io.github.agentic.ai.graph.serializer.StateSerializer;
 import io.github.agentic.ai.graph.serializer.plain_text.jackson.ArgiJacksonStateSerializer;
+import io.github.agentic.ai.graph.state.ReplaceAllWith;
 import io.github.agentic.ai.graph.state.strategy.AppendStrategy;
 import io.github.agentic.ai.graph.state.strategy.ReplaceStrategy;
 import io.github.agentic.ai.graph.utils.TypeRef;
@@ -355,6 +356,11 @@ public class ReactAgent extends BaseAgent {
 	 * outcome of the terminal message (one of the four terminal statuses), finalized
 	 * through the same boundary as {@link #callResult(String)}. A run that ends without
 	 * a terminal response is reported as INTERRUPTED, never as completed.
+	 * <p>
+	 * Delivery aggregation is isolated per subscription. Subscribing again can execute
+	 * the underlying agent again; results are not cached and tool side effects are not
+	 * made idempotent by this method.
+	 * </p>
 	 * @param message the user input message
 	 * @return the provisional chunk stream terminated by the validated result
 	 */
@@ -448,37 +454,41 @@ public class ReactAgent extends BaseAgent {
 	 * results (status {@code null}); the final aggregated response (marked by the
 	 * existing {@code argiFinalResponse} protocol convention) is buffered and finalized
 	 * once the stream completes, so unverified chunks are never reported as a delivery.
+	 * Aggregation is local to each subscription. Re-subscribing still subscribes to the
+	 * underlying execution again; it does not cache results or make side effects idempotent.
 	 */
 	private Flux<AgentResult> finalizeStream(Flux<NodeOutput> outputs) {
-		AtomicReference<ChatResponse> finalResponse = new AtomicReference<>();
-		return outputs.concatMap(output -> {
-			if (!(output instanceof StreamingOutput<?> streamed)) {
+		return Flux.defer(() -> {
+			AtomicReference<ChatResponse> finalResponse = new AtomicReference<>();
+			return outputs.concatMap(output -> {
+				if (!(output instanceof StreamingOutput<?> streamed)) {
+					return Flux.empty();
+				}
+				if (streamed.getOriginData() instanceof ChatResponse response
+						&& Boolean.TRUE.equals(response.metadata().get(FINAL_RESPONSE_METADATA_KEY))) {
+					finalResponse.set(response);
+					return Flux.empty();
+				}
+				if (streamed.getOutputType() == OutputType.AGENT_MODEL_STREAMING) {
+					return Flux.fromIterable(streamed.messages())
+						.map(message -> new AgentResult(message, null, Usage.unknown(), null, List.of()));
+				}
 				return Flux.empty();
-			}
-			if (streamed.getOriginData() instanceof ChatResponse response
-					&& Boolean.TRUE.equals(response.metadata().get(FINAL_RESPONSE_METADATA_KEY))) {
-				finalResponse.set(response);
-				return Flux.empty();
-			}
-			if (streamed.getOutputType() == OutputType.AGENT_MODEL_STREAMING) {
-				return Flux.fromIterable(streamed.messages())
-					.map(message -> new AgentResult(message, null, Usage.unknown(), null, List.of()));
-			}
-			return Flux.empty();
-		}).concatWith(Flux.defer(() -> {
-			ChatResponse response = finalResponse.get();
-			if (response == null) {
-				return Flux.just(AgentResult.interrupted(Usage.unknown()));
-			}
-			ChatMessage terminal = response.messages().stream()
-				.filter(message -> message.role() == ChatRole.ASSISTANT)
-				.reduce((first, second) -> second)
-				.orElse(null);
-			if (terminal == null) {
-				return Flux.just(AgentResult.interrupted(response.usage()));
-			}
-			return Flux.just(deliver(terminal, response.usage()));
-		}));
+			}).concatWith(Flux.defer(() -> {
+				ChatResponse response = finalResponse.get();
+				if (response == null) {
+					return Flux.just(AgentResult.interrupted(Usage.unknown()));
+				}
+				ChatMessage terminal = response.messages().stream()
+					.filter(message -> message.role() == ChatRole.ASSISTANT)
+					.reduce((first, second) -> second)
+					.orElse(null);
+				if (terminal == null) {
+					return Flux.just(AgentResult.interrupted(response.usage()));
+				}
+				return Flux.just(deliver(terminal, response.usage()));
+			}));
+		});
 	}
 
 	private AgentResult doResultInvoke(Object message, RunnableConfig config) {
@@ -1401,8 +1411,11 @@ public class ReactAgent extends BaseAgent {
 				else {
 					newMessages = new ArrayList<>();
 				}
-				stateForChild.put("messages", canonicalizeMessages(newMessages));
-				subGraphResult = childGraph.graphResponseStream(stateForChild, subGraphRunnableConfig);
+				stateForChild.put("messages", ReplaceAllWith.of(canonicalizeMessages(newMessages)));
+				// Apply the snapshot marker before state serialization so message types stay intact.
+				OverAllState childInput = new OverAllState(stateForChild, childGraph.compileConfig.getStore());
+				childInput.registerKeyAndStrategy(childGraph.getKeyStrategyMap());
+				subGraphResult = childGraph.graphResponseStream(childInput, subGraphRunnableConfig);
 			}
 			else {
 				Map<String, Object> stateForChild = childStateWithoutAuthority(parentState.data());
@@ -1420,31 +1433,34 @@ public class ReactAgent extends BaseAgent {
 
 		private @NonNull Flux<GraphResponse<NodeOutput>> getGraphResponseFlux(OverAllState parentState,
 				Flux<GraphResponse<NodeOutput>> subGraphResult, AgentInstructionMessage instructionMessage) {
-			// Use buffer(2, 1) to create sliding windows: [elem0, elem1], [elem1, elem2],
-			// ..., [elemN-1, elemN], [elemN]
-			// For windows with 2 elements, emit the first (previous element)
-			// For the last window with 1 element, process it specially
-			return subGraphResult.buffer(2, 1).flatMap(window -> {
-				if (window.size() == 1) {
-					// Last window: process the last element with message filtering
-					return Flux.just(processLastResponse(window.get(0), parentState, instructionMessage));
-				}
-				else {
-					// Regular window: emit the first element (previous, delayed by one)
-					return Flux.just(window.get(0));
-				}
-			}, 1); // Concurrency of 1 to maintain order
+			return Flux.defer(() -> {
+				AtomicReference<List<?>> inheritedMessages = new AtomicReference<>(includeContents
+						? canonicalizeMessages(new ArrayList<>(parentState.<List<?>>value("messages").orElse(List.of())))
+						: List.of());
+				return subGraphResult.doOnNext(response -> {
+					if (response.getOutput() != null && !response.getOutput().isCompletedExceptionally()) {
+						NodeOutput output = response.getOutput().join();
+						if (START.equals(output.node()) && !output.isSubGraph()) {
+							// Capture the child's actual initial history, including restored checkpoint messages.
+							inheritedMessages.set(new ArrayList<>(output.state().<List<?>>value("messages")
+								.orElse(List.of())));
+						}
+					}
+				}).buffer(2, 1).map(window -> window.size() == 1
+						? processLastResponse(window.get(0), inheritedMessages.get(), instructionMessage)
+						: window.get(0));
+			});
 		}
 
 		/**
 		 * Process the last response by filtering messages based on parent state and
 		 * returnReasoningContents flag.
 		 * @param lastResponse the last response from sub-graph
-		 * @param parentState the parent state containing messages to filter out
+		 * @param inheritedMessages the initial child history whose occurrences are already owned by the parent
 		 * @return processed GraphResponse with filtered messages
 		 */
 		private GraphResponse<NodeOutput> processLastResponse(GraphResponse<NodeOutput> lastResponse,
-				OverAllState parentState, AgentInstructionMessage instructionMessage) {
+				List<?> inheritedMessages, AgentInstructionMessage instructionMessage) {
 			if (lastResponse == null) {
 				return lastResponse;
 			}
@@ -1458,11 +1474,10 @@ public class ReactAgent extends BaseAgent {
 						@SuppressWarnings("unchecked")
 						List<Object> messages = new ArrayList<>((List<Object>) resultMap.get("messages"));
 						if (!messages.isEmpty()) {
-							parentState.value("messages").ifPresent(parentMsgs -> {
-								if (parentMsgs instanceof List) {
-									messages.removeAll((List<?>) parentMsgs);
-								}
-							});
+							// Subtract each inherited occurrence once; removeAll would also erase new equal messages.
+							for (Object inherited : inheritedMessages) {
+								messages.remove(inherited);
+							}
 
 							List<Object> finalMessages;
 							if (returnReasoningContents) {
@@ -1486,7 +1501,7 @@ public class ReactAgent extends BaseAgent {
 
 							Map<String, Object> newResultMap = new HashMap<>(resultMap);
 							newResultMap.put("messages", tagChildHandoffMessages(finalMessages));
-							return GraphResponse.done(newResultMap);
+							return GraphResponse.done(newResultMap, lastResponse.getAllMetadata());
 						}
 					}
 				}

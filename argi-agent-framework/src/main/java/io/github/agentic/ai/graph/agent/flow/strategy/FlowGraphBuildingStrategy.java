@@ -24,7 +24,6 @@ import io.github.agentic.ai.graph.agent.ReactAgent;
 import io.github.agentic.ai.graph.agent.flow.agent.FlowAgent;
 import io.github.agentic.ai.graph.agent.flow.builder.FlowGraphBuilder;
 import io.github.agentic.ai.graph.exception.GraphStateException;
-import io.github.agentic.ai.graph.internal.node.SubCompiledGraphNode;
 import io.github.agentic.ai.graph.state.strategy.AppendStrategy;
 import io.github.agentic.ai.graph.state.strategy.ReplaceStrategy;
 
@@ -97,7 +96,8 @@ public interface FlowGraphBuildingStrategy {
 				}
 			}
 
-			keyStrategyMap.put("messages", new AppendStrategy(false));
+			// Each invocation and child delta represents new occurrences, even when text repeats.
+			keyStrategyMap.put("messages", new AppendStrategy());
 
 			return keyStrategyMap;
 		};
@@ -145,7 +145,7 @@ public interface FlowGraphBuildingStrategy {
 
 	static void addSubAgentNode(Agent subAgent, StateGraph newGraph) throws GraphStateException {
 		if (subAgent instanceof FlowAgent flowAgent) {
-			newGraph.addNode(flowAgent.name(), new SubCompiledGraphNode(flowAgent.name(), flowAgent.getAndCompileGraph()));
+			newGraph.addNode(flowAgent.name(), new FlowSubGraphNode(flowAgent.name(), flowAgent.getAndCompileGraph()));
 		} else if (subAgent instanceof BaseAgent baseAgent) {
 			newGraph.addNode(baseAgent.name(), baseAgent.asNode(baseAgent.isIncludeContents(), baseAgent.isReturnReasoningContents()));
 		} else {

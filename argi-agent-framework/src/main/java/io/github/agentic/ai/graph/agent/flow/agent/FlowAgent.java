@@ -29,6 +29,13 @@ import io.github.agentic.ai.graph.serializer.StateSerializer;
 import java.util.List;
 import java.util.concurrent.Executor;
 
+/**
+ * Composes agents while preserving each conversation message occurrence. Repeated user
+ * inputs and equal child answers are appended as separate events. A child receives a
+ * conversation snapshot and returns only its newly produced message occurrences, so
+ * inherited history is not appended again. This behavior also applies after checkpoint
+ * restoration; existing checkpoints require no format migration.
+ */
 public abstract class FlowAgent extends Agent {
 
 	protected List<String> interruptBefore;
