@@ -17,15 +17,19 @@ package io.github.agentic.ai.agent.studio.service;
 
 import io.github.agentic.ai.agent.studio.dto.Thread;
 
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CyclicBarrier;
 
 import org.junit.jupiter.api.Test;
 
@@ -102,6 +106,166 @@ class ThreadServiceImplTest {
 
 		assertThat(first.values()).containsEntry("owner", "first");
 		assertThat(second.values()).containsEntry("owner", "second");
+	}
+
+	@Test
+	void updateBlockedBeforeDeleteDoesNotLeaveOrphanState() throws Exception {
+		ThreadServiceImpl service = new ThreadServiceImpl();
+		service.createThread("assistant", "alice", Map.of("v", "initial"), "t").block();
+		BlockingState update = new BlockingState(Map.of("v", "stale"));
+		ExecutorService executor = Executors.newSingleThreadExecutor();
+		try {
+			Future<?> pending = executor.submit(() -> service.updateThreadState("assistant", "alice", "t", update));
+			update.awaitCopyStarted();
+
+			service.deleteThread("assistant", "alice", "t").block();
+			update.release();
+			pending.get(5, TimeUnit.SECONDS);
+		}
+		finally {
+			executor.shutdownNow();
+		}
+
+		assertThat(service.getThread("assistant", "alice", "t", Optional.empty()).block()).isEmpty();
+		assertThat(service.getThreadState("assistant", "alice", "t")).isEmpty();
+	}
+
+	@Test
+	void updateFromDeletedThreadDoesNotPolluteRecreatedThread() throws Exception {
+		ThreadServiceImpl service = new ThreadServiceImpl();
+		service.createThread("assistant", "alice", Map.of("v", "old"), "t").block();
+		BlockingState update = new BlockingState(Map.of("v", "stale"));
+		ExecutorService executor = Executors.newSingleThreadExecutor();
+		try {
+			Future<?> pending = executor.submit(() -> service.updateThreadState("assistant", "alice", "t", update));
+			update.awaitCopyStarted();
+
+			service.deleteThread("assistant", "alice", "t").block();
+			service.createThread("assistant", "alice", Map.of("v", "new"), "t").block();
+			update.release();
+			pending.get(5, TimeUnit.SECONDS);
+		}
+		finally {
+			executor.shutdownNow();
+		}
+
+		Thread recreated = service.getThread("assistant", "alice", "t", Optional.empty()).block().orElseThrow();
+		assertThat(recreated.values()).containsEntry("v", "new");
+		assertThat(service.getThreadState("assistant", "alice", "t")).containsEntry("v", "new");
+	}
+
+	@Test
+	void updateAppliesToMetadataAndStateTogether() {
+		ThreadServiceImpl service = new ThreadServiceImpl();
+		service.createThread("assistant", "alice", Map.of("v", "initial"), "t").block();
+
+		service.updateThreadState("assistant", "alice", "t", Map.of("v", "updated"));
+
+		assertThat(service.getThreadState("assistant", "alice", "t")).containsEntry("v", "updated");
+		assertThat(service.getThread("assistant", "alice", "t", Optional.empty()).block().orElseThrow().values())
+			.containsEntry("v", "updated");
+		assertThat(service.listThreads("assistant", "alice").block().threads())
+			.singleElement()
+			.satisfies(thread -> assertThat(thread.values()).containsEntry("v", "updated"));
+	}
+
+	@Test
+	void updateOfMissingThreadDoesNotCreateState() {
+		ThreadServiceImpl service = new ThreadServiceImpl();
+
+		service.updateThreadState("assistant", "alice", "missing", Map.of("v", "x"));
+
+		assertThat(service.getThread("assistant", "alice", "missing", Optional.empty()).block()).isEmpty();
+		assertThat(service.getThreadState("assistant", "alice", "missing")).isEmpty();
+	}
+
+	@Test
+	void concurrentCreateAndDeleteNeverLeaveStateWithoutThread() throws Exception {
+		ThreadServiceImpl service = new ThreadServiceImpl();
+		ExecutorService executor = Executors.newFixedThreadPool(2);
+		try {
+			for (int round = 0; round < 500; round++) {
+				String id = "t-" + round;
+				CyclicBarrier barrier = new CyclicBarrier(2);
+				Future<?> create = executor.submit(() -> {
+					barrier.await(5, TimeUnit.SECONDS);
+					service.createThread("assistant", "alice", Map.of("v", "x"), id).block();
+					return null;
+				});
+				Future<?> delete = executor.submit(() -> {
+					barrier.await(5, TimeUnit.SECONDS);
+					service.deleteThread("assistant", "alice", id).block();
+					return null;
+				});
+				create.get(5, TimeUnit.SECONDS);
+				delete.get(5, TimeUnit.SECONDS);
+
+				boolean exists = service.getThread("assistant", "alice", id, Optional.empty()).block().isPresent();
+				Map<String, Object> state = service.getThreadState("assistant", "alice", id);
+				assertThat(state.isEmpty()).as("round %d", round).isEqualTo(!exists);
+			}
+		}
+		finally {
+			executor.shutdownNow();
+		}
+	}
+
+	@Test
+	void duplicateCreateIsRejectedAndKeepsOriginalState() {
+		ThreadServiceImpl service = new ThreadServiceImpl();
+		service.createThread("assistant", "alice", Map.of("v", "first"), "t").block();
+
+		org.assertj.core.api.Assertions
+			.assertThatThrownBy(() -> service.createThread("assistant", "alice", Map.of("v", "second"), "t").block())
+			.isInstanceOf(IllegalStateException.class);
+
+		assertThat(service.getThreadState("assistant", "alice", "t")).containsEntry("v", "first");
+	}
+
+	/** State map whose copy blocks so a test can interleave other operations. */
+	private static final class BlockingState extends AbstractMap<String, Object> {
+
+		private final Map<String, Object> delegate;
+
+		private final CountDownLatch copyStarted = new CountDownLatch(1);
+
+		private final CountDownLatch released = new CountDownLatch(1);
+
+		BlockingState(Map<String, Object> delegate) {
+			this.delegate = delegate;
+		}
+
+		@Override
+		public Set<Entry<String, Object>> entrySet() {
+			copyStarted.countDown();
+			try {
+				assertThat(released.await(5, TimeUnit.SECONDS)).isTrue();
+			}
+			catch (InterruptedException ex) {
+				java.lang.Thread.currentThread().interrupt();
+				throw new IllegalStateException(ex);
+			}
+			return delegate.entrySet();
+		}
+
+		@Override
+		public int size() {
+			return delegate.size();
+		}
+
+		@Override
+		public boolean isEmpty() {
+			return delegate.isEmpty();
+		}
+
+		void awaitCopyStarted() throws InterruptedException {
+			assertThat(copyStarted.await(5, TimeUnit.SECONDS)).isTrue();
+		}
+
+		void release() {
+			released.countDown();
+		}
+
 	}
 
 }

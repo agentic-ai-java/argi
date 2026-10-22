@@ -44,20 +44,19 @@ public class ThreadServiceImpl implements ThreadService {
 	private static final Logger log = LoggerFactory.getLogger(ThreadServiceImpl.class);
 
 	// In-memory storage uses encoded segments so user-controlled identifiers cannot collide.
-	private final Map<String, Thread> threads = new ConcurrentHashMap<>();
-
-	// Storage for thread states uses the same encoded key as thread metadata.
-	private final Map<String, Map<String, Object>> threadStates = new ConcurrentHashMap<>();
+	// Metadata and state live in one record per key so every create, update and delete
+	// is a single atomic map operation.
+	private final Map<String, ThreadRecord> threads = new ConcurrentHashMap<>();
 
 	@Override
 	public Mono<Optional<Thread>> getThread(
 			String appName, String userId, String threadId, Optional<Map<String, Object>> state) {
 		return Mono.fromCallable(() -> {
 			String key = buildKey(appName, userId, threadId);
-			Thread thread = threads.get(key);
+			ThreadRecord record = threads.get(key);
 
-			return Optional.ofNullable(thread)
-					.map(existing -> withValues(existing, state.orElseGet(() -> threadStates.get(key))));
+			return Optional.ofNullable(record)
+					.map(existing -> withValues(existing.thread(), state.orElseGet(existing::state)));
 		});
 	}
 
@@ -68,7 +67,7 @@ public class ThreadServiceImpl implements ThreadService {
 
 			List<Thread> userThreads = threads.entrySet().stream()
 					.filter(entry -> entry.getKey().startsWith(prefix))
-					.map(entry -> withValues(entry.getValue(), threadStates.get(entry.getKey())))
+					.map(entry -> withValues(entry.getValue().thread(), entry.getValue().state()))
 					.collect(Collectors.toList());
 
 			log.debug("Found {} threads for app={}, user={}", userThreads.size(), appName, userId);
@@ -95,12 +94,11 @@ public class ThreadServiceImpl implements ThreadService {
 					.values(state)
 					.build();
 
-			Thread existing = threads.putIfAbsent(key, newThread);
+			ThreadRecord existing = threads.putIfAbsent(key, new ThreadRecord(newThread, state, new Object()));
 			if (existing != null) {
 				log.warn("Attempted to create duplicate thread: {}", finalThreadId);
 				throw new IllegalStateException("Thread already exists: " + finalThreadId);
 			}
-			threadStates.put(key, state);
 
 			log.info("Created thread: {} for app={}, user={}", finalThreadId, appName, userId);
 			return newThread;
@@ -111,8 +109,7 @@ public class ThreadServiceImpl implements ThreadService {
 	public Mono<Void> deleteThread(String appName, String userId, String threadId) {
 		return Mono.fromRunnable(() -> {
 			String key = buildKey(appName, userId, threadId);
-			Thread removed = threads.remove(key);
-			threadStates.remove(key);
+			ThreadRecord removed = threads.remove(key);
 
 			if (removed != null) {
 				log.info("Deleted thread: {} for app={}, user={}", threadId, appName, userId);
@@ -129,15 +126,17 @@ public class ThreadServiceImpl implements ThreadService {
 	 * @param appName The application name.
 	 * @param userId The user ID.
 	 * @param threadId The thread ID.
-	 * @return The thread state, or empty map if not found.
+	 * @return A copy of the thread state, or empty map if not found.
 	 */
 	public Map<String, Object> getThreadState(String appName, String userId, String threadId) {
-		String key = buildKey(appName, userId, threadId);
-		return threadStates.getOrDefault(key, new ConcurrentHashMap<>());
+		ThreadRecord record = threads.get(buildKey(appName, userId, threadId));
+		return record == null ? new ConcurrentHashMap<>() : stateCopy(record.state());
 	}
 
 	/**
-	 * Updates the state for a thread.
+	 * Updates the state for a thread. The update applies to the thread instance that
+	 * exists when the call starts: it is dropped if that thread is deleted, including
+	 * when a thread with the same ID is created again before the update is applied.
 	 *
 	 * @param appName The application name.
 	 * @param userId The user ID.
@@ -147,12 +146,28 @@ public class ThreadServiceImpl implements ThreadService {
 	public void updateThreadState(
 			String appName, String userId, String threadId, Map<String, Object> state) {
 		String key = buildKey(appName, userId, threadId);
-		if (threads.containsKey(key)) {
-			Map<String, Object> stateCopy = stateCopy(state);
-			threadStates.put(key, stateCopy);
-			threads.computeIfPresent(key, (existingKey, thread) -> withValues(thread, stateCopy));
+		ThreadRecord observed = threads.get(key);
+		if (observed == null) {
+			return;
+		}
+		Map<String, Object> stateCopy = stateCopy(state);
+		ThreadRecord updated = threads.computeIfPresent(key,
+				(existingKey, current) -> current.generation() == observed.generation()
+						? new ThreadRecord(withValues(current.thread(), stateCopy), stateCopy, current.generation())
+						: current);
+		if (updated != null && updated.generation() == observed.generation()) {
 			log.debug("Updated state for thread: {}", threadId);
 		}
+		else {
+			log.debug("Dropped state update for deleted thread: {}", threadId);
+		}
+	}
+
+	/**
+	 * Thread metadata and state stored under one key. The generation identifies one
+	 * created thread instance and is kept across state updates.
+	 */
+	private record ThreadRecord(Thread thread, Map<String, Object> state, Object generation) {
 	}
 
 	private Thread withValues(Thread thread, Map<String, Object> state) {
