@@ -55,6 +55,7 @@ jobs:
       - run: make tools
       - run: ./mvnw -B install
       - run: tools/scripts/verify-api-contract.sh --skip-install
+      - run: tools/scripts/verify-clear-room.sh
   build:
     if: (github.repository == 'agentic-ai-java/argi')
     runs-on: ubuntu-22.04
