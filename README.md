@@ -59,7 +59,7 @@ Open [http://localhost:8080/chatui/index.html](http://localhost:8080/chatui/inde
 | --- | --- |
 | [API and Adapters](argi-api) | Framework-neutral ChatClient contracts and Spring AI, LangChain4j, Google ADK, and AgentScope adapters |
 | [Agent Framework](argi-agent-framework) | Agent development and multi-agent orchestration |
-| [Graph Core](argi-graph-core) | State management, persistence, and workflow runtime |
+| [Loop Core](argi-loop-core) | Stateful graph execution, persistence, and workflow runtime |
 | [Runtime API](argi-runtime-api) | JDK-only identity, definition and execution-control contracts |
 | [Agent API](argi-agent-api) | Engine-neutral agent invocation and shared interception contracts |
 | [Agent Core](argi-agent-core) | Graph-independent ReAct execution loop and tool lifecycle |
@@ -77,7 +77,7 @@ Open [http://localhost:8080/chatui/index.html](http://localhost:8080/chatui/inde
 - [Overview](https://agentic-ai-java.github.io/argi-website/en/docs/overview)
 - [Quick Start](https://agentic-ai-java.github.io/argi-website/en/docs/quick-start)
 - [Agent Framework tutorials](https://agentic-ai-java.github.io/argi-website/en/docs/frameworks/agent-framework/tutorials/agents)
-- [Graph Core Quick Start](https://agentic-ai-java.github.io/argi-website/en/docs/frameworks/graph-core/quick-start)
+- [Loop Core Quick Start](https://agentic-ai-java.github.io/argi-website/en/docs/frameworks/loop-core/quick-start)
 - [Examples](https://github.com/agentic-ai-java/argi-examples/tree/main/examples)
 - [Provider-specific examples](https://github.com/agentic-ai-java/argi-extensions/tree/main/examples)
 

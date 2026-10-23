@@ -39,7 +39,7 @@ Java packages, and adapter behavior are unchanged by the directory move.
 
 Import `io.github.agentic-ai-java:argi-bom` at the ARGI version used by the
 application. For a standalone ReAct application, add `argi-agent-framework` and
-one of the four adapter artifacts. A graph-only application uses `argi-graph-core`
+one of the four adapter artifacts. A graph-only application uses `argi-loop-core`
 and, for built-in model nodes, `argi-starter-builtin-nodes` instead. The directory
 name `argi-api-base` is not a dependency coordinate.
 

@@ -30,7 +30,7 @@
 "area/graph":
   - changed-files:
       - any-glob-to-any-file:
-          - "argi-graph-core/**/*"
+          - "argi-loop-core/**/*"
 "area/core":
   - changed-files:
       - any-glob-to-any-file:

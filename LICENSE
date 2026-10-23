@@ -206,7 +206,7 @@ Spring AI Alibaba includes a number of submodules with separate copyright notice
 and license terms. Your use of these submodules is subject to the terms and
 conditions of the following licenses.
 
-For the module argi-graph-core, it has files originally from a project located at https://github.com/bsorrentino/langgraph4j, licensed under the terms of the:
+For the module argi-loop-core, it has files originally from a project located at https://github.com/bsorrentino/langgraph4j, licensed under the terms of the:
 
 MIT License
 

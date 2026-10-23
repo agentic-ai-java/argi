@@ -24,9 +24,9 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>argi-graph-core</artifactId>
+    <artifactId>argi-loop-core</artifactId>
     <packaging>jar</packaging>
-    <name>ARGI Graph Core</name>
+    <name>ARGI Loop Core</name>
     <description>A library for building stateful, multi-agents applications with LLMs</description>
     <url>https://github.com/agentic-ai-java/argi</url>
     <scm>

@@ -57,7 +57,7 @@
         <module>argi-agent-api</module>
         <module>argi-agent-core</module>
         <module>argi-workflow-core</module>
-        <module>argi-graph-core</module>
+        <module>argi-loop-core</module>
         <module>argi-agent-framework</module>
         <module>argi-studio</module>
 

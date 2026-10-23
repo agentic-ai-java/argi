@@ -260,7 +260,7 @@ def main():
     parser.add_argument('--dirs', '-d',
                        nargs='+',
                        default=['argi-agent-framework/src/main/java',
-                               'argi-graph-core/src/main/java',
+                               'argi-loop-core/src/main/java',
                                'argi-studio/src/main/java',
                                'argi-api',
                                'argi-spring-boot-starter',

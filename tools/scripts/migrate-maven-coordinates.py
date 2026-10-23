@@ -25,7 +25,7 @@ def main() -> None:
     parser.add_argument("--write", action="store_true", help="Apply changes with exclusive .before-argi-rc1 backups")
     args = parser.parse_args()
     core_artifacts = {
-        "argi", "argi-bom", "argi-graph-core", "argi-agent-framework", "argi-studio",
+        "argi", "argi-bom", "argi-loop-core", "argi-agent-framework", "argi-studio",
         "argi-starter-builtin-nodes", "argi-starter-graph-observation",
     }
     # Restrict migration to Core; Extensions artifacts have a separate release lifecycle.

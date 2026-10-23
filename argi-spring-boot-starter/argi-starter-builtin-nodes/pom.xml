@@ -73,7 +73,7 @@
 
         <dependency>
             <groupId>io.github.agentic-ai-java</groupId>
-            <artifactId>argi-graph-core</artifactId>
+            <artifactId>argi-loop-core</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
 

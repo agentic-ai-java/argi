@@ -26,7 +26,7 @@ The following classes have one implementation, owned by this artifact:
 | Definition references, resolver SPI and worker/recovery declarations | Exact version selection and explicit capability checks |
 | `ExecutionGuard` / `ExecutionControl` | Cooperative cancellation, deadline checks and ownership loss without lease credentials |
 
-`argi-graph-core` depends on this artifact. The contracts neither invoke Graph
+`argi-loop-core` depends on this artifact. The contracts neither invoke Loop
 nor load it through reflection. Moving them is a dependency extraction, not an
 adapter that delegates to the old engine.
 

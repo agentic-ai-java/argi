@@ -122,7 +122,7 @@ readonly REACT_FIXTURE="${REPO_ROOT}/tools/compatibility/react-agent-consumer"
     org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
     -Dmdep.outputFile=target/react-classpath.txt
 react_classpath="$(cat "${REACT_FIXTURE}/target/react-classpath.txt")"
-if [[ "${react_classpath}" == *argi-graph-core* || "${react_classpath}" == *argi-agent-framework* \
+if [[ "${react_classpath}" == *argi-loop-core* || "${react_classpath}" == *argi-agent-framework* \
         || "${react_classpath}" == *spring* || "${react_classpath}" == *reactor* ]]; then
     echo "Independent ReAct consumer resolved a Graph, framework, Spring or Reactor dependency" >&2
     exit 1
@@ -136,7 +136,7 @@ readonly WORKFLOW_FIXTURE="${REPO_ROOT}/tools/compatibility/workflow-consumer"
     org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
     -Dmdep.outputFile=target/workflow-classpath.txt
 workflow_classpath="$(cat "${WORKFLOW_FIXTURE}/target/workflow-classpath.txt")"
-if [[ "${workflow_classpath}" == *argi-graph-core* || "${workflow_classpath}" == *argi-agent-framework* \
+if [[ "${workflow_classpath}" == *argi-loop-core* || "${workflow_classpath}" == *argi-agent-framework* \
         || "${workflow_classpath}" == *spring* || "${workflow_classpath}" == *reactor* ]]; then
     echo "Independent Workflow consumer resolved a Graph, framework, Spring or Reactor dependency" >&2
     exit 1
@@ -165,8 +165,8 @@ if grep -q "not found" "${RUNTIME_CORE_FIXTURE}/target/bytecode-dependencies.txt
     exit 1
 fi
 
-graph_jar="${REPO_ROOT}/argi-graph-core/target/$(basename "${runtime_core_jar}" | sed s/argi-runtime-core/argi-graph-core/)"
-jar tf "${graph_jar}" | grep '.class$' | sort > "${RUNTIME_CORE_FIXTURE}/target/graph-classes.txt"
+loop_jar="${REPO_ROOT}/argi-loop-core/target/$(basename "${runtime_core_jar}" | sed s/argi-runtime-core/argi-loop-core/)"
+jar tf "${loop_jar}" | grep '.class$' | sort > "${RUNTIME_CORE_FIXTURE}/target/graph-classes.txt"
 for dependency in "${runtime_jars[@]}"; do
     case "$(basename "${dependency}")" in
         argi-runtime-*.jar)

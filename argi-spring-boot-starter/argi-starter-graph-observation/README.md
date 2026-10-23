@@ -77,7 +77,7 @@ not configure an OpenTelemetry collector or a tracing exporter.
 
 Graph/node observations alone do not connect calls across agent boundaries
 (delegation, A2A send/receive, background task retrieval, run store commits).
-Those links come from the opt-in `AgentTracer` in `argi-graph-core`
+Those links come from the opt-in `AgentTracer` in `argi-loop-core`
 (`io.github.agentic.ai.graph.observation.trace`); see the graph-core README for
 the span model, correlation keys and privacy defaults.
 

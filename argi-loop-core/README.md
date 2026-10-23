@@ -1,4 +1,14 @@
-# ARGI Graph
+# ARGI Loop Core
+
+ARGI Loop Core is the standalone stateful graph execution engine. The product
+boundary is named Loop because it owns resumable execution, routing, parallel
+branches, subgraphs, checkpointing, and state storage; Graph remains in public
+type names where it precisely describes graph topology and execution objects.
+
+Applications migrating from `argi-graph-core` should replace that Maven
+artifact with `argi-loop-core`. Java packages and graph type names remain
+unchanged in this phase so existing source and persisted type names remain
+readable. No checkpoint or store wire literal is renamed by the artifact move.
 
 ## Runtime contract extraction
 
@@ -11,7 +21,7 @@ names and v1 data remain readable; neutral v2 adoption and rollback are document
 in Runtime Core. Graph tracing remains an optional integration for runtime-only
 consumers. Independent Agent/Workflow execution and the Loop migration remain separate.
 
-## What's ARGI Graph
+## What's ARGI Loop Core
 
 ARGI Graph is a **workflow and multi-agent framework** for Java developers to build complex applications composed of multiple AI models or steps.
 
@@ -204,7 +214,7 @@ real transaction rollback, restart persistence and independent-JVM takeover usin
 the actual storage service. The in-memory suite is not evidence of those properties.
 
 ```shell
-./mvnw -B -pl :argi-graph-core -am \
+./mvnw -B -pl :argi-loop-core -am \
   -Dtest=MemoryRunStoreTest,RunDataContractTest test
 ```
 
@@ -227,7 +237,7 @@ Nothing here is required by the existing run, task or checkpoint APIs:
 - A `RunDefinitionRecord` is recorded only when an application opts in, and only
   `RunDefinitionAdmission.resolve` reads it. `RunStore.submit` never consults it.
 - Definitions are data identifiers. `DefinitionResolver` returns framework-neutral
-  objects, so `argi-graph-core` gains no model SDK or Extensions dependency, and the
+  objects, so `argi-loop-core` gains no model SDK or Extensions dependency, and the
   neutral-API consumer gate compiles the contract without either.
 
 ### Types
@@ -297,7 +307,7 @@ capability was not established, and a role the application does not use is decla
 ### Reference validation
 
 ```shell
-./mvnw -B -pl :argi-graph-core -am \
+./mvnw -B -pl :argi-loop-core -am \
   -Dtest='io.github.agentic.ai.graph.execution.definition.*Test' test
 ```
 
