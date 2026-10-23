@@ -53,3 +53,49 @@ if [[ "$(jdeps --multi-release 17 --print-module-deps "${runtime_classpath}")" !
     exit 1
 fi
 echo "Standalone runtime API consumer and bytecode gates passed"
+
+readonly RUNTIME_CORE_FIXTURE="${REPO_ROOT}/tools/compatibility/runtime-core-consumer"
+"${REPO_ROOT}/mvnw" -B -f "${RUNTIME_CORE_FIXTURE}/pom.xml" clean compile \
+    org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+    -Dmdep.outputFile=target/runtime-classpath.txt
+runtime_core_classpath="$(cat "${RUNTIME_CORE_FIXTURE}/target/runtime-classpath.txt")"
+IFS=: read -r -a runtime_jars <<< "${runtime_core_classpath}"
+for dependency in "${runtime_jars[@]}"; do
+    case "$(basename "${dependency}")" in
+        argi-runtime-api-*.jar|argi-runtime-core-*.jar|jackson-annotations-*.jar|jackson-core-*.jar|jackson-databind-*.jar) ;;
+        *) echo "Unexpected runtime core dependency: ${dependency}" >&2; exit 1 ;;
+    esac
+done
+for kind in agent workflow graph; do
+    java -cp "${RUNTIME_CORE_FIXTURE}/target/classes:${runtime_core_classpath}" \
+        io.github.agentic.ai.contract.RuntimeCoreConsumer "${kind}"
+done
+echo "Standalone agent, workflow and graph runtime contract consumers passed"
+
+runtime_core_jar=""
+for dependency in "${runtime_jars[@]}"; do
+    case "$(basename "${dependency}")" in
+        argi-runtime-core-*.jar) runtime_core_jar="${dependency}" ;;
+    esac
+done
+test -n "${runtime_core_jar}"
+jdeps --multi-release 17 -verbose:class --class-path "${runtime_core_classpath}" \
+    "${runtime_core_jar}" > "${RUNTIME_CORE_FIXTURE}/target/bytecode-dependencies.txt"
+if grep -q "not found" "${RUNTIME_CORE_FIXTURE}/target/bytecode-dependencies.txt"; then
+    echo "Runtime Core has unresolved bytecode dependencies" >&2
+    exit 1
+fi
+
+graph_jar="${REPO_ROOT}/argi-graph-core/target/$(basename "${runtime_core_jar}" | sed s/argi-runtime-core/argi-graph-core/)"
+jar tf "${graph_jar}" | grep '.class$' | sort > "${RUNTIME_CORE_FIXTURE}/target/graph-classes.txt"
+for dependency in "${runtime_jars[@]}"; do
+    case "$(basename "${dependency}")" in
+        argi-runtime-*.jar)
+            jar tf "${dependency}" | grep '.class$' | sort > "${RUNTIME_CORE_FIXTURE}/target/runtime-classes.txt"
+            if [[ -n "$(comm -12 "${RUNTIME_CORE_FIXTURE}/target/graph-classes.txt" "${RUNTIME_CORE_FIXTURE}/target/runtime-classes.txt")" ]]; then
+                echo "Graph duplicates extracted runtime classes" >&2
+                exit 1
+            fi
+            ;;
+    esac
+done

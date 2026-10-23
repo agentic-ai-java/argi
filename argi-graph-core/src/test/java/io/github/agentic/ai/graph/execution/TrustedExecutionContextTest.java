@@ -22,6 +22,8 @@ import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
+import java.time.Clock;
+import java.time.ZoneOffset;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +31,8 @@ import java.util.Set;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
+import io.github.agentic.ai.runtime.execution.ExecutionControl;
+import io.github.agentic.ai.runtime.execution.ExecutionStoppedException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -52,16 +56,14 @@ class TrustedExecutionContextTest {
 		assertThat(config.trustedExecutionContext().orElseThrow().principal().id()).isEqualTo("principal-a");
 		assertThat(config.metadata("tenant_id")).contains("forged-tenant");
 		assertThat(config.metadata(RunnableConfig.USER_ID_METADATA_KEY)).contains("forged-user");
-		assertThat(RunnableConfig.builder().addMetadata("tenant_id", "only-metadata").build()
-			.trustedExecutionContext()).isEmpty();
+		assertThat(RunnableConfig.builder().addMetadata("tenant_id", "only-metadata").build().trustedExecutionContext())
+			.isEmpty();
 	}
 
 	@Test
 	void copiedConfigsPropagateImmutableScopeWithoutSharingMutableRunContext() {
 		TrustedExecutionContext trusted = context("tenant-a", "principal-a", "run-a");
-		RunnableConfig parent = RunnableConfig.builder()
-			.trustedExecutionContext(trusted)
-			.build();
+		RunnableConfig parent = RunnableConfig.builder().trustedExecutionContext(trusted).build();
 		parent.context().put("mutable", "parent");
 
 		RunnableConfig child = RunnableConfig.builder(parent).build();
@@ -87,14 +89,17 @@ class TrustedExecutionContextTest {
 		assertThat(child.deadline()).contains(earlier);
 		assertThat(child.budget().limits()).containsEntry("tool_calls", 2L).containsEntry("model_calls", 10L);
 
-		assertThatThrownBy(() -> parent.delegate("run-child", Set.of("tools:write"), earlier,
-				ExecutionBudget.unlimited())).isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(
+				() -> parent.delegate("run-child", Set.of("tools:write"), earlier, ExecutionBudget.unlimited()))
+			.isInstanceOf(IllegalArgumentException.class)
 			.hasMessageContaining("permission");
 		assertThatThrownBy(() -> parent.delegate("run-child", Set.of("tools:read"),
 				parent.deadline().orElseThrow().plusSeconds(1), ExecutionBudget.unlimited()))
-			.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("deadline");
+			.isInstanceOf(IllegalArgumentException.class)
+			.hasMessageContaining("deadline");
 		assertThatThrownBy(() -> parent.delegate("run-child", Set.of("tools:read"), earlier,
-				ExecutionBudget.of(Map.of("tool_calls", 6L)))).isInstanceOf(IllegalArgumentException.class)
+				ExecutionBudget.of(Map.of("tool_calls", 6L))))
+			.isInstanceOf(IllegalArgumentException.class)
 			.hasMessageContaining("budget");
 	}
 
@@ -110,8 +115,8 @@ class TrustedExecutionContextTest {
 			.collectList()
 			.block();
 
-		assertThat(tenants).containsExactlyInAnyOrderElementsOf(
-				IntStream.range(0, 64).mapToObj(index -> "tenant-" + index).toList());
+		assertThat(tenants)
+			.containsExactlyInAnyOrderElementsOf(IntStream.range(0, 64).mapToObj(index -> "tenant-" + index).toList());
 		assertThat(RunnableConfig.builder().build().trustedExecutionContext()).isEmpty();
 	}
 
@@ -122,16 +127,17 @@ class TrustedExecutionContextTest {
 		String encoded = codec.encode(trusted.toReference());
 		TrustedExecutionContextReference decoded = codec.decode(encoded);
 		TrustedExecutionContextResolver resolver = reference -> reference.tenant().id().equals("tenant-a")
-				? java.util.Optional.of(trusted)
-				: java.util.Optional.empty();
+				? java.util.Optional.of(trusted) : java.util.Optional.empty();
 
 		assertThat(decoded).isEqualTo(trusted.toReference());
 		assertThat(resolver.resolveRequired(decoded)).isEqualTo(trusted);
 		assertThat(encoded).doesNotContain("token").doesNotContain("credential").doesNotContain("client");
 		assertThatThrownBy(() -> codec.decode(encoded.replace("\"schemaVersion\":1", "\"schemaVersion\":2")))
-			.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("schema version");
+			.isInstanceOf(IllegalArgumentException.class)
+			.hasMessageContaining("schema version");
 		assertThatThrownBy(() -> codec.decode(encoded.substring(0, encoded.length() - 1) + ",\"unknown\":true}"))
-			.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Invalid trusted execution context");
+			.isInstanceOf(IllegalArgumentException.class)
+			.hasMessageContaining("Invalid trusted execution context");
 	}
 
 	@Test
@@ -148,12 +154,15 @@ class TrustedExecutionContextTest {
 				"trustedExecutionContext");
 	}
 
-	/** The fixture was encoded by the pre-extraction Graph jar, not by the code under test. */
+	/**
+	 * The fixture was encoded by the pre-extraction Graph jar, not by the code under
+	 * test.
+	 */
 	@Test
 	void preExtractionReferenceRemainsReadableAndByteStable() throws Exception {
 		String encoded;
-		try (var input = java.util.Objects.requireNonNull(getClass().getResourceAsStream(
-				"/execution/trusted-context-v1-before-runtime-extraction.json"))) {
+		try (var input = java.util.Objects.requireNonNull(
+				getClass().getResourceAsStream("/execution/trusted-context-v1-before-runtime-extraction.json"))) {
 			encoded = new String(input.readAllBytes(), StandardCharsets.UTF_8).strip();
 		}
 		TrustedExecutionContextCodec codec = new TrustedExecutionContextCodec();
@@ -163,10 +172,30 @@ class TrustedExecutionContextTest {
 		assertThat(reference.runId()).isEqualTo("run-a");
 		assertThat(reference.correlationId()).isEqualTo("correlation-a");
 		assertThat(reference.deadlineEpochMillis()).isEqualTo(Instant.parse("2030-01-01T00:00:00Z").toEpochMilli());
-		assertThat(reference.budgetLimits()).containsExactlyInAnyOrderEntriesOf(
-			Map.of("model_calls", 10L, "tool_calls", 5L));
+		assertThat(reference.budgetLimits())
+			.containsExactlyInAnyOrderEntriesOf(Map.of("model_calls", 10L, "tool_calls", 5L));
 		assertThat(reference.delegationPermissions()).containsExactlyInAnyOrder("agents:delegate", "tools:read");
 		assertThat(codec.encode(reference)).isEqualTo(encoded);
+	}
+
+	@Test
+	void sharedExecutionControlPropagatesThroughExistingGraphConfigs() {
+		TrustedExecutionContext trusted = context("tenant-a", "principal-a", "run-a");
+		Clock clock = Clock.fixed(Instant.parse("2029-01-01T00:00:00Z"), ZoneOffset.UTC);
+		try (ExecutionControl owner = new ExecutionControl(trusted, clock);
+				ExecutionControl control = new ExecutionControl(trusted, clock, owner)) {
+			RunnableConfig config = RunnableConfig.builder()
+				.trustedExecutionContext(trusted)
+				.executionGuard(control)
+				.build();
+			RunnableConfig child = RunnableConfig.builder(config).build();
+			child.assertExecutionActive();
+			owner.loseOwnership();
+			assertThatThrownBy(child::assertExecutionActive).isInstanceOfSatisfying(ExecutionStoppedException.class,
+					exception -> assertThat(exception.reason())
+						.isEqualTo(ExecutionStoppedException.Reason.OWNERSHIP_LOST));
+			assertThat(config.withoutExecutionGuard().executionGuard()).isEmpty();
+		}
 	}
 
 	private TrustedExecutionContext context(String tenantId, String principalId, String runId) {
@@ -180,4 +209,5 @@ class TrustedExecutionContextTest {
 			.delegationScope(DelegationScope.of(Set.of("agents:delegate", "tools:read")))
 			.build();
 	}
+
 }

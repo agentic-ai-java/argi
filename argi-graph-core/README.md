@@ -2,12 +2,14 @@
 
 ## Runtime contract extraction
 
-Identity, immutable execution limits and delegation contracts are now provided by
-[`argi-runtime-api`](../argi-runtime-api/README.md), a JDK-only dependency that can
-be consumed without Graph. Existing fully qualified names and persisted formats
-are retained in this first slice. Graph supplies the dependency transitively.
-The linked ownership map distinguishes this completed extraction from the remaining
-Loop, runtime service and serialization migrations.
+Identity, definition and execution-control contracts are provided by
+[`argi-runtime-api`](../argi-runtime-api/README.md), which is JDK-only.
+Run/Task data, codecs, definition admission and reference storage are provided by
+[`argi-runtime-core`](../argi-runtime-core/README.md), which depends only on Runtime
+API and Jackson. Graph supplies both dependencies transitively. Existing class
+names and v1 data remain readable; neutral v2 adoption and rollback are documented
+in Runtime Core. Graph tracing remains an optional integration for runtime-only
+consumers. Independent Agent/Workflow execution and the Loop migration remain separate.
 
 ## What's ARGI Graph
 

@@ -1,0 +1,1 @@
+{"application":{"id":"shop","kind":"APPLICATION","version":"5"},"codec":{"id":"argi-json","kind":"CODEC","version":"2"},"graph":{"id":"checkout","kind":"GRAPH","version":"1"},"schemaVersion":1,"toolCatalog":{"id":"main","kind":"TOOL_CATALOG","version":"3"}}

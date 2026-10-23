@@ -1,13 +1,14 @@
 # ARGI Runtime API
 
-`io.github.agentic-ai-java:argi-runtime-api` contains the JDK-only identity and
-execution constraint contracts shared by execution engines. It requires Java 17
+`io.github.agentic-ai-java:argi-runtime-api` contains the JDK-only identity, definition and
+execution control contracts shared by execution engines. It requires Java 17
 and has no production dependencies, including Graph, Agent, Workflow, Reactor,
 Spring, Jackson, model SDKs or storage drivers.
 
-This is the first extraction for [#200](https://github.com/agentic-ai-java/argi/issues/200)
+This is the shared contract foundation for [#200](https://github.com/agentic-ai-java/argi/issues/200)
 and the Loop boundary in [#198](https://github.com/agentic-ai-java/argi/issues/198).
-It does not implement the remaining runtime services or complete the Loop migration.
+Run/Task data, codecs and reference storage are in [Runtime Core](../argi-runtime-core/README.md).
+Neither module is an execution engine or completes the Loop migration.
 
 ## Contracts available now
 
@@ -22,6 +23,8 @@ The following classes have one implementation, owned by this artifact:
 | `TrustedExecutionContext` | Authenticated identity, run/correlation IDs, deadline, budget and delegation scope |
 | `TrustedExecutionContextReference` | Versioned persistence data that must be revalidated before use |
 | `TrustedExecutionContextResolver` | Application boundary for re-establishing trusted identity on recovery |
+| Definition references, resolver SPI and worker/recovery declarations | Exact version selection and explicit capability checks |
+| `ExecutionGuard` / `ExecutionControl` | Cooperative cancellation, deadline checks and ownership loss without lease credentials |
 
 `argi-graph-core` depends on this artifact. The contracts neither invoke Graph
 nor load it through reflection. Moving them is a dependency extraction, not an
@@ -32,10 +35,10 @@ adapter that delegates to the old engine.
 | Current capability | Target owner | Decision in this slice |
 | --- | --- | --- |
 | Identity, immutable limits and delegation | Runtime API | Extract the seven contracts above |
-| `TrustedExecutionContextCodec` | Optional runtime serialization support | Keep the existing Graph-hosted codec temporarily; do not add Jackson to the API |
-| Cancellation, deadline enforcement and execution ownership | Shared runtime contracts plus executor enforcement | Determine the enforcement boundary under #200; limits alone do not enforce it |
-| Run/Task and versioned definition references | Runtime API and runtime services | Defer relocation until graph-specific fields and wire compatibility are resolved under #200/#182 |
-| RunStore and in-memory reference implementation | Runtime services | Preserve existing behavior until the runtime service slice; do not place implementations in this API |
+| `TrustedExecutionContextCodec` | Optional runtime serialization support | Extract into Runtime Core; keep Jackson out of the API |
+| Cancellation, deadline enforcement and execution ownership | Shared runtime contracts plus executor enforcement | ExecutionControl supplies local stop checks; executors own timers, usage accounting and side-effect cancellation |
+| Run/Task and versioned definition references | Runtime API and Runtime Core | References/resolver in API; Run/Task and strict v1/v2 codecs in Core |
+| RunStore and in-memory reference implementation | Runtime services | Extract into Runtime Core and preserve the atomicity/fencing contract |
 | Graph topology, compilation, routing, parallel merge and subgraphs | Loop core | Retain in Graph until the dedicated engine migration |
 | Graph state, graph checkpoints and graph recovery | Loop core and persistence SPI | Retain graph semantics; align historical data handling with #182 |
 | General state storage and database implementations | Shared storage contracts and Extensions | Compare implementations and assign a single maintenance owner under #190 |
@@ -48,8 +51,9 @@ execution loop. Neither engine is made independent by this extraction alone.
 
 ## Package and compatibility decision
 
-The seven contracts retain their existing
-`io.github.agentic.ai.graph.execution` fully qualified names in this first slice.
+The extracted contracts retain their existing
+`io.github.agentic.ai.graph.execution` fully qualified names. ExecutionGuard also retains its original checkpoint.lease name;
+new ExecutionControl types use io.github.agentic.ai.runtime.execution.
 The package name is transitional; it does not represent an artifact dependency.
 
 Alternatives considered:
@@ -64,7 +68,7 @@ Alternatives considered:
   or serialized type names. This is the adopted first step.
 
 The current build uses the Java classpath, with no JPMS module descriptors. The
-legacy codec and these contracts temporarily share a package across artifacts;
+Runtime Core codecs and these contracts temporarily share a package across artifacts;
 this slice does not introduce a module-path compatibility guarantee. Final
 namespace migration must resolve that split together with codec ownership and
 historical payload handling, before the Loop migration is considered complete.
@@ -82,15 +86,17 @@ Import the matching `argi-bom` to manage the version. The first target is
 `2.1.0-RC2-SNAPSHOT`; publishing remains a separate operation.
 
 - Existing Maven consumers of Graph receive this artifact transitively. Existing
-  imports, API descriptors, configuration keys and data schemas remain unchanged.
+  imports and configuration keys remain unchanged. See Runtime Core for Run/Task v2
+  adoption and record-layout compatibility.
 - Runtime-only consumers depend directly on this artifact.
 - Manually assembled classpaths must add the matching runtime API jar when
   upgrading Graph. Do not combine an old Graph jar containing these classes
   with the extracted runtime API jar.
-- No state or checkpoint conversion is required for this extraction. Reference
+- No state or checkpoint conversion is required for the identity extraction. Reference
   JSON remains schema version 1; decoded references are still not authentication.
-- Roll back the matching Graph/runtime API/BOM set together. No data rollback is
-  necessary because this slice changes neither serialized names nor fields.
+- Roll back the matching Graph/runtime API/runtime Core/BOM set together. Identity
+  data needs no conversion; if v2 runs have been admitted, follow the Runtime Core
+  reader-upgrade and rollback rules rather than exposing them to old workers.
 
 ## Verification
 
