@@ -6,8 +6,9 @@ Agent invocation contracts. Its only production dependencies are `argi-api`
 budgets and execution control). It does not bring in Graph, Runtime Core,
 Jackson, Reactor, Spring, provider SDKs or an execution engine.
 
-This completes the contract extraction in [#195](https://github.com/agentic-ai-java/argi/issues/195),
-not the independent ReAct engine (#196), declarative Workflow engine (#197),
+This completes the contract extraction in [#195](https://github.com/agentic-ai-java/argi/issues/195) and
+is consumed by the independent ReAct engine in `argi-agent-core`; it is not the
+declarative Workflow engine (#197),
 Loop migration/optional bridge (#198), or definition factories (#199).
 The existing Graph-backed agents continue to work through their existing API.
 

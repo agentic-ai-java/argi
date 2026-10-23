@@ -38,7 +38,7 @@ import io.github.agentic.ai.api.tool.ToolResult;
  * <li>return the passed-in {@code result} unchanged when the call succeeded;</li>
  * <li>return an error-marked result (e.g. {@code ToolResult.error(...)} enriched with
  * metadata such as an {@code errorCode}) when the business outcome is a failure — the
- * response status then becomes {@link ToolOutcome#BUSINESS_FAILED};</li>
+ * executing engine records a business failure;</li>
  * <li>never return {@code null}; implementations should avoid throwing, but an
  * exception escapes as a regular tool execution failure rather than being swallowed.</li>
  * </ul>

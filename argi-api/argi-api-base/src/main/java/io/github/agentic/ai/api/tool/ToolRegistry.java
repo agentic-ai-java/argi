@@ -57,6 +57,11 @@ public final class ToolRegistry {
 		return definitions;
 	}
 
+	/** Returns the immutable executable bindings for composition by an agent runtime. */
+	public List<Tool> tools() {
+		return List.copyOf(tools.values());
+	}
+
 	public Optional<Tool> find(String name) {
 		return Optional.ofNullable(tools.get(Objects.requireNonNull(name, "name must not be null")));
 	}

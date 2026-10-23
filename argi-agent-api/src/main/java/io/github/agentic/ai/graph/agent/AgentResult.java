@@ -22,7 +22,7 @@ import io.github.agentic.ai.api.chat.Usage;
 
 /**
  * Structured delivery contract for an agent run, produced by the opt-in
- * {@link ReactAgent#callResult(Object)} entries. The existing {@code call}/{@code
+ * strict result-delivery entries. The existing Graph {@code call}/{@code
  * invoke}/{@code stream} APIs keep returning raw messages; this type is only produced
  * by the strict-delivery entries, so adoption is fully opt-in.
  *

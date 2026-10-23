@@ -24,7 +24,6 @@ import com.networknt.schema.Error;
 import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SpecificationVersion;
-import org.springframework.util.StringUtils;
 
 import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatMessage;
@@ -106,7 +105,7 @@ public final class StructuredOutputFinalizer {
 	 * @return the delivery result; never {@code null} and never thrown over
 	 */
 	public AgentResult finalizeOutput(ChatMessage terminal, String outputSchema, Usage usage) {
-		if (!StringUtils.hasLength(outputSchema)) {
+		if (outputSchema == null || outputSchema.isEmpty()) {
 			return AgentResult.completed(terminal, usage, null);
 		}
 
@@ -174,7 +173,7 @@ public final class StructuredOutputFinalizer {
 		try {
 			String issueSummary = issues.stream()
 				.map(issue -> issue.errorCode()
-						+ (StringUtils.hasLength(issue.fieldPath()) && !ROOT_PATH.equals(issue.fieldPath())
+						+ (issue.fieldPath() != null && !issue.fieldPath().isEmpty() && !ROOT_PATH.equals(issue.fieldPath())
 								? " at " + issue.fieldPath() : ""))
 				.collect(Collectors.joining("; "));
 			ChatMessage system = ChatMessage
