@@ -78,6 +78,8 @@ Open [http://localhost:8080/chatui/index.html](http://localhost:8080/chatui/inde
 - [Quick Start](https://agentic-ai-java.github.io/argi-website/en/docs/quick-start)
 - [Agent Framework tutorials](https://agentic-ai-java.github.io/argi-website/en/docs/frameworks/agent-framework/tutorials/agents)
 - [Loop Core Quick Start](https://agentic-ai-java.github.io/argi-website/en/docs/frameworks/loop-core/quick-start)
+- [Clear Room baseline](docs/architecture/clear-room-baseline.md)
+- [Checkpoint compatibility contract](docs/architecture/checkpoint-compatibility.md)
 - [Examples](https://github.com/agentic-ai-java/argi-examples/tree/main/examples)
 - [Provider-specific examples](https://github.com/agentic-ai-java/argi-extensions/tree/main/examples)
 

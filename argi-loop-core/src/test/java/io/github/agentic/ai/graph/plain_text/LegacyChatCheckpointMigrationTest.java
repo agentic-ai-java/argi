@@ -29,6 +29,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -51,11 +52,7 @@ class LegacyChatCheckpointMigrationTest {
 	void migratesPersistedHistoryAndWritesOnlyNeutralRecords() throws Exception {
 		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 		try (var output = new ObjectOutputStream(bytes)) {
-			Serializer.writeUTF("""
-					{"messages":[{"@class":"org.springframework.ai.chat.messages.SystemMessage","text":"system"},
-					{"@type":"ASSISTANT","text":"answer"},
-					{"@type":"TOOL","responses":[{"id":"id","name":"search","responseData":"result"}]}]}
-					""", output);
+			Serializer.writeUTF(resourceText("legacy-chat-checkpoint.json"), output);
 		}
 		OverAllState state;
 		try (var input = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
@@ -151,6 +148,14 @@ class LegacyChatCheckpointMigrationTest {
 		IOException error = assertThrows(IOException.class,
 				() -> read("{\"@type\":\"ARGI_STREAMING_OUTPUT\",\"message\":{}}"));
 		assertTrue(error.getMessage().contains("Legacy StreamingOutput"));
+	}
+
+	private String resourceText(String name) throws IOException {
+		String path = "compatibility/2.1.0/" + name;
+		try (var input = Thread.currentThread().getContextClassLoader().getResourceAsStream(path)) {
+			assertTrue(input != null, "compatibility fixture must exist: " + path);
+			return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+		}
 	}
 
 }

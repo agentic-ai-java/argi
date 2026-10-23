@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {
+      "@class": "org.springframework.ai.chat.messages.SystemMessage",
+      "text": "system"
+    },
+    {
+      "@type": "ASSISTANT",
+      "text": "answer"
+    },
+    {
+      "@type": "TOOL",
+      "responses": [
+        {
+          "id": "id",
+          "name": "search",
+          "responseData": "result"
+        }
+      ]
+    }
+  ]
+}

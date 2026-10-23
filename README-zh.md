@@ -73,6 +73,8 @@ mvn -f examples/chatbot/pom.xml spring-boot:run
 - [快速开始](https://agentic-ai-java.github.io/argi-website/docs/quick-start)
 - [Agent Framework 教程](https://agentic-ai-java.github.io/argi-website/docs/frameworks/agent-framework/tutorials/agents)
 - [Loop Core 快速开始](https://agentic-ai-java.github.io/argi-website/docs/frameworks/loop-core/quick-start)
+- [Clear Room 基线与命名决策](docs/architecture/clear-room-baseline.md)
+- [Checkpoint 兼容契约](docs/architecture/checkpoint-compatibility.md)
 - [示例项目](https://github.com/agentic-ai-java/argi-examples/tree/main/examples)
 - [模型厂商相关示例](https://github.com/agentic-ai-java/argi-extensions/tree/main/examples)
 
