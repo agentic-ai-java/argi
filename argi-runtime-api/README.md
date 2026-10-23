@@ -42,12 +42,14 @@ adapter that delegates to the old engine.
 | Graph topology, compilation, routing, parallel merge and subgraphs | Loop core | Retain in Graph until the dedicated engine migration |
 | Graph state, graph checkpoints and graph recovery | Loop core and persistence SPI | Retain graph semantics; align historical data handling with #182 |
 | General state storage and database implementations | Shared storage contracts and Extensions | Compare implementations and assign a single maintenance owner under #190 |
-| Model streams, messages, tools and skills | Agent/model capabilities and optional Loop integrations | Move out of the basic engine in a later slice; retain their current behavior now |
+| Model streams, messages, tools and skills | Agent/model capabilities and optional Loop integrations | Model/tool contracts are in argi-api; portable model interception and authorization are in Agent API. Graph-specific hooks and skills lifecycle remain in Framework until the independent engine migration. |
 | Graph observations versus agent/run tracing | Loop integration versus shared runtime integration | Separate by semantics; do not move all observation classes as one package |
 | Scheduling and Studio | Optional runtime services and management clients | Keep current entry points until their replacement contracts exist |
 
 Workflow will execute independently of Loop. ReAct will also have its own
 execution loop. Neither engine is made independent by this extraction alone.
+Their shared invocation boundary and capability ownership map are now in
+[Agent API](../argi-agent-api/README.md), which depends only on Runtime API and API.
 
 ## Package and compatibility decision
 

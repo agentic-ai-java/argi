@@ -160,8 +160,8 @@ public class ModelRequest {
 
 	/**
 	 * Trusted execution context of the run that issued this model call, when the
-	 * application supplied one through {@code RunnableConfig}. It cannot be set from
-	 * graph state or runtime metadata maps.
+	 * application supplied one through its authenticated execution boundary. It cannot
+	 * be set implicitly from application inputs or runtime metadata maps.
 	 */
 	public Optional<TrustedExecutionContext> getTrustedExecutionContext() {
 		return Optional.ofNullable(trustedExecutionContext);

@@ -61,6 +61,7 @@ Open [http://localhost:8080/chatui/index.html](http://localhost:8080/chatui/inde
 | [Agent Framework](argi-agent-framework) | Agent development and multi-agent orchestration |
 | [Graph Core](argi-graph-core) | State management, persistence, and workflow runtime |
 | [Runtime API](argi-runtime-api) | JDK-only identity, definition and execution-control contracts |
+| [Agent API](argi-agent-api) | Engine-neutral agent invocation and shared interception contracts |
 | [Runtime Core](argi-runtime-core) | Engine-neutral Run/Task data, codecs and reference storage |
 | [Studio](argi-studio) | Visual debugging UI for agents |
 | [Sandbox](https://github.com/agentic-ai-java/argi-extensions/tree/main/sandbox/argi-sandbox) | Optional isolated execution environment for tool calls, maintained in Extensions |

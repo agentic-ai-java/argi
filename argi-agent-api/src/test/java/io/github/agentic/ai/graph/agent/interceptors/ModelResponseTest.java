@@ -24,8 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Flow;
 import org.junit.jupiter.api.Test;
-import reactor.adapter.JdkFlowAdapter;
-import reactor.core.publisher.Flux;
+import java.util.concurrent.SubmissionPublisher;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -43,7 +42,7 @@ class ModelResponseTest {
 
 	@Test
 	void streamingResponseRetainsPublisherAndRejectsSynchronousAccess() {
-		Flow.Publisher<ChatEvent> publisher = JdkFlowAdapter.publisherToFlowPublisher(Flux.empty());
+		Flow.Publisher<ChatEvent> publisher = new SubmissionPublisher<>();
 		ModelResponse response = ModelResponse.stream(publisher);
 		assertThat(response.isStreaming()).isTrue();
 		assertThat(response.getStream()).isSameAs(publisher);

@@ -54,6 +54,7 @@
         <module>argi-api/argi-adapter-google-adk</module>
         <module>argi-runtime-api</module>
         <module>argi-runtime-core</module>
+        <module>argi-agent-api</module>
         <module>argi-graph-core</module>
         <module>argi-agent-framework</module>
         <module>argi-studio</module>
@@ -243,6 +244,11 @@
             <dependency>
                 <groupId>io.github.agentic-ai-java</groupId>
                 <artifactId>argi-runtime-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-agent-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

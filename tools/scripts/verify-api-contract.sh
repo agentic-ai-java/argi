@@ -66,6 +66,57 @@ for dependency in "${runtime_jars[@]}"; do
         *) echo "Unexpected runtime core dependency: ${dependency}" >&2; exit 1 ;;
     esac
 done
+
+# Agent callers get only three neutral jars, never an execution engine or provider SDK.
+readonly AGENT_FIXTURE="${REPO_ROOT}/tools/compatibility/agent-api-consumer"
+"${REPO_ROOT}/mvnw" -B -f "${AGENT_FIXTURE}/pom.xml" clean compile \
+    org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+    -Dmdep.outputFile=target/agent-classpath.txt
+agent_classpath="$(cat "${AGENT_FIXTURE}/target/agent-classpath.txt")"
+IFS=: read -r -a agent_jars <<< "${agent_classpath}"
+if [[ ${#agent_jars[@]} -ne 3 ]]; then
+    echo "Agent API must resolve to exactly API, Runtime API and Agent API" >&2
+    exit 1
+fi
+agent_api_jar=""
+for dependency in "${agent_jars[@]}"; do
+    case "$(basename "${dependency}")" in
+        argi-agent-api-*.jar) agent_api_jar="${dependency}" ;;
+        argi-runtime-api-*.jar|argi-api-*.jar) ;;
+        *) echo "Unexpected Agent API dependency: ${dependency}" >&2; exit 1 ;;
+    esac
+    if [[ "$(jdeps --multi-release 17 --class-path "${agent_classpath}" --print-module-deps "${dependency}")" != 'java.base' ]]; then
+        echo "Agent API and its dependencies must use only java.base" >&2
+        exit 1
+    fi
+done
+test -n "${agent_api_jar}"
+java -cp "${AGENT_FIXTURE}/target/classes:${agent_classpath}" \
+    io.github.agentic.ai.contract.AgentApiConsumer
+jdeps --multi-release 17 -verbose:class --class-path "${agent_classpath}" \
+    "${agent_api_jar}" > "${AGENT_FIXTURE}/target/bytecode-dependencies.txt"
+if grep -q 'not found' "${AGENT_FIXTURE}/target/bytecode-dependencies.txt"; then
+    echo "Agent API has unresolved bytecode dependencies" >&2
+    exit 1
+fi
+javap -classpath "${agent_classpath}" -public \
+    io.github.agentic.ai.agent.Agent io.github.agentic.ai.agent.AgentRequest \
+    io.github.agentic.ai.agent.AgentOutcome io.github.agentic.ai.agent.AgentEvent \
+    io.github.agentic.ai.agent.AgentExecutionContext > "${AGENT_FIXTURE}/target/public-signatures.txt"
+if grep -E 'OverAllState|RunnableConfig|CompiledGraph|StateGraph|initGraph|getAndCompileGraph|asNode' \
+        "${AGENT_FIXTURE}/target/public-signatures.txt"; then
+    echo "Agent invocation signatures expose graph execution" >&2
+    exit 1
+fi
+framework_jar="${REPO_ROOT}/argi-agent-framework/target/$(basename "${agent_api_jar}" | sed s/argi-agent-api/argi-agent-framework/)"
+jar tf "${framework_jar}" | grep '.class$' | sort > "${AGENT_FIXTURE}/target/framework-classes.txt"
+jar tf "${agent_api_jar}" | grep '.class$' | sort > "${AGENT_FIXTURE}/target/api-classes.txt"
+if [[ -n "$(comm -12 "${AGENT_FIXTURE}/target/framework-classes.txt" "${AGENT_FIXTURE}/target/api-classes.txt")" ]]; then
+    echo "Agent Framework duplicates extracted API classes" >&2
+    exit 1
+fi
+echo "Standalone local, workflow and HTTP agent calls, signatures and bytecode gates passed"
+
 for kind in agent workflow graph; do
     java -cp "${RUNTIME_CORE_FIXTURE}/target/classes:${runtime_core_classpath}" \
         io.github.agentic.ai.contract.RuntimeCoreConsumer "${kind}"

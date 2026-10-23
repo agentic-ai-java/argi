@@ -23,7 +23,7 @@ import io.github.agentic.ai.graph.execution.TrustedExecutionContext;
  * <p>
  * Implementations decide whether a tool call should be allowed based on the tool name
  * and trusted execution context. The framework calls this policy before every tool
- * execution when a {@link ToolAuthorizationInterceptor} is configured.
+ * execution when an authorization interceptor is configured in the executing engine.
  *
  * <p>
  * This policy is invoked on every tool call, including retries. Implementations must
@@ -37,9 +37,8 @@ import io.github.agentic.ai.graph.execution.TrustedExecutionContext;
  *       development, testing, or gradual migration from unprotected code.</li>
  *   <li>{@link #denyAll()} — rejects every tool call; useful for hard-disabling execution
  *       in a specific environment.</li>
- *   <li>{@link #requireMatchingTenant()} — allows a call only when the caller's tenant
- *       matches the tenant of the thread/session; suitable as an out-of-the-box tenant
- *       boundary when a full custom policy is not yet in place.</li>
+ *   <li>{@link #requireMatchingTenant()} — requires a trusted tenant identity; despite
+ *       its historical name, it does not compare caller and target tenants.</li>
  * </ul>
  */
 public interface ToolAuthorizationPolicy {

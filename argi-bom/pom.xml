@@ -184,6 +184,11 @@
             </dependency>
             <dependency>
                 <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-agent-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
                 <artifactId>argi-adapter-spring-ai</artifactId>
                 <version>${project.version}</version>
             </dependency>

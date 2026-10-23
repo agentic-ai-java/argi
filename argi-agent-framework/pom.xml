@@ -39,6 +39,11 @@
 
     <dependencies>
         <dependency>
+            <groupId>io.github.agentic-ai-java</groupId>
+            <artifactId>argi-agent-api</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.jspecify</groupId>
             <artifactId>jspecify</artifactId>
         </dependency>
