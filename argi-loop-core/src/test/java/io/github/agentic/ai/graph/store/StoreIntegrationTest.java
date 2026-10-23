@@ -15,11 +15,8 @@
  */
 package io.github.agentic.ai.graph.store;
 
-import io.github.agentic.ai.graph.store.stores.DatabaseStore;
 import io.github.agentic.ai.graph.store.stores.FileSystemStore;
 import io.github.agentic.ai.graph.store.stores.MemoryStore;
-import io.github.agentic.ai.graph.store.stores.MongoStore;
-import io.github.agentic.ai.graph.store.stores.RedisStore;
 
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -27,8 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -46,8 +41,7 @@ public class StoreIntegrationTest {
 	@Test
 	void testAllStoreImplementations() {
 		// Create instances of all Store implementations
-		List<Store> stores = Arrays.asList(new MemoryStore(), new FileSystemStore(tempDir), createDatabaseStore(),
-				new RedisStore(), new MongoStore());
+		List<Store> stores = Arrays.asList(new MemoryStore(), new FileSystemStore(tempDir));
 
 		for (Store store : stores) {
 			testStoreBasicOperations(store);
@@ -75,8 +69,7 @@ public class StoreIntegrationTest {
 	@Test
 	void testStoreConsistencyAcrossImplementations() {
 		// Create instances of all Store implementations
-		List<Store> stores = Arrays.asList(new MemoryStore(), new FileSystemStore(tempDir.resolve("consistency")),
-				createDatabaseStore(), new RedisStore(), new MongoStore());
+		List<Store> stores = Arrays.asList(new MemoryStore(), new FileSystemStore(tempDir.resolve("consistency")));
 
 		// Test data
 		List<String> namespace = List.of("test", "consistency");
@@ -108,8 +101,7 @@ public class StoreIntegrationTest {
 
 	@Test
 	void listNamespacesWithPrefixOnlyReturnsNamespacesStartingWithPrefixAcrossImplementations() {
-		List<Store> stores = Arrays.asList(new MemoryStore(), new FileSystemStore(tempDir.resolve("prefix-contract")),
-				createDatabaseStore(), new RedisStore(), new MongoStore());
+		List<Store> stores = Arrays.asList(new MemoryStore(), new FileSystemStore(tempDir.resolve("prefix-contract")));
 
 		for (Store store : stores) {
 			setupHierarchicalTestData(store);
@@ -241,19 +233,6 @@ public class StoreIntegrationTest {
 		List<String> limitedNs = store.listNamespaces(limitedDepth);
 		// Should not contain 3-level namespaces
 		assertThat(limitedNs).doesNotContain("company/engineering/backend", "company/engineering/frontend");
-	}
-
-	private DatabaseStore createDatabaseStore() {
-		// Create H2 in-memory database
-		String dbUrl = "jdbc:h2:mem:integration_test_" + System.nanoTime()
-				+ ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
-		HikariConfig config = new HikariConfig();
-		config.setJdbcUrl(dbUrl);
-		config.setUsername("sa");
-		config.setPassword("");
-		config.setDriverClassName("org.h2.Driver");
-
-		return new DatabaseStore(new HikariDataSource(config), "integration_store");
 	}
 
 }

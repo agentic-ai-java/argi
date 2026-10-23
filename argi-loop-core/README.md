@@ -10,6 +10,22 @@ artifact with `argi-loop-core`. Java packages and graph type names remain
 unchanged in this phase so existing source and persisted type names remain
 readable. No checkpoint or store wire literal is renamed by the artifact move.
 
+## Persistence boundary
+
+Loop Core owns the checkpoint and Store contracts plus the memory and filesystem
+reference implementations. Durable JDBC, MongoDB and Redis implementations are
+maintained in the optional Extensions artifacts:
+
+- `argi-graph-persistence-jdbc`
+- `argi-graph-persistence-mongodb`
+- `argi-graph-persistence-redis`
+
+Those adapters consume `argi-loop-core` and preserve the existing checkpoint
+fields, serializer markers, table names, Redis keys and namespace rules. Loop
+Core deliberately has no database or Redis driver dependency. See
+[`persistence-ownership.md`](../docs/architecture/persistence-ownership.md) for
+the ownership matrix and migration steps.
+
 ## Runtime contract extraction
 
 Identity, definition and execution-control contracts are provided by

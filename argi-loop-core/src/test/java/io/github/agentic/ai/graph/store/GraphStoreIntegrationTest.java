@@ -20,11 +20,8 @@ import io.github.agentic.ai.graph.OverAllState;
 import io.github.agentic.ai.graph.StateGraph;
 import io.github.agentic.ai.graph.serializer.std.ObjectStreamStateSerializer;
 import io.github.agentic.ai.graph.state.strategy.ReplaceStrategy;
-import io.github.agentic.ai.graph.store.stores.DatabaseStore;
 import io.github.agentic.ai.graph.store.stores.FileSystemStore;
 import io.github.agentic.ai.graph.store.stores.MemoryStore;
-import io.github.agentic.ai.graph.store.stores.MongoStore;
-import io.github.agentic.ai.graph.store.stores.RedisStore;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -34,8 +31,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -67,12 +62,6 @@ public class GraphStoreIntegrationTest {
 	void testUserSessionWorkflowWithFileSystemStore() throws Exception {
 		// Test user session workflow with file system store
 		testUserSessionWorkflow(new FileSystemStore(tempDir.resolve("user_sessions")), "FileSystem");
-	}
-
-	@Test
-	void testUserSessionWorkflowWithDatabaseStore() throws Exception {
-		// Test user session workflow with database store
-		testUserSessionWorkflow(createDatabaseStore("user_workflow"), "Database");
 	}
 
 	@Test
@@ -222,12 +211,6 @@ public class GraphStoreIntegrationTest {
 					storeType = "Memory";
 				else if (sessionStore instanceof FileSystemStore)
 					storeType = "FileSystem";
-				else if (sessionStore instanceof DatabaseStore)
-					storeType = "Database";
-				else if (sessionStore instanceof RedisStore)
-					storeType = "Redis";
-				else if (sessionStore instanceof MongoStore)
-					storeType = "MongoDB";
 
 				return Map.of("status", "session_complete", "storeType", storeType);
 			}))
@@ -435,18 +418,6 @@ public class GraphStoreIntegrationTest {
 				Map.of("theme", "auto", "language", "ja", "timezone", "Asia/Tokyo")));
 		store.putItem(StoreItem.of(List.of("system"), "theme_defaults",
 				Map.of("default_theme", "light", "available_themes", List.of("light", "dark", "auto"))));
-	}
-
-	private DatabaseStore createDatabaseStore(String suffix) {
-		String dbUrl = "jdbc:h2:mem:graph_integration_" + suffix + "_" + System.nanoTime()
-				+ ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
-		HikariConfig config = new HikariConfig();
-		config.setJdbcUrl(dbUrl);
-		config.setUsername("sa");
-		config.setPassword("");
-		config.setDriverClassName("org.h2.Driver");
-
-		return new DatabaseStore(new HikariDataSource(config), "graph_store");
 	}
 
 }
