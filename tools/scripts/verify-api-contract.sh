@@ -131,6 +131,20 @@ java -cp "${REACT_FIXTURE}/target/classes:${react_classpath}" \
     io.github.agentic.ai.contract.ReActAgentConsumer
 echo "Standalone ReAct consumer executed without Graph or framework artifacts"
 
+readonly WORKFLOW_FIXTURE="${REPO_ROOT}/tools/compatibility/workflow-consumer"
+"${REPO_ROOT}/mvnw" -B -f "${WORKFLOW_FIXTURE}/pom.xml" clean compile \
+    org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+    -Dmdep.outputFile=target/workflow-classpath.txt
+workflow_classpath="$(cat "${WORKFLOW_FIXTURE}/target/workflow-classpath.txt")"
+if [[ "${workflow_classpath}" == *argi-graph-core* || "${workflow_classpath}" == *argi-agent-framework* \
+        || "${workflow_classpath}" == *spring* || "${workflow_classpath}" == *reactor* ]]; then
+    echo "Independent Workflow consumer resolved a Graph, framework, Spring or Reactor dependency" >&2
+    exit 1
+fi
+java -cp "${WORKFLOW_FIXTURE}/target/classes:${workflow_classpath}" \
+    io.github.agentic.ai.contract.WorkflowConsumer
+echo "Standalone Workflow consumer executed without Graph or framework artifacts"
+
 for kind in agent workflow graph; do
     java -cp "${RUNTIME_CORE_FIXTURE}/target/classes:${runtime_core_classpath}" \
         io.github.agentic.ai.contract.RuntimeCoreConsumer "${kind}"

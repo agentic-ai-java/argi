@@ -56,6 +56,7 @@
         <module>argi-runtime-core</module>
         <module>argi-agent-api</module>
         <module>argi-agent-core</module>
+        <module>argi-workflow-core</module>
         <module>argi-graph-core</module>
         <module>argi-agent-framework</module>
         <module>argi-studio</module>
@@ -255,6 +256,11 @@
             <dependency>
                 <groupId>io.github.agentic-ai-java</groupId>
                 <artifactId>argi-agent-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.agentic-ai-java</groupId>
+                <artifactId>argi-workflow-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
