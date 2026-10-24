@@ -521,18 +521,30 @@ public class LocalFilesystemBackend implements FilesystemBackend {
 	// Helper methods
 
 	private Map<String, List<LineMatch>> ripgrepSearch(String pattern, Path baseFull, String includeGlob) {
+		boolean explicitFile = Files.isRegularFile(baseFull, LinkOption.NOFOLLOW_LINKS);
 		List<String> cmd = new ArrayList<>();
 		cmd.add("rg");
 		cmd.add("--json");
-		if (includeGlob != null) {
+		cmd.add("--max-filesize");
+		cmd.add(Long.toString(maxFileSizeBytes));
+		if (explicitFile) {
+			// Explicit file arguments bypass rg's size filter. Select the file through directory traversal instead.
+			cmd.add("--max-depth");
+			cmd.add("1");
+			cmd.add("--glob");
+			cmd.add(literalRipgrepGlob(baseFull.getFileName().toString()));
+		} else if (includeGlob != null) {
 			cmd.add("--glob");
 			cmd.add(includeGlob);
 		}
 		cmd.add("--");
 		cmd.add(pattern);
-		cmd.add(baseFull.toString());
+		cmd.add((explicitFile ? baseFull.getParent() : baseFull).toString());
 
 		try {
+			if (explicitFile && Files.size(baseFull) > maxFileSizeBytes) {
+				return Collections.emptyMap();
+			}
 			ProcessBuilder pb = new ProcessBuilder(cmd);
 			Process process = pb.start();
 
@@ -588,6 +600,17 @@ public class LocalFilesystemBackend implements FilesystemBackend {
 			// Ripgrep not available or failed, return null to fallback to Java search
 			return null;
 		}
+	}
+
+	private String literalRipgrepGlob(String filename) {
+		StringBuilder glob = new StringBuilder();
+		for (char character : filename.toCharArray()) {
+			if ("\\*?[]{}!".indexOf(character) >= 0) {
+				glob.append('\\');
+			}
+			glob.append(character);
+		}
+		return glob.toString();
 	}
 
 	private Map<String, List<LineMatch>> javaSearch(String pattern, Path baseFull, String includeGlob) {
