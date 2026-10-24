@@ -41,6 +41,9 @@ import io.github.agentic.ai.agent.interceptor.authorization.AuthorizationDecisio
 import io.github.agentic.ai.agent.interceptor.authorization.ToolAuthorizationPolicy;
 import io.github.agentic.ai.agent.result.StructuredOutputFinalizer;
 import io.github.agentic.ai.agent.tool.patch.ToolContextPatchPolicy;
+import io.github.agentic.ai.agent.tool.patch.strict.StateIsolation;
+import io.github.agentic.ai.agent.tool.patch.strict.StrictPatchAdmission;
+import io.github.agentic.ai.agent.tool.patch.strict.ToolUpdateUnit;
 import io.github.agentic.ai.agent.tool.patch.ToolContextPatchValidator;
 import io.github.agentic.ai.agent.tool.patch.ToolContextPatchViolationException;
 import io.github.agentic.ai.agent.validation.ToolArgumentValidator;
@@ -79,6 +82,8 @@ public final class ReActAgent implements Agent {
 
 	private final ToolContextPatchPolicy patchPolicy;
 
+	private final boolean strictToolState;
+
 	private final BusinessOutcomeMapperRegistry outcomeMappers;
 
 	private final HumanInTheLoop humanInTheLoop;
@@ -101,6 +106,7 @@ public final class ReActAgent implements Agent {
 				"authorizationPolicy must not be null");
 		this.validateToolArguments = builder.validateToolArguments;
 		this.patchPolicy = builder.patchPolicy;
+		this.strictToolState = builder.strictToolState;
 		this.outcomeMappers = Objects.requireNonNull(builder.outcomeMappers, "outcomeMappers must not be null");
 		this.humanInTheLoop = builder.humanInTheLoop;
 		this.outputFinalizer = builder.outputFinalizer;
@@ -134,6 +140,8 @@ public final class ReActAgent implements Agent {
 		private boolean validateToolArguments;
 
 		private ToolContextPatchPolicy patchPolicy;
+
+		private boolean strictToolState;
 
 		private BusinessOutcomeMapperRegistry outcomeMappers = BusinessOutcomeMapperRegistry.empty();
 
@@ -175,6 +183,24 @@ public final class ReActAgent implements Agent {
 
 		public Builder patchPolicy(ToolContextPatchPolicy patchPolicy) {
 			this.patchPolicy = patchPolicy;
+			return this;
+		}
+
+		/**
+		 * Opt-in strict tool-state mode. Tools then receive a read-only view of the
+		 * invocation state instead of the live map (writes escape only through the
+		 * {@link ToolContextPatchProvider} patch channel), and a failed call's patch is
+		 * always discarded regardless of {@code discardPatchOnFailedResult}. Merging
+		 * stays sequential last-write-wins, deliberately diverging from the graph path's
+		 * KeyStrategy-honoring strict merges: the ReAct state is an invocation-local
+		 * output map rather than the shared graph blackboard, and tool execution is
+		 * sequential, so the result is already deterministic w.r.t. completion order.
+		 * Default {@code false}: legacy behavior.
+		 * @param strict true to enable strict tool-state semantics
+		 * @return this builder
+		 */
+		public Builder strictToolState(boolean strict) {
+			this.strictToolState = strict;
 			return this;
 		}
 
@@ -492,7 +518,9 @@ public final class ReActAgent implements Agent {
 					return new ToolStep(false, null);
 				}
 			}
-			CompletableFuture<ToolResult> future = availableTools.execute(call, new ToolContext(state)).toCompletableFuture();
+			Map<String, Object> toolVisibleState = strictToolState ? StateIsolation.readOnlyView(state) : state;
+			CompletableFuture<ToolResult> future = availableTools.execute(call, new ToolContext(toolVisibleState))
+				.toCompletableFuture();
 			toolOperation.set(future);
 			try (AutoCloseable ignored = context.control().onLoss(() -> future.cancel(true))) {
 				ToolResult result;
@@ -528,6 +556,16 @@ public final class ReActAgent implements Agent {
 		private void admitPatch(String toolName, ToolResult result, Map<String, Object> patch,
 				Map<String, Object> state) {
 			if (patch == null || patch.isEmpty()) {
+				return;
+			}
+			if (strictToolState) {
+				// Hard rule: a failed call's patch is always discarded, independent of
+				// discardPatchOnFailedResult; the shared admission also applies the policy
+				// validation, so both paths enforce identical rules.
+				if (StrictPatchAdmission.admit(patchPolicy,
+						new ToolUpdateUnit(toolName, !result.error(), patch))) {
+					state.putAll(patch);
+				}
 				return;
 			}
 			if (patchPolicy != null && result.error() && patchPolicy.discardPatchOnFailedResult()) {

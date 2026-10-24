@@ -21,6 +21,7 @@ import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.api.tool.ToolRegistry;
 import io.github.agentic.ai.api.tool.ToolResult;
+import io.github.agentic.ai.workflow.graph.KeyStrategy;
 import io.github.agentic.ai.workflow.graph.OverAllState;
 import io.github.agentic.ai.workflow.graph.RunnableConfig;
 import io.github.agentic.ai.workflow.graph.action.NodeActionWithConfig;
@@ -39,6 +40,10 @@ import io.github.agentic.ai.agent.tool.patch.ToolContextPatchPolicy;
 import io.github.agentic.ai.agent.tool.patch.ToolContextPatchSpec;
 import io.github.agentic.ai.agent.tool.patch.ToolContextPatchValidator;
 import io.github.agentic.ai.agent.tool.patch.ToolContextPatchViolationException;
+import io.github.agentic.ai.agent.tool.patch.strict.StateIsolation;
+import io.github.agentic.ai.agent.tool.patch.strict.StrictMergeRules;
+import io.github.agentic.ai.agent.tool.patch.strict.StrictPatchAdmission;
+import io.github.agentic.ai.agent.tool.patch.strict.ToolUpdateUnit;
 import io.github.agentic.ai.agent.validation.ToolArgumentValidator;
 import io.github.agentic.ai.runtime.execution.ExecutionGuard;
 import io.github.agentic.ai.workflow.graph.checkpoint.lease.LeaseLostException;
@@ -129,6 +134,8 @@ public class AgentToolNode implements NodeActionWithConfig {
 
 	private final ToolContextPatchPolicy toolContextPatchPolicy;
 
+	private final boolean strictToolState;
+
 	private final ThreadPoolExecutor neutralInvocationExecutor;
 
 	public AgentToolNode(Builder builder) {
@@ -154,6 +161,7 @@ public class AgentToolNode implements NodeActionWithConfig {
 		this.throwOnToolError = builder.throwOnToolError;
 		this.businessOutcomeMappers = builder.businessOutcomeMappers;
 		this.toolContextPatchPolicy = builder.toolContextPatchPolicy;
+		this.strictToolState = builder.strictToolState;
 	}
 
 	public void setToolInterceptors(List<ToolInterceptor> toolInterceptors) {
@@ -240,9 +248,10 @@ public class AgentToolNode implements NodeActionWithConfig {
 	 * </p>
 	 * <p>
 	 * Note: This differs from parallel execution mode, which respects
-	 * {@link io.github.agentic.ai.workflow.graph.KeyStrategy} for merge operations. If you need
-	 * deterministic merge behavior (e.g., APPEND for lists), use parallel execution mode
-	 * instead.
+	 * {@link io.github.agentic.ai.workflow.graph.KeyStrategy} for merge operations - unless
+	 * {@code strictToolState(true)} is enabled, in which case sequential merges go through
+	 * the same KeyStrategy map and the divergence disappears. Without strict mode, use
+	 * parallel execution for deterministic merge behavior (e.g., APPEND for lists).
 	 * </p>
 	 *
 	 * @see #executeToolCallsParallel(List, OverAllState, RunnableConfig)
@@ -256,13 +265,14 @@ public class AgentToolNode implements NodeActionWithConfig {
 																// successful tools
 		List<ChatMessage> toolResponses = new ArrayList<>();
 
+		OverAllState toolState = toolVisibleState(state);
 		Boolean returnDirect = null;
 		for (io.github.agentic.ai.api.chat.ToolCall toolCall : toolCalls) {
 			config.assertExecutionActive();
 			// Each tool gets its own isolated update map
 			// If this tool times out, clear() only affects this map, not mergedUpdates
 			Map<String, Object> toolSpecificUpdate = new ConcurrentHashMap<>();
-			ToolCallResponse response = executeToolCallWithInterceptors(toolCall, state, config, toolSpecificUpdate,
+			ToolCallResponse response = executeToolCallWithInterceptors(toolCall, toolState, config, toolSpecificUpdate,
 					false);
 			config.assertExecutionActive();
 			toolResponses.add(response.toMessage());
@@ -272,7 +282,12 @@ public class AgentToolNode implements NodeActionWithConfig {
 			// data. A configured patch policy gates the merge boundary: patches of failed
 			// calls and invalid patches never reach the next turn's state.
 			if (admitsPatch(toolCall.name(), response, toolSpecificUpdate)) {
-				mergedUpdates.putAll(toolSpecificUpdate);
+				if (strictToolState) {
+					mergeThroughStrategies(mergedUpdates, toolSpecificUpdate, state);
+				}
+				else {
+					mergedUpdates.putAll(toolSpecificUpdate);
+				}
 			}
 		}
 		config.assertExecutionActive();
@@ -297,7 +312,9 @@ public class AgentToolNode implements NodeActionWithConfig {
 	 * <b>Important:</b> The state snapshot created via {@code state.snapShot()} is a
 	 * shallow copy. Mutable objects within the state (like Lists) are shared. Tools
 	 * should NOT directly modify collections retrieved from the state. Use the
-	 * {@code extraStateFromToolCall} map to write updates.
+	 * {@code extraStateFromToolCall} map to write updates. With
+	 * {@code strictToolState(true)} this advisory becomes structural: tools receive a
+	 * read-only view whose collections reject mutation.
 	 * </p>
 	 *
 	 * <h3>State Merge Semantics</h3>
@@ -335,7 +352,7 @@ public class AgentToolNode implements NodeActionWithConfig {
 		// Create state snapshot for thread safety
 		// Note: snapShot() is a shallow copy, shared mutable objects (like messages List)
 		// should not be directly modified by tools
-		OverAllState stateSnapshot = state.snapShot().orElse(state);
+		OverAllState stateSnapshot = toolVisibleState(state.snapShot().orElse(state));
 
 		ToolStateCollector stateCollector = new ToolStateCollector(toolCalls.size(), state.keyStrategies());
 
@@ -466,6 +483,9 @@ public class AgentToolNode implements NodeActionWithConfig {
 		// Same merge-boundary gate as sequential mode, applied per tool index: rejected
 		// patches are discarded before mergeAll() so they cannot pollute the state.
 		discardRejectedPatches(toolCalls, orderedResponses, stateCollector);
+		if (strictToolState) {
+			enforceDeclaredMergeStrategies(toolCalls, stateCollector, state);
+		}
 		updatedState.putAll(stateCollector.mergeAll());
 
 		if (enableActingLog) {
@@ -775,11 +795,12 @@ public class AgentToolNode implements NodeActionWithConfig {
 
 	/**
 	 * Applies the configured patch policy to every collected response before the parallel
-	 * merge, discarding the update maps of rejected calls. No-op without a policy.
+	 * merge, discarding the update maps of rejected calls. No-op without a policy and
+	 * without strict mode; in strict mode the admission runs even without a policy.
 	 */
 	private void discardRejectedPatches(List<io.github.agentic.ai.api.chat.ToolCall> toolCalls,
 			AtomicReferenceArray<ToolCallResponse> orderedResponses, ToolStateCollector stateCollector) {
-		if (toolContextPatchPolicy == null) {
+		if (!strictToolState && toolContextPatchPolicy == null) {
 			return;
 		}
 		for (int i = 0; i < orderedResponses.length(); i++) {
@@ -794,6 +815,94 @@ public class AgentToolNode implements NodeActionWithConfig {
 	}
 
 	/**
+	 * The state a tool may read in strict mode: an {@link OverAllState} whose data map and
+	 * one-level-deep collections reject mutation, so state writes can escape only through
+	 * the patch channel. Without strict mode the state passes through untouched.
+	 * @param state the state the node was invoked with
+	 * @return the state a tool may read
+	 */
+	private OverAllState toolVisibleState(OverAllState state) {
+		if (!strictToolState) {
+			return state;
+		}
+		var view = new OverAllState(StateIsolation.readOnlyView(state.data()), state.getStore());
+		view.registerKeyAndStrategy(state.keyStrategies());
+		return view;
+	}
+
+	/**
+	 * Merges one admitted patch into the accumulated sequential updates through the
+	 * declared {@link KeyStrategy} map - the same rules the parallel collector applies -
+	 * closing the historical sequential/parallel divergence for strict mode.
+	 * @param merged the accumulated updates of earlier tools
+	 * @param patch the admitted patch of the tool that just completed
+	 * @param state the node's state, source of the declared strategies
+	 */
+	private void mergeThroughStrategies(Map<String, Object> merged, Map<String, Object> patch,
+			OverAllState state) {
+		Map<String, KeyStrategy> strategies = state.keyStrategies();
+		for (Map.Entry<String, Object> entry : patch.entrySet()) {
+			ToolStateCollector.mergeEntry(merged, strategies, entry.getKey(), entry.getValue());
+		}
+	}
+
+	/**
+	 * Strict parallel merge rule: a key written by several tools without a declared
+	 * {@link KeyStrategy} is a policy violation, not a silent replace-last-in-tool-order.
+	 * ABORT runs throw the same violation exception as patch validation; DISCARD drops
+	 * every admitted patch touching the conflicting key, whole patches at a time.
+	 * @param toolCalls the calls of the parallel batch, in tool order
+	 * @param stateCollector the batch's admitted update maps
+	 * @param state the node's state, source of the declared strategies
+	 */
+	private void enforceDeclaredMergeStrategies(List<io.github.agentic.ai.api.chat.ToolCall> toolCalls,
+			ToolStateCollector stateCollector, OverAllState state) {
+		// Re-check after every discard round: dropping a patch can resolve further
+		// conflicts (or expose the next one), and each round discards at least one
+		// non-empty patch, so the loop terminates.
+		Map<String, KeyStrategy> strategies = state.keyStrategies();
+		while (true) {
+			var conflict = StrictMergeRules.checkUndeclaredConflicts(admittedPatches(toolCalls, stateCollector),
+					strategies.keySet());
+			if (conflict.isEmpty()) {
+				return;
+			}
+			StrictMergeRules.ConflictFailure failure = conflict.get();
+			if (toolContextPatchPolicy != null
+					&& toolContextPatchPolicy.violationPolicy() == ToolContextPatchPolicy.ViolationPolicy.ABORT_RUN) {
+				throw new ToolContextPatchViolationException(new ToolContextPatchValidator.PatchValidationFailure(
+						failure.errorCode(), failure.key(), failure.message()));
+			}
+			logger.warn("Discarding context patches writing state key '{}': written by several tools without a "
+					+ "declared merge strategy", failure.key());
+			for (int i = 0; i < toolCalls.size(); i++) {
+				Map<String, Object> patch = stateCollector.toolUpdateMap(i);
+				if (patch != null && patch.containsKey(failure.key())) {
+					stateCollector.discardToolUpdateMap(i);
+				}
+			}
+		}
+	}
+
+	/**
+	 * The update maps still admitted to the parallel merge, in tool order.
+	 * @param toolCalls the calls of the parallel batch, in tool order
+	 * @param stateCollector the batch's update maps
+	 * @return the non-empty admitted patches, never {@code null}
+	 */
+	private List<Map<String, Object>> admittedPatches(List<io.github.agentic.ai.api.chat.ToolCall> toolCalls,
+			ToolStateCollector stateCollector) {
+		List<Map<String, Object>> patches = new ArrayList<>();
+		for (int i = 0; i < toolCalls.size(); i++) {
+			Map<String, Object> patch = stateCollector.toolUpdateMap(i);
+			if (patch != null && !patch.isEmpty()) {
+				patches.add(patch);
+			}
+		}
+		return patches;
+	}
+
+	/**
 	 * Merge-boundary admission for one tool's context patch. Without a policy every patch
 	 * is admitted (legacy behavior). With a policy, patches of failed calls are discarded
 	 * first (their stray writes are dropped, never escalated), then the patch is validated
@@ -805,6 +914,16 @@ public class AgentToolNode implements NodeActionWithConfig {
 	 * @return {@code true} when the patch may be merged into the next turn's state
 	 */
 	private boolean admitsPatch(String toolName, ToolCallResponse response, Map<String, Object> patch) {
+		if (strictToolState) {
+			boolean admitted = StrictPatchAdmission.admit(toolContextPatchPolicy,
+					new ToolUpdateUnit(toolName, !response.isError(), patch));
+			if (!admitted) {
+				logger.warn(
+						"Discarding context patch of tool {}: strict admission rejected the tool's update unit",
+						toolName);
+			}
+			return admitted;
+		}
 		if (toolContextPatchPolicy == null || patch == null || patch.isEmpty()) {
 			return true;
 		}
@@ -945,6 +1064,8 @@ public class AgentToolNode implements NodeActionWithConfig {
 
 		private ToolContextPatchPolicy toolContextPatchPolicy;
 
+		private boolean strictToolState;
+
 		/** Controls failure propagation for provider-neutral tool stages. */
 		public Builder throwOnToolError(boolean throwOnToolError) {
 			this.throwOnToolError = throwOnToolError;
@@ -960,6 +1081,20 @@ public class AgentToolNode implements NodeActionWithConfig {
 		 */
 		public Builder toolContextPatchPolicy(ToolContextPatchPolicy toolContextPatchPolicy) {
 			this.toolContextPatchPolicy = toolContextPatchPolicy;
+			return this;
+		}
+
+		/**
+		 * Opt-in strict tool-state mode. Tools then see a read-only view of the state
+		 * instead of the live map or a shallow snapshot, a failed call's patch is always
+		 * discarded regardless of the patch policy, sequential merges honor the declared
+		 * KeyStrategies, and parallel merges refuse keys written by several tools without
+		 * a declared strategy. Default {@code false}: legacy behavior.
+		 * @param strict true to enable strict tool-state semantics
+		 * @return this builder
+		 */
+		public Builder strictToolState(boolean strict) {
+			this.strictToolState = strict;
 			return this;
 		}
 

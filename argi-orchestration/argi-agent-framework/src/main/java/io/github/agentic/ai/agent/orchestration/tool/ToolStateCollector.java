@@ -150,21 +150,33 @@ public class ToolStateCollector {
 			}
 
 			for (Map.Entry<String, Object> entry : toolUpdate.entrySet()) {
-				String key = entry.getKey();
-				Object newValue = entry.getValue();
-				Object existingValue = result.get(key);
-
-				if (existingValue == null) {
-					result.put(key, newValue);
-				}
-				else {
-					KeyStrategy strategy = keyStrategies.getOrDefault(key, KeyStrategy.REPLACE);
-					result.put(key, strategy.apply(existingValue, newValue));
-				}
+				mergeEntry(result, keyStrategies, entry.getKey(), entry.getValue());
 			}
 		}
 
 		return result;
+	}
+
+	/**
+	 * Merges one update entry into an accumulated update map through the declared
+	 * strategy, falling back to {@link KeyStrategy#REPLACE} for undeclared keys. This is
+	 * the single strategy-aware entry merge shared by the parallel collector and strict
+	 * sequential merging, so the two paths cannot drift apart.
+	 * @param updates the accumulated updates to merge into
+	 * @param keyStrategies the declared strategies, or {@code null} for none
+	 * @param key the state key being written
+	 * @param newValue the value the tool produced for the key
+	 */
+	public static void mergeEntry(Map<String, Object> updates, Map<String, KeyStrategy> keyStrategies, String key,
+			Object newValue) {
+		Object existingValue = updates.get(key);
+		if (existingValue == null) {
+			updates.put(key, newValue);
+			return;
+		}
+		KeyStrategy strategy = (keyStrategies != null ? keyStrategies : Map.<String, KeyStrategy>of())
+			.getOrDefault(key, KeyStrategy.REPLACE);
+		updates.put(key, strategy.apply(existingValue, newValue));
 	}
 
 	/**
