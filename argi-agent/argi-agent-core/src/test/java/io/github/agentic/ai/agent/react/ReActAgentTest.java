@@ -165,6 +165,220 @@ class ReActAgentTest {
 		assertTrue(events.stream().anyMatch(event -> event instanceof AgentEvent.MessageDelta));
 	}
 
+	// ------------------------------------------------------------------
+	// issue #268: interceptor tool selection must gate disclosure AND execution
+	// ------------------------------------------------------------------
+	
+	@Test
+	void unfilteredRunDisclosesStaticAndDynamicTools() throws Exception {
+		Tool staticTool = tool("chosen", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("static")));
+		Tool dynamicTool = tool("dyn", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("dynamic")));
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("answer"), List.of(), 1)));
+		ReActAgent agent = ReActAgent.builder(client).tools(new ToolRegistry(List.of(staticTool)))
+			.dynamicTools(state -> new ToolRegistry(List.of(dynamicTool))).build();
+	
+		agent.invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		List<String> disclosed = client.requests.get(0).tools().stream()
+			.map(ToolDefinition::name).toList();
+		assertEquals(List.of("chosen", "dyn"), disclosed);
+	}
+	
+	@Test
+	void explicitEmptySelectionDisablesDisclosureAndExecution() throws Exception {
+		ToolCall call = new ToolCall("call-1", "secret", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("try", List.of(call)),
+			List.of(call), 1), response(ChatMessage.assistant("blocked"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "disable-tools";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).tools(List.of()).build());
+			}
+		};
+		Tool secret = tool("secret", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("leaked")));
+		AgentOutcome outcome = ReActAgent.builder(client).tools(new ToolRegistry(List.of(secret)))
+			.interceptors(List.of(interceptor)).build().invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		// The model sees no tools at all.
+		assertTrue(client.requests.get(0).tools().isEmpty());
+		// A tool call for a filtered-out tool surfaces via the unknown-tool error path.
+		assertEquals("blocked", outcome.messages().get(outcome.messages().size() - 1).text());
+		assertTrue(outcome.messages().stream()
+			.anyMatch(message -> message.text().contains("Unknown tool: secret")));
+	}
+	
+	@Test
+	void subsetSelectionDisclosesAndExecutesOnlyChosenTools() throws Exception {
+		ToolCall call = new ToolCall("call-1", "chosen", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("use", List.of(call)),
+			List.of(call), 1), response(ChatMessage.assistant("done"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "subset";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).tools(List.of("chosen")).build());
+			}
+		};
+		Tool chosen = tool("chosen", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("chosen result")));
+		Tool secret = tool("secret", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("leaked")));
+		AgentOutcome outcome = ReActAgent.builder(client).tools(new ToolRegistry(List.of(chosen, secret)))
+			.interceptors(List.of(interceptor)).build().invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		List<String> disclosed = client.requests.get(0).tools().stream()
+			.map(ToolDefinition::name).toList();
+		assertEquals(List.of("chosen"), disclosed);
+		assertTrue(outcome.messages().stream().anyMatch(message -> "chosen result".equals(message.text())));
+		assertTrue(outcome.messages().stream().noneMatch(message -> "leaked".equals(message.text())));
+	}
+	
+	@Test
+	void dynamicToolsParticipateInSelection() throws Exception {
+		Tool dynamic = tool("dyn", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("dynamic result")));
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("answer"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "dynamic-only";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).tools(List.of("dyn")).build());
+			}
+		};
+		ReActAgent agent = ReActAgent.builder(client).dynamicTools(state -> new ToolRegistry(List.of(dynamic)))
+			.interceptors(List.of(interceptor)).build();
+	
+		agent.invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		List<String> disclosed = client.requests.get(0).tools().stream()
+			.map(ToolDefinition::name).toList();
+		assertEquals(List.of("dyn"), disclosed);
+	}
+	
+	@Test
+	void staticToolShadowsDynamicToolOnNameConflict() throws Exception {
+		AtomicInteger staticExecutions = new AtomicInteger();
+		AtomicInteger dynamicExecutions = new AtomicInteger();
+		Tool staticTool = tool("lookup", "{}", (ignored, context) -> {
+			staticExecutions.incrementAndGet();
+			return CompletableFuture.completedFuture(ToolResult.text("original"));
+		});
+		Tool dynamicTool = tool("lookup", "{}", (ignored, context) -> {
+			dynamicExecutions.incrementAndGet();
+			return CompletableFuture.completedFuture(ToolResult.text("replacement"));
+		});
+		ToolCall call = new ToolCall("call-1", "lookup", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("use", List.of(call)),
+			List.of(call), 1), response(ChatMessage.assistant("done"), List.of(), 1)));
+		ReActAgent agent = ReActAgent.builder(client).tools(new ToolRegistry(List.of(staticTool)))
+			.dynamicTools(state -> new ToolRegistry(List.of(dynamicTool))).build();
+	
+		agent.invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		// Static bindings shadow same-named dynamic disclosures (getTools() semantics).
+		assertEquals(1, staticExecutions.get());
+		assertEquals(0, dynamicExecutions.get());
+	}
+	
+	@Test
+	void streamingRunDisclosesTheSameFilteredSetAsNonStreaming() throws Exception {
+		Tool secret = tool("secret", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("leaked")));
+		StreamingClient client = new StreamingClient();
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "disable-tools";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).tools(List.of()).build());
+			}
+		};
+		ReActAgent agent = ReActAgent.builder(client).streamModel(true).tools(new ToolRegistry(List.of(secret)))
+			.interceptors(List.of(interceptor)).build();
+	
+		try (AgentExecutionContext context = context()) {
+			CompletableFuture<AgentOutcome> outcome = new CompletableFuture<>();
+			agent.stream(request(), context).subscribe(new Flow.Subscriber<>() {
+				public void onSubscribe(Flow.Subscription subscription) {
+					subscription.request(Long.MAX_VALUE);
+				}
+	
+				public void onNext(AgentEvent event) {
+					if (event instanceof AgentEvent.Finished finished) {
+						outcome.complete(finished.outcome());
+					}
+				}
+	
+				public void onError(Throwable error) {
+					outcome.completeExceptionally(error);
+				}
+	
+				public void onComplete() {
+				}
+			});
+			outcome.get(3, TimeUnit.SECONDS);
+		}
+		assertTrue(client.requests.get(0).tools().isEmpty());
+	}
+	
+	@Test
+	void selectionDoesNotLeakAcrossSequentialRuns() throws Exception {
+		ToolCall chosenCall = new ToolCall("call-1", "chosen", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(
+			response(ChatMessage.assistant("use", List.of(chosenCall)), List.of(chosenCall), 1),
+			response(ChatMessage.assistant("done"), List.of(), 1),
+			response(ChatMessage.assistant("use", List.of(chosenCall)), List.of(chosenCall), 1),
+			response(ChatMessage.assistant("done"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "subset";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).tools(List.of("chosen")).build());
+			}
+		};
+		Tool chosen = tool("chosen", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("chosen result")));
+		Tool secret = tool("secret", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("leaked")));
+		ReActAgent agent = ReActAgent.builder(client).tools(new ToolRegistry(List.of(chosen, secret)))
+			.interceptors(List.of(interceptor)).build();
+	
+		AgentOutcome first = agent.invoke(request(), context()).get(3, TimeUnit.SECONDS);
+		AgentOutcome second = agent.invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		for (AgentOutcome outcome : List.of(first, second)) {
+			assertTrue(outcome.messages().stream().anyMatch(message -> "chosen result".equals(message.text())));
+			assertTrue(outcome.messages().stream().noneMatch(message -> "leaked".equals(message.text())));
+		}
+	}
+	
+	@Test
+	void unfilteredRunWithNoDynamicToolsKeepsRegistryFastPath() throws Exception {
+		Tool staticTool = tool("only", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("ok")));
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("answer"), List.of(), 1)));
+		ReActAgent agent = ReActAgent.builder(client).tools(new ToolRegistry(List.of(staticTool))).build();
+	
+		agent.invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		List<String> disclosed = client.requests.get(0).tools().stream()
+			.map(ToolDefinition::name).toList();
+		assertEquals(List.of("only"), disclosed);
+	}
+	
 	@Test
 	void deniedToolCanSuspendForHumanApproval() throws Exception {
 		ToolCall call = new ToolCall("call-1", "danger", "{}");
