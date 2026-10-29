@@ -16,13 +16,14 @@
 package io.github.agentic.ai.agent.durable;
 
 /**
- * A model turn could not be journaled, or its recorded data does not describe the request
- * being issued.
+ * A model-turn payload could not be encoded or decoded, a request/progress append failed,
+ * or recorded data does not describe the request being issued. Runtime commits through
+ * RunJournalWriter retain the original RunStore exception types.
  *
  * <p>
  * This is not a model failure. An engine that converts caught model exceptions into
- * user-visible error messages must rethrow this type instead: continuing would let tool
- * dispatch proceed on a turn whose plan was never recorded.
+ * user-visible error messages must rethrow this type instead. The runtime must also
+ * propagate writer commit failures before dispatching tools.
  */
 public class ModelTurnJournalException extends IllegalStateException {
 

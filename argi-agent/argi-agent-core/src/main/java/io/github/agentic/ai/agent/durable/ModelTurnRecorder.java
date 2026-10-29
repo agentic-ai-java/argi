@@ -20,7 +20,7 @@ import io.github.agentic.ai.api.chat.ChatResponse;
 import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.api.chat.ToolDefinition;
 import io.github.agentic.ai.runtime.execution.run.RunEntry;
-import io.github.agentic.ai.runtime.execution.run.RunJournal;
+import io.github.agentic.ai.runtime.execution.run.RunJournalWriter;
 import io.github.agentic.ai.runtime.execution.run.RunPayload;
 import io.github.agentic.ai.runtime.execution.run.RunStoreConflictException;
 
@@ -39,14 +39,15 @@ import static java.util.Objects.requireNonNull;
  * <p>
  * This component is engine-neutral: it knows the neutral chat contracts and the journal,
  * not graphs, streams, checkpoints or schedulers. An engine supplies a {@link Turn} for the
- * logical model call, then records streamed text as it arrives and commits the terminal
- * response before dispatching any tool.
+ * logical model call, then records streamed text as it arrives and prepares the terminal
+ * response and tool plan. The runtime commits those records with the corresponding
+ * checkpoint through {@link RunJournalWriter#commit} before dispatching any tool.
  *
  * <p>
  * The engine owns turn identities and their recovery: the same logical call must retain
- * its identity across retries and restarts, and different calls within a stream must have
- * different turn ids. Summarisation and history trimming do not change that identity. The
- * recorder uses the supplied ids without allocating or advancing execution positions.
+ * its identity across retries and restarts, and different calls within a run must have
+ * different turn ids. Summarisation and history trimming do not change that identity.
+ * The recorder uses the supplied ids without allocating or advancing execution positions.
  *
  * <p>
  * The request fingerprint is taken from the request the provider actually receives, after
@@ -65,33 +66,33 @@ import static java.util.Objects.requireNonNull;
  * only</li>
  * <li>{@code <turnId>#resp} - the complete terminal response</li>
  * <li>{@code <turnId>#task.<ordinal>} - the tool plan, committed atomically with the
- * response</li>
+ * response and checkpoint by the runtime</li>
  * </ul>
  *
  * <p>
  * An interrupted turn is never re-asked: a recorded request without a recorded response is
- * evidence that a call was already issued, and repeating it would make cost and outcome
- * depend on how often a worker restarted. Budgeted re-asking belongs to the retry path.
+ * evidence that its outcome is unknown, whether or not the provider call was issued.
+ * Repeating it would make cost and outcome depend on how often a worker restarted.
+ * Budgeted re-asking belongs to the retry path.
  */
 public final class ModelTurnRecorder {
 
-	private final RunJournal journal;
+	private final RunJournalWriter journal;
 
-	private ModelTurnRecorder(RunJournal journal) {
+	private ModelTurnRecorder(RunJournalWriter journal) {
 		this.journal = requireNonNull(journal, "journal cannot be null");
 	}
 
 	/** Builds a recorder, or returns {@code null} when journaling is off. */
-	public static ModelTurnRecorder of(RunJournal journal) {
+	public static ModelTurnRecorder of(RunJournalWriter journal) {
 		return journal == null ? null : new ModelTurnRecorder(journal);
 	}
 
 	/**
 	 * Engine-supplied identity of one logical model call. The engine restores the same
-	 * identity on recovery and assigns distinct turn ids to different calls within a stream.
-	 * @param streamId the engine's durable stream identity, for example a graph thread id or
-	 * an agent run id
-	 * @param turnId the stable logical call identity within that stream
+	 * identity on recovery and assigns distinct turn ids to different calls within a run.
+	 * @param streamId the run id bound to the runtime's journal writer
+	 * @param turnId the stable logical call identity within that run
 	 */
 	public record Turn(String streamId, String turnId) {
 
@@ -110,9 +111,8 @@ public final class ModelTurnRecorder {
 	 * A recorded request whose fingerprint differs fails closed: replaying it would hand the
 	 * engine a plan the model never produced for this input. This is also how a
 	 * non-deterministic request rewrite surfaces after a restart; see the class
-	 * documentation. A recorded request without a recorded response was interrupted after a
-	 * provider call was issued and also fails closed, because the outcome is unknown rather
-	 * than missing.
+	 * documentation. A recorded request without a recorded response also fails closed,
+	 * because the outcome is unknown rather than missing.
 	 * @param turn the engine-supplied identity of this logical call
 	 * @param request the request about to be issued
 	 * @return the recorded response, or empty when the model has not been called yet
@@ -151,15 +151,17 @@ public final class ModelTurnRecorder {
 	}
 
 	/**
-	 * Records the terminal response and, in the same atomic append, the tool plan derived
-	 * from it. A failure here leaves no dispatchable plan behind, so the caller must treat
-	 * it as a failure of the turn and must not dispatch the plan's tools.
-	 * @param turn the turn being committed
+	 * Prepares the terminal response and every tool plan without publishing any records.
+	 * The runtime must commit this entire batch with the corresponding checkpoint through
+	 * {@link RunJournalWriter#commit} before dispatching the first tool. Preparing the batch
+	 * does not authorize dispatch.
+	 * @param turn the turn being prepared
 	 * @param response the terminal response the engine is about to use
 	 * @param tools the tool definitions that were disclosed to the model, used to pin each
 	 * planned task to the schema the model saw
+	 * @return an immutable batch containing the response followed by its tool plans
 	 */
-	public void commit(Turn turn, ChatResponse response, Iterable<ToolDefinition> tools) {
+	public List<RunEntry> prepareResponse(Turn turn, ChatResponse response, Iterable<ToolDefinition> tools) {
 		List<RunEntry> entries = new ArrayList<>();
 		entries.add(new RunEntry(ModelTurnCodec.SCHEMA_VERSION, turn.turnId() + "#resp", RunEntry.Kind.MODEL_CALL,
 				new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.RESPONSE_TYPE,
@@ -176,7 +178,7 @@ public final class ModelTurnRecorder {
 							ModelTurnCodec.encodeToolPlan(call, byName.get(call.name()), ordinal))));
 			ordinal++;
 		}
-		append(turn, entries);
+		return List.copyOf(entries);
 	}
 
 	/**

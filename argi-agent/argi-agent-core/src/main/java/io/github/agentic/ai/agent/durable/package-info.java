@@ -26,13 +26,18 @@
  * <p>
  * The contract deliberately knows no graph, session, scheduler or streaming library: it
  * depends on the neutral chat contracts and on {@code io.github.agentic.ai.runtime.execution.run}.
- * Graph-backed and graph-independent engines share it, and each supplies stable stream
+ * Graph-backed and graph-independent engines share it, and each supplies stable run
  * and turn identities. The engine restores the same identity for a recovered logical call
- * and gives different calls distinct turn ids within a stream.
+ * and gives different calls distinct turn ids within a run.
  *
  * <p>
- * The engine is responsible for one ordering rule: {@link io.github.agentic.ai.agent.durable.ModelTurnRecorder#commit}
- * must succeed before the first tool of that turn is dispatched. A failed commit means the
- * plan was never recorded, so no tool may run.
+ * {@link io.github.agentic.ai.agent.durable.ModelTurnRecorder#prepareResponse} only prepares
+ * records. The runtime must commit the full batch together with the corresponding
+ * checkpoint through {@link io.github.agentic.ai.runtime.execution.run.RunJournalWriter#commit}
+ * before dispatching the first tool. Request fingerprints and diagnostic deltas use the
+ * same writer's append path, which retains the checkpoint. Both paths delegate to
+ * {@link io.github.agentic.ai.runtime.execution.run.RunStore#commit}; no independent
+ * journal backend is required. Planned TASK_CALL entries are journal data, not task
+ * lifecycle updates in {@code RunCommit.tasks}.
  */
 package io.github.agentic.ai.agent.durable;
