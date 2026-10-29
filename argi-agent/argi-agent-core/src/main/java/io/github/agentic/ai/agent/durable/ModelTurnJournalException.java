@@ -17,8 +17,9 @@ package io.github.agentic.ai.agent.durable;
 
 /**
  * A model-turn payload could not be encoded or decoded, or recorded data is incomplete,
- * incompatible or does not describe the run and request being replayed. This component
- * performs no storage writes; runtime commits retain the original RunStore exception types.
+ * incompatible or does not describe the run and request being replayed, or the turn's
+ * model-call reservation budget is exhausted. The recorder performs no storage writes;
+ * runtime commits retain the original RunStore exception types.
  *
  * <p>
  * This is not a model failure. An engine that converts caught model exceptions into

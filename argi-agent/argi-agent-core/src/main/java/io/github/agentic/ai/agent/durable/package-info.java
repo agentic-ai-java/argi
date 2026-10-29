@@ -18,11 +18,11 @@
  * Engine-neutral journaling of model turns.
  *
  * <p>
- * The non-deterministic result of a model call — the assistant message, its tool calls,
- * finish reason and usage — cannot be regenerated. These types record it, together with a
- * stable identity for every planned tool call. Preparation is stateless and has no storage
+ * A subsequent model call can produce a different assistant message or tool plan. These
+ * types record the response, finish reason and usage, together with a stable identity for
+ * every planned tool call. Preparation is stateless and has no storage
  * side effects. The runtime persists the data before dispatching tools; recovery then
- * validates and replays the recorded result instead of asking the model again.
+ * validates and replays a completed turn's recorded result instead of asking the model again.
  *
  * <p>
  * The contract deliberately knows no graph, session, scheduler or streaming library: it
@@ -33,14 +33,22 @@
  *
  * <p>
  * The runtime explicitly enables journaling and owns the store, lease and latest committed
- * snapshot. It commits a prepared request fingerprint before calling the model, then
- * commits the full response and plan batch together with the corresponding checkpoint
+ * snapshot. It commits a prepared request fingerprint and attempt reservation before calling
+ * the model, then commits the full response and plan batch with the corresponding checkpoint
  * through {@link io.github.agentic.ai.runtime.execution.run.RunStore#commit} before
  * dispatching the first tool. Planned TASK_CALL entries are journal data, not task lifecycle
  * updates in {@code RunCommit.tasks}.
  *
  * <p>
- * All writes share one runtime coordinator. Request fingerprints and diagnostic deltas
+ * A turn without a response or plan can reserve another attempt for the same request.
+ * The default limit is two total reservations per turn, including the first invocation;
+ * the caller can supply any positive limit. Each reservation is journaled before its call,
+ * and remains consumed after interruption or a lost response. Legacy request-only records
+ * count as one reservation. Streaming delta tokens do not affect this count, and attempts
+ * do not change task identities. Run-wide, token and cost budgets remain runtime concerns.
+ *
+ * <p>
+ * All writes share one runtime coordinator. Fingerprints, reservations and diagnostic deltas
  * retain the checkpoint. The runtime settles in-flight delta commits before submitting the
  * terminal response, may drop unsubmitted deltas, and propagates storage failures by default.
  * An uncertain commit outcome requires resolving the stored state before continuing from a
@@ -50,8 +58,9 @@
  * Replay checks a single supplied snapshot for compatible request/response records and an
  * exact matching tool plan. It cannot prove that records were committed together, interpret
  * application checkpoints or detect stale reads. An empty replay must be followed by a
- * request commit using that snapshot's revision; a conflict requires reloading and replaying
- * again. Durable-mode admission, definition and identity recovery, execution positions and
+ * successful attempt reservation using that snapshot's revision before a provider call;
+ * a conflict requires reloading and replaying again. Durable-mode admission, definition and
+ * identity recovery, execution positions and
  * tool receipts remain runtime responsibilities. An in-memory reference store only models
  * recovery within one process.
  */

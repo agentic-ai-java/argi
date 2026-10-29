@@ -57,6 +57,7 @@ import java.util.TreeSet;
  * never journaled and adapter-level {@code attributes} are excluded from the hash;</li>
  * <li>{@link ToolPlan} - the provider's tool-call id is excluded, because it correlates
  * protocol messages and is not a task identity;</li>
+ * <li>{@link AttemptRecord} - a model-call reservation pins its ordinal and request hash;</li>
  * <li>{@link Delta} - streamed text is a single scalar.</li>
  * </ul>
  *
@@ -79,6 +80,9 @@ public final class ModelTurnCodec {
 
 	/** {@code MODEL_CALL}: the request fingerprint, written before the provider call. */
 	public static final String REQUEST_TYPE = "argi.model-request";
+
+	/** {@code MODEL_CALL}: a model-call reservation, committed before invoking the provider. */
+	public static final String ATTEMPT_TYPE = "argi.model-attempt";
 
 	/** {@code MODEL_CALL}: the complete terminal response. */
 	public static final String RESPONSE_TYPE = "argi.model-response";
@@ -137,6 +141,21 @@ public final class ModelTurnCodec {
 	/** Reads the fingerprint recorded in a {@link #REQUEST_TYPE} payload. */
 	public static String decodeRequestHash(String json) {
 		return read(json, RequestRecord.class).requestHash();
+	}
+
+	static String encodeAttempt(int ordinal, String requestHash) {
+		return write(new AttemptRecord(ordinal, requestHash));
+	}
+
+	static int decodeAttemptOrdinal(String json, String requestHash) {
+		JsonNode record = read(json, JsonNode.class);
+		JsonNode ordinal = record.get("ordinal");
+		JsonNode hash = record.get("requestHash");
+		if (ordinal == null || !ordinal.isInt() || ordinal.intValue() < 1 || hash == null || !hash.isTextual()
+				|| !requestHash.equals(hash.textValue())) {
+			throw new ModelTurnJournalException("Invalid model attempt ordinal or request fingerprint");
+		}
+		return ordinal.intValue();
 	}
 
 	/** The {@link #RESPONSE_TYPE} payload. */
@@ -286,6 +305,10 @@ public final class ModelTurnCodec {
 
 	/** Stored shape of {@link #REQUEST_TYPE}: the hash only, never the request body. */
 	private record RequestRecord(String requestHash) {
+	}
+
+	/** Stored shape of {@link #ATTEMPT_TYPE}; a reservation is consumed even if its result is lost. */
+	private record AttemptRecord(int ordinal, String requestHash) {
 	}
 
 	/**

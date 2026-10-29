@@ -40,8 +40,8 @@ import static java.util.Objects.requireNonNull;
  * <p>
  * Stateless: every preparation method returns immutable records and writes nothing. The
  * runtime owns the store, lease, revision and committed snapshot, and decides whether
- * journaling is in use at all. It commits the request fingerprint before calling the
- * provider, and the response with all its plans and the checkpoint in one
+ * journaling is in use at all. It commits the request fingerprint and attempt before
+ * calling the provider, and the response with all its plans and the checkpoint in one
  * {@link RunStore#commit} before dispatching a tool. Store exceptions propagate unchanged;
  * they are not model failures.
  *
@@ -49,20 +49,29 @@ import static java.util.Objects.requireNonNull;
  * Entry ids of one turn:
  * <ul>
  * <li>{@code <turnId>#req} - the request fingerprint</li>
+ * <li>{@code <turnId>#attempt.<ordinal>} - a model-call reservation, starting at 1</li>
  * <li>{@code <turnId>#progress.<attempt>#delta.<seq>} - streamed text, diagnostic only</li>
  * <li>{@code <turnId>#resp} - the complete terminal response</li>
  * <li>{@code <turnId>#task.<ordinal>} - one planned tool call</li>
  * </ul>
  *
  * <p>
- * An interrupted turn is never re-asked: a request without a response means its outcome is
- * unknown, and budgeted re-asking belongs to the retry path.
+ * A matching request without a response or plan may be re-asked within its per-turn attempt
+ * limit. By default two calls are allowed in total, including the first. Every invocation
+ * requires a committed reservation from {@link #prepareAttempt(Turn, ChatRequest, RunSnapshot)};
+ * restarting never resets the count. Even a reservation whose call was not issued consumes
+ * an attempt. Run-wide, token and cost budgets remain runtime responsibilities.
  */
 public final class ModelTurnRecorder {
+
+	/** Total model-call reservations per turn, including the first invocation. */
+	public static final int DEFAULT_MAX_ATTEMPTS = 2;
 
 	private static final int ENTRY_SCHEMA_VERSION = 1;
 
 	private static final String PLAN_PREFIX = "#task.";
+
+	private static final String ATTEMPT_PREFIX = "#attempt.";
 
 	/** Creates a stateless recorder; the runtime decides whether to use journaling. */
 	public ModelTurnRecorder() {
@@ -103,12 +112,13 @@ public final class ModelTurnRecorder {
 	 *
 	 * <p>
 	 * This method cannot detect snapshot staleness. After an empty result, the runtime must
-	 * commit the request using this snapshot's revision before calling the model. A conflict
+	 * prepare and commit an attempt using this snapshot's revision before calling the model.
+	 * An empty result does not grant permission to call the model. A conflict
 	 * requires reloading and repeating replay, not merely retrying with a newer revision.
 	 * @param turn the engine-supplied identity of this logical call
 	 * @param request the request about to be issued
 	 * @param snapshot the runtime's consistent committed view of the run
-	 * @return the recorded response, or empty when no request, response or plan is recorded
+	 * @return the recorded response, or empty when the turn has no committed result or plan
 	 * @throws ModelTurnJournalException when recorded data is incomplete, incompatible or
 	 * does not match the run or request
 	 */
@@ -121,8 +131,9 @@ public final class ModelTurnRecorder {
 		}
 		RunEntry recorded = snapshot.journal().get(turn.turnId() + "#req");
 		RunEntry response = snapshot.journal().get(turn.turnId() + "#resp");
-		Map<String, RunEntry> plans = recordedPlans(turn, snapshot);
-		if (recorded == null && response == null && plans.isEmpty()) {
+		Map<String, RunEntry> plans = recordedEntries(turn, snapshot, PLAN_PREFIX);
+		Map<String, RunEntry> attempts = recordedEntries(turn, snapshot, ATTEMPT_PREFIX);
+		if (recorded == null && response == null && plans.isEmpty() && attempts.isEmpty()) {
 			return Optional.empty();
 		}
 		if (recorded == null) {
@@ -141,9 +152,12 @@ public final class ModelTurnRecorder {
 					new RunStoreConflictException(
 							"Journal entry id identifies different data: " + turn.runId() + "/" + turn.turnId()));
 		}
+		reservedAttempts(turn, attempts, hash);
 		if (response == null) {
-			throw new ModelTurnJournalException("Model turn " + turn.turnId()
-					+ " was issued but its response was never recorded; the turn cannot be replayed automatically");
+			if (!plans.isEmpty()) {
+				throw new ModelTurnJournalException("Model turn " + turn.turnId() + " has tool plans without a response");
+			}
+			return Optional.empty();
 		}
 		validateEntry(response, turn.turnId() + "#resp", RunEntry.Kind.MODEL_CALL, ModelTurnCodec.RESPONSE_TYPE);
 		ChatResponse decoded = ModelTurnCodec.decodeResponse(response.payload().json());
@@ -165,11 +179,65 @@ public final class ModelTurnRecorder {
 		return Optional.of(decoded);
 	}
 
-	/** Prepares the request fingerprint; the runtime commits it before calling the provider. */
+	/**
+	 * Prepares only the request fingerprint. This low-level operation does not reserve a
+	 * model call; an invocation path must use
+	 * {@link #prepareAttempt(Turn, ChatRequest, RunSnapshot)} before calling the provider.
+	 */
 	public List<RunEntry> prepareRequest(Turn turn, ChatRequest request) {
 		return List.of(new RunEntry(ENTRY_SCHEMA_VERSION, turn.turnId() + "#req",
 				RunEntry.Kind.MODEL_CALL, new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.REQUEST_TYPE,
 						ModelTurnCodec.encodeRequest(request))));
+	}
+
+	/** Prepares a model-call reservation using {@link #DEFAULT_MAX_ATTEMPTS}. */
+	public List<RunEntry> prepareAttempt(Turn turn, ChatRequest request, RunSnapshot snapshot) {
+		return prepareAttempt(turn, request, snapshot, DEFAULT_MAX_ATTEMPTS);
+	}
+
+	/**
+	 * Prepares the next model-call reservation and, for a new turn, its request fingerprint.
+	 * The runtime must commit the entire batch with this snapshot's revision, retaining the
+	 * checkpoint, before invoking the provider. Only a successful commit authorizes one call;
+	 * preparation alone never consumes or grants an attempt. On conflict, reload and replay.
+	 *
+	 * <p>
+	 * The limit includes the first call. A legacy request without attempt records counts as
+	 * one reservation. Reservations are never refunded for a lost response or an interrupted
+	 * invocation; changing the limit does not reset the stored count. Streaming delta tokens
+	 * are unrelated to this count. This limit does not replace runtime-owned run budgets.
+	 * @param turn the logical model call
+	 * @param request the effective provider request
+	 * @param snapshot the committed view used for replay and the reservation commit
+	 * @param maxAttempts positive total invocation limit; 1 disables recovery re-asking
+	 * @return immutable entries to commit before at most one provider invocation
+	 * @throws ModelTurnJournalException if the turn already has a result, its data is
+	 * incompatible, or its model-call budget is exhausted
+	 * @throws IllegalArgumentException if maxAttempts is not positive
+	 */
+	public List<RunEntry> prepareAttempt(Turn turn, ChatRequest request, RunSnapshot snapshot, int maxAttempts) {
+		if (maxAttempts < 1) {
+			throw new IllegalArgumentException("maxAttempts must be positive");
+		}
+		if (replay(turn, request, snapshot).isPresent()) {
+			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " already has a recorded response");
+		}
+		String hash = ModelTurnCodec.requestHash(request);
+		boolean hasRequest = snapshot.journal().containsKey(turn.turnId() + "#req");
+		int used = hasRequest ? reservedAttempts(turn, recordedEntries(turn, snapshot, ATTEMPT_PREFIX), hash) : 0;
+		if (used >= maxAttempts) {
+			throw new ModelTurnJournalException(
+					"Model-call budget exhausted for turn " + turn.turnId() + " (maxAttempts=" + maxAttempts + ")");
+		}
+		List<RunEntry> entries = new ArrayList<>();
+		if (!hasRequest) {
+			entries.addAll(prepareRequest(turn, request));
+		}
+		int ordinal = used + 1;
+		entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, turn.turnId() + ATTEMPT_PREFIX + ordinal,
+				RunEntry.Kind.MODEL_CALL, new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.ATTEMPT_TYPE,
+						ModelTurnCodec.encodeAttempt(ordinal, hash))));
+		return List.copyOf(entries);
 	}
 
 	/**
@@ -220,9 +288,9 @@ public final class ModelTurnRecorder {
 	}
 
 	/**
-	 * A fresh identifier for one streaming attempt. Every subscription that starts a new
-	 * provider call must use its own token, so an abandoned attempt cannot overwrite the
-	 * text of the attempt that replaced it.
+	 * A fresh diagnostic token for one streaming attempt, not a model-call reservation.
+	 * Every subscription that starts a new provider call must use its own token, so an
+	 * abandoned attempt cannot overwrite the text of the attempt that replaced it.
 	 */
 	public static String newAttempt() {
 		return UUID.randomUUID().toString();
@@ -250,20 +318,32 @@ public final class ModelTurnRecorder {
 	}
 
 	/**
-	 * Plan entries of this turn, keyed by id. Any entry under the turn's plan prefix counts,
-	 * so an extra entry is visible as a size mismatch rather than being silently ignored.
-	 * The suffix must be digits: a turn id may itself contain {@code #task.}, and without
-	 * that check another turn's entries would leak into this one.
+	 * Numbered entries of this turn, keyed by id. Extra ordinals remain visible to validation.
+	 * The suffix must be digits: a turn id may itself contain {@code #task.} or
+	 * {@code #attempt.}, and without that check another turn's entries would leak into this one.
 	 */
-	private Map<String, RunEntry> recordedPlans(Turn turn, RunSnapshot snapshot) {
-		String prefix = turn.turnId() + PLAN_PREFIX;
-		Map<String, RunEntry> plans = new HashMap<>();
+	private Map<String, RunEntry> recordedEntries(Turn turn, RunSnapshot snapshot, String entryPrefix) {
+		String prefix = turn.turnId() + entryPrefix;
+		Map<String, RunEntry> entries = new HashMap<>();
 		snapshot.journal().forEach((id, entry) -> {
 			if (id.startsWith(prefix) && isOrdinal(id.substring(prefix.length()))) {
-				plans.put(id, entry);
+				entries.put(id, entry);
 			}
 		});
-		return plans;
+		return entries;
+	}
+
+	private int reservedAttempts(Turn turn, Map<String, RunEntry> attempts, String requestHash) {
+		// A request written before attempt journaling still reserves its first invocation.
+		int used = attempts.size() + (attempts.containsKey(turn.turnId() + ATTEMPT_PREFIX + 1) ? 0 : 1);
+		attempts.forEach((id, entry) -> {
+			validateEntry(entry, id, RunEntry.Kind.MODEL_CALL, ModelTurnCodec.ATTEMPT_TYPE);
+			int ordinal = ModelTurnCodec.decodeAttemptOrdinal(entry.payload().json(), requestHash);
+			if (ordinal > used || !id.equals(turn.turnId() + ATTEMPT_PREFIX + ordinal)) {
+				throw new ModelTurnJournalException("Invalid or non-contiguous model attempt entry " + id);
+			}
+		});
+		return used;
 	}
 
 	private static boolean isOrdinal(String suffix) {
