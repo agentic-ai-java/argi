@@ -26,8 +26,9 @@
  * <p>
  * The contract deliberately knows no graph, session, scheduler or streaming library: it
  * depends on the neutral chat contracts and on {@code io.github.agentic.ai.runtime.execution.run}.
- * Graph-backed and graph-independent engines share it, and each supplies its own stream
- * identity.
+ * Graph-backed and graph-independent engines share it, and each supplies stable stream
+ * and turn identities. The engine restores the same identity for a recovered logical call
+ * and gives different calls distinct turn ids within a stream.
  *
  * <p>
  * The engine is responsible for one ordering rule: {@link io.github.agentic.ai.agent.durable.ModelTurnRecorder#commit}

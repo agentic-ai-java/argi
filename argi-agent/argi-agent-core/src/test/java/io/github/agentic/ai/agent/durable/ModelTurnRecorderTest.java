@@ -51,8 +51,8 @@ class ModelTurnRecorderTest {
 	@Test
 	void recordsOnlyTheRequestFingerprintBeforeTheCall() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
-		ModelTurnRecorder.Turn turn = recorder.begin(STREAM, 0);
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "agent:0");
 
 		recorder.recordRequest(turn, request(FIRST_TURN));
 
@@ -105,8 +105,8 @@ class ModelTurnRecorderTest {
 	@Test
 	void commitsTheResponseAndItsPlanInOneAppend() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
-		ModelTurnRecorder.Turn turn = recorder.begin(STREAM, 0);
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "agent:0");
 
 		recorder.commit(turn, toolCallingResponse("provider-call-1"),
 				List.of(TOOLS.get(0)));
@@ -121,15 +121,19 @@ class ModelTurnRecorderTest {
 	}
 
 	@Test
-	void replaysTheRecordedResponseAndPlanWithoutCallingTheModel() {
+	void replaysTheRecordedResponseAfterRecorderIsRecreated() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
-		ModelTurnRecorder.Turn turn = recorder.begin(STREAM, 0);
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "planner/visit-3/model-2");
 		recorder.recordRequest(turn, request(FIRST_TURN));
 		recorder.commit(turn, toolCallingResponse("provider-call-1"), TOOLS);
 
-		Optional<ChatResponse> replayed = recorder.replay(recorder.begin(STREAM, 0), request(FIRST_TURN));
+		ModelTurnRecorder recovered = ModelTurnRecorder.of(journal);
+		ModelTurnRecorder.Turn restored = new ModelTurnRecorder.Turn(STREAM, "planner/visit-3/model-2");
+		Optional<ChatResponse> replayed = recovered.replay(restored, request(FIRST_TURN));
 
+		assertThat(journal.entryIds(STREAM)).containsExactly("planner/visit-3/model-2#req",
+				"planner/visit-3/model-2#resp", "planner/visit-3/model-2#task.0");
 		assertThat(replayed).isPresent();
 		assertThat(replayed.orElseThrow().toolCalls()).extracting(ToolCall::name).containsExactly("search");
 		assertThat(replayed.orElseThrow().toolCalls()).extracting(ToolCall::arguments)
@@ -139,11 +143,11 @@ class ModelTurnRecorderTest {
 	@Test
 	void rejectsReplayWhenTheRecordedRequestDiffers() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
-		recorder.recordRequest(recorder.begin(STREAM, 0), request(FIRST_TURN));
-		recorder.commit(recorder.begin(STREAM, 0), toolCallingResponse("provider-call-1"), TOOLS);
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		recorder.recordRequest(new ModelTurnRecorder.Turn(STREAM, "agent:0"), request(FIRST_TURN));
+		recorder.commit(new ModelTurnRecorder.Turn(STREAM, "agent:0"), toolCallingResponse("provider-call-1"), TOOLS);
 
-		ModelTurnRecorder.Turn turn = recorder.begin(STREAM, 0);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "agent:0");
 		List<ChatMessage> different = List.of(ChatMessage.user("a different instruction"));
 
 		assertThatThrownBy(() -> recorder.replay(turn, request(different)))
@@ -155,10 +159,10 @@ class ModelTurnRecorderTest {
 	@Test
 	void anInterruptedTurnFailsClosedInsteadOfAskingAgain() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
-		recorder.recordRequest(recorder.begin(STREAM, 0), request(FIRST_TURN));
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		recorder.recordRequest(new ModelTurnRecorder.Turn(STREAM, "agent:0"), request(FIRST_TURN));
 
-		ModelTurnRecorder.Turn turn = recorder.begin(STREAM, 0);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "agent:0");
 
 		assertThatThrownBy(() -> recorder.replay(turn, request(FIRST_TURN)))
 			.isInstanceOf(ModelTurnJournalException.class)
@@ -184,9 +188,10 @@ class ModelTurnRecorderTest {
 				throw new IllegalStateException("journal unavailable");
 			}
 		};
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(failing, "agent");
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(failing);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "agent:0");
 
-		assertThatThrownBy(() -> recorder.recordRequest(recorder.begin(STREAM, 0), request(FIRST_TURN)))
+		assertThatThrownBy(() -> recorder.recordRequest(turn, request(FIRST_TURN)))
 			.isInstanceOf(ModelTurnJournalException.class)
 			.hasRootCauseMessage("journal unavailable");
 	}
@@ -194,13 +199,13 @@ class ModelTurnRecorderTest {
 	@Test
 	void aCommittedTurnAddsNoSecondPlanWhenTheProviderRenamesTheCallId() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
-		ModelTurnRecorder.Turn turn = recorder.begin(STREAM, 0);
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "agent:0");
 		recorder.recordRequest(turn, request(FIRST_TURN));
 		recorder.commit(turn, toolCallingResponse("provider-call-1"), TOOLS);
 
 		// Recovery replays; it must not append a new task for the renamed call id.
-		recorder.replay(recorder.begin(STREAM, 0), request(FIRST_TURN));
+		recorder.replay(new ModelTurnRecorder.Turn(STREAM, "agent:0"), request(FIRST_TURN));
 
 		assertThat(journal.entryIds(STREAM)).containsExactly("agent:0#req", "agent:0#resp", "agent:0#task.0");
 	}
@@ -208,8 +213,8 @@ class ModelTurnRecorderTest {
 	@Test
 	void streamedTextIsRecordedUnderOneStableAttempt() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
-		ModelTurnRecorder.Turn turn = recorder.begin(STREAM, 0);
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "agent:0");
 		String attempt = ModelTurnRecorder.newAttempt();
 
 		recorder.recordDelta(turn, attempt, 0, "he");
@@ -224,12 +229,20 @@ class ModelTurnRecorderTest {
 	}
 
 	@Test
-	void turnIdentityComesFromTheEngineOrdinalNotFromTheConversation() {
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(new MemoryRunJournal(), "agent");
+	void differentCallsWithTheSameRequestHaveIndependentRecords() {
+		MemoryRunJournal journal = new MemoryRunJournal();
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		ModelTurnRecorder.Turn first = new ModelTurnRecorder.Turn(STREAM, "first-call");
+		ModelTurnRecorder.Turn next = new ModelTurnRecorder.Turn(STREAM, "next-call");
+		recorder.recordRequest(first, request(FIRST_TURN));
+		recorder.commit(first, toolCallingResponse("call-1"), TOOLS);
 
-		assertThat(recorder.begin(STREAM, 0).turnId()).isEqualTo("agent:0");
-		assertThat(recorder.begin(STREAM, 7).turnId()).isEqualTo("agent:7");
-		assertThat(recorder.begin(STREAM, 42).turnId()).isEqualTo("agent:42");
+		assertThat(recorder.replay(next, request(FIRST_TURN))).isEmpty();
+		recorder.recordRequest(next, request(FIRST_TURN));
+		recorder.commit(next, toolCallingResponse("call-2"), TOOLS);
+
+		assertThat(journal.entryIds(STREAM)).containsExactly("first-call#req", "first-call#resp", "first-call#task.0",
+				"next-call#req", "next-call#resp", "next-call#task.0");
 	}
 
 	/**
@@ -240,24 +253,23 @@ class ModelTurnRecorderTest {
 	@Test
 	void shrinkingTheConversationDoesNotCollideWithAnEarlierTurn() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
 		for (long ordinal = 0; ordinal < 3; ordinal++) {
-			ModelTurnRecorder.Turn turn = recorder.begin(STREAM, ordinal);
+			ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "agent:" + ordinal);
 			recorder.recordRequest(turn, request(List.of(ChatMessage.user("question " + ordinal))));
 			recorder.commit(turn, toolCallingResponse("call-" + ordinal), TOOLS);
 		}
 
 		// Summarisation replaced the history with a summary plus a short tail, so the
-		// conversation now holds fewer assistant messages than before. The engine keeps
-		// counting, so the next turn is new instead of colliding with turns 0..2.
+		// conversation now holds fewer assistant messages than before. The engine supplies
+		// a new identity independently of that history.
 		List<ChatMessage> summarisedHistory = List.of(ChatMessage.system("summary of earlier turns"),
 				ChatMessage.user("question 3"));
-		ModelTurnRecorder.Turn next = recorder.begin(STREAM, 3);
+		ModelTurnRecorder.Turn next = new ModelTurnRecorder.Turn(STREAM, "after-summary");
 
-		assertThat(next.turnId()).isEqualTo("agent:3");
 		assertThat(recorder.replay(next, request(summarisedHistory))).isEmpty();
 		recorder.recordRequest(next, request(summarisedHistory));
-		assertThat(journal.find(STREAM, "agent:3#req")).isPresent();
+		assertThat(journal.find(STREAM, "after-summary#req")).isPresent();
 	}
 
 	/**
@@ -269,8 +281,8 @@ class ModelTurnRecorderTest {
 	@Test
 	void aNonDeterministicRewriteOfTheSameTurnFailsClosed() {
 		MemoryRunJournal journal = new MemoryRunJournal();
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal, "agent");
-		ModelTurnRecorder.Turn turn = recorder.begin(STREAM, 5);
+		ModelTurnRecorder recorder = ModelTurnRecorder.of(journal);
+		ModelTurnRecorder.Turn turn = new ModelTurnRecorder.Turn(STREAM, "summary-turn");
 		recorder.recordRequest(turn, request(List.of(ChatMessage.system("summary, first attempt"),
 				ChatMessage.user("question"))));
 		recorder.commit(turn, toolCallingResponse("call-1"), TOOLS);
@@ -279,25 +291,14 @@ class ModelTurnRecorderTest {
 		List<ChatMessage> rebuilt = List.of(ChatMessage.system("summary, second attempt"),
 				ChatMessage.user("question"));
 
-		assertThatThrownBy(() -> recorder.replay(recorder.begin(STREAM, 5), request(rebuilt)))
+		assertThatThrownBy(() -> recorder.replay(new ModelTurnRecorder.Turn(STREAM, "summary-turn"), request(rebuilt)))
 			.isInstanceOf(ModelTurnJournalException.class)
 			.hasMessageContaining("summarisation");
 	}
 
 	@Test
-	void aMissingStreamIdentityOrNegativeOrdinalIsRejected() {
-		ModelTurnRecorder recorder = ModelTurnRecorder.of(new MemoryRunJournal(), "agent");
-
-		assertThatThrownBy(() -> recorder.begin(" ", 0)).isInstanceOf(IllegalArgumentException.class)
-			.hasMessageContaining("stream identity");
-		assertThatThrownBy(() -> recorder.begin(null, 0)).isInstanceOf(IllegalArgumentException.class);
-		assertThatThrownBy(() -> recorder.begin(STREAM, -1)).isInstanceOf(IllegalArgumentException.class)
-			.hasMessageContaining("must not be negative");
-	}
-
-	@Test
 	void aDisabledJournalYieldsNoRecorder() {
-		assertThat(ModelTurnRecorder.of(null, "agent")).isNull();
+		assertThat(ModelTurnRecorder.of(null)).isNull();
 	}
 
 	private static ChatRequest request(List<ChatMessage> messages) {

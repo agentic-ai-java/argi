@@ -38,18 +38,15 @@ import static java.util.Objects.requireNonNull;
  *
  * <p>
  * This component is engine-neutral: it knows the neutral chat contracts and the journal,
- * not graphs, streams, checkpoints or schedulers. An engine supplies the stream identity of
- * its invocation and the ordinal of the model call, then records streamed text as it
- * arrives and commits the terminal response before dispatching any tool.
+ * not graphs, streams, checkpoints or schedulers. An engine supplies a {@link Turn} for the
+ * logical model call, then records streamed text as it arrives and commits the terminal
+ * response before dispatching any tool.
  *
  * <p>
- * A turn is identified by the stream, the agent name and an engine-supplied ordinal. The
- * recorder deliberately does not derive the ordinal from the conversation: summarisation
- * and history trimming legitimately shrink the message list, so any count over it can move
- * backwards and collide with an earlier turn. See {@link #begin(String, long)} for what the
- * engine must guarantee. Two agents sharing one stream must not share a name; when they
- * do, the request fingerprint rejects the mismatch instead of replaying another agent's
- * response.
+ * The engine owns turn identities and their recovery: the same logical call must retain
+ * its identity across retries and restarts, and different calls within a stream must have
+ * different turn ids. Summarisation and history trimming do not change that identity. The
+ * recorder uses the supplied ids without allocating or advancing execution positions.
  *
  * <p>
  * The request fingerprint is taken from the request the provider actually receives, after
@@ -63,11 +60,11 @@ import static java.util.Objects.requireNonNull;
  * <p>
  * Entry ids of one turn:
  * <ul>
- * <li>{@code <agent>:<turn>#req} - the request fingerprint, written before the call</li>
- * <li>{@code <agent>:<turn>#progress.<attempt>#delta.<seq>} - streamed text, diagnostic
+ * <li>{@code <turnId>#req} - the request fingerprint, written before the call</li>
+ * <li>{@code <turnId>#progress.<attempt>#delta.<seq>} - streamed text, diagnostic
  * only</li>
- * <li>{@code <agent>:<turn>#resp} - the complete terminal response</li>
- * <li>{@code <agent>:<turn>#task.<ordinal>} - the tool plan, committed atomically with the
+ * <li>{@code <turnId>#resp} - the complete terminal response</li>
+ * <li>{@code <turnId>#task.<ordinal>} - the tool plan, committed atomically with the
  * response</li>
  * </ul>
  *
@@ -80,23 +77,21 @@ public final class ModelTurnRecorder {
 
 	private final RunJournal journal;
 
-	private final String agentName;
-
-	private ModelTurnRecorder(RunJournal journal, String agentName) {
+	private ModelTurnRecorder(RunJournal journal) {
 		this.journal = requireNonNull(journal, "journal cannot be null");
-		this.agentName = requireNonNull(agentName, "agentName cannot be null");
 	}
 
-	/** Builds a recorder for one agent, or returns {@code null} when journaling is off. */
-	public static ModelTurnRecorder of(RunJournal journal, String agentName) {
-		return journal == null ? null : new ModelTurnRecorder(journal, agentName);
+	/** Builds a recorder, or returns {@code null} when journaling is off. */
+	public static ModelTurnRecorder of(RunJournal journal) {
+		return journal == null ? null : new ModelTurnRecorder(journal);
 	}
 
 	/**
-	 * One logical model call.
+	 * Engine-supplied identity of one logical model call. The engine restores the same
+	 * identity on recovery and assigns distinct turn ids to different calls within a stream.
 	 * @param streamId the engine's durable stream identity, for example a graph thread id or
 	 * an agent run id
-	 * @param turnId the agent and turn identity within that stream
+	 * @param turnId the stable logical call identity within that stream
 	 */
 	public record Turn(String streamId, String turnId) {
 
@@ -105,37 +100,6 @@ public final class ModelTurnRecorder {
 			requireNonNull(turnId, "turnId cannot be null");
 		}
 
-	}
-
-	/**
-	 * Resolves the turn this model call belongs to.
-	 *
-	 * <p>
-	 * The engine owns the ordinal and must guarantee three properties:
-	 * <ul>
-	 * <li><b>Monotonic</b> - it never moves backwards within a stream, regardless of how
-	 * the conversation is summarised, trimmed or rewritten;</li>
-	 * <li><b>Durable</b> - it is restored from committed data after a restart, never from a
-	 * process-local counter;</li>
-	 * <li><b>Stable on re-execution</b> - a model call that is re-executed after a crash
-	 * before its result was committed resolves to the same ordinal, so the recorded turn is
-	 * found and replayed.</li>
-	 * </ul>
-	 * A counter kept in persisted engine state and advanced in the same update that
-	 * publishes the model result satisfies all three.
-	 * @param streamId the engine's stream identity; an engine without one cannot journal
-	 * @param ordinal the engine's monotonic model-call ordinal within the stream
-	 * @throws IllegalArgumentException when the stream identity is blank or the ordinal is
-	 * negative
-	 */
-	public Turn begin(String streamId, long ordinal) {
-		if (streamId == null || streamId.isBlank()) {
-			throw new IllegalArgumentException("Journal persistence requires a stream identity");
-		}
-		if (ordinal < 0) {
-			throw new IllegalArgumentException("Model-call ordinal must not be negative: " + ordinal);
-		}
-		return new Turn(streamId, agentName + ":" + ordinal);
 	}
 
 	/**
@@ -149,7 +113,7 @@ public final class ModelTurnRecorder {
 	 * documentation. A recorded request without a recorded response was interrupted after a
 	 * provider call was issued and also fails closed, because the outcome is unknown rather
 	 * than missing.
-	 * @param turn the turn resolved by {@link #begin(String, long)}
+	 * @param turn the engine-supplied identity of this logical call
 	 * @param request the request about to be issued
 	 * @return the recorded response, or empty when the model has not been called yet
 	 * @throws ModelTurnJournalException when the recorded request differs, or when a turn
@@ -163,7 +127,7 @@ public final class ModelTurnRecorder {
 				throw new ModelTurnJournalException("Model turn " + turn.turnId()
 						+ " was recorded for a different request; refusing to replay it. This happens when the"
 						+ " request is rewritten non-deterministically, for example by summarisation, or when"
-						+ " the engine reuses an ordinal",
+						+ " the engine reuses a turn identity",
 						new RunStoreConflictException(
 								"Journal entry id identifies different data: " + turn.streamId() + "/" + turn.turnId()));
 			}
