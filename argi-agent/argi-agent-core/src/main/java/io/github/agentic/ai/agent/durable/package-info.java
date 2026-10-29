@@ -20,8 +20,9 @@
  * <p>
  * The non-deterministic result of a model call — the assistant message, its tool calls,
  * finish reason and usage — cannot be regenerated. These types record it, together with a
- * stable identity for every planned tool call, before the engine dispatches tools. A
- * recovery then replays the recorded plan instead of asking the model again.
+ * stable identity for every planned tool call. Preparation is stateless and has no storage
+ * side effects. The runtime persists the data before dispatching tools; recovery then
+ * validates and replays the recorded result instead of asking the model again.
  *
  * <p>
  * The contract deliberately knows no graph, session, scheduler or streaming library: it
@@ -31,13 +32,27 @@
  * and gives different calls distinct turn ids within a run.
  *
  * <p>
- * {@link io.github.agentic.ai.agent.durable.ModelTurnRecorder#prepareResponse} only prepares
- * records. The runtime must commit the full batch together with the corresponding
- * checkpoint through {@link io.github.agentic.ai.runtime.execution.run.RunJournalWriter#commit}
- * before dispatching the first tool. Request fingerprints and diagnostic deltas use the
- * same writer's append path, which retains the checkpoint. Both paths delegate to
- * {@link io.github.agentic.ai.runtime.execution.run.RunStore#commit}; no independent
- * journal backend is required. Planned TASK_CALL entries are journal data, not task
- * lifecycle updates in {@code RunCommit.tasks}.
+ * The runtime explicitly enables journaling and owns the store, lease and latest committed
+ * snapshot. It commits a prepared request fingerprint before calling the model, then
+ * commits the full response and plan batch together with the corresponding checkpoint
+ * through {@link io.github.agentic.ai.runtime.execution.run.RunStore#commit} before
+ * dispatching the first tool. Planned TASK_CALL entries are journal data, not task lifecycle
+ * updates in {@code RunCommit.tasks}.
+ *
+ * <p>
+ * All writes share one runtime coordinator. Request fingerprints and diagnostic deltas
+ * retain the checkpoint. The runtime settles in-flight delta commits before submitting the
+ * terminal response, may drop unsubmitted deltas, and propagates storage failures by default.
+ * An uncertain commit outcome requires resolving the stored state before continuing from a
+ * cached snapshot; revision conflicts and ownership loss must not be ignored.
+ *
+ * <p>
+ * Replay checks a single supplied snapshot for compatible request/response records and an
+ * exact matching tool plan. It cannot prove that records were committed together, interpret
+ * application checkpoints or detect stale reads. An empty replay must be followed by a
+ * request commit using that snapshot's revision; a conflict requires reloading and replaying
+ * again. Durable-mode admission, definition and identity recovery, execution positions and
+ * tool receipts remain runtime responsibilities. An in-memory reference store only models
+ * recovery within one process.
  */
 package io.github.agentic.ai.agent.durable;

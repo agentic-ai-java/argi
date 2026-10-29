@@ -20,8 +20,9 @@ import io.github.agentic.ai.api.chat.ChatResponse;
 import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.api.chat.ToolDefinition;
 import io.github.agentic.ai.runtime.execution.run.RunEntry;
-import io.github.agentic.ai.runtime.execution.run.RunJournalWriter;
 import io.github.agentic.ai.runtime.execution.run.RunPayload;
+import io.github.agentic.ai.runtime.execution.run.RunSnapshot;
+import io.github.agentic.ai.runtime.execution.run.RunStore;
 import io.github.agentic.ai.runtime.execution.run.RunStoreConflictException;
 
 import java.util.ArrayList;
@@ -34,71 +35,51 @@ import java.util.UUID;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Records the non-deterministic part of a model turn and replays it on recovery.
+ * Prepares journal data for a model turn and validates recorded results on recovery.
  *
  * <p>
- * This component is engine-neutral: it knows the neutral chat contracts and the journal,
- * not graphs, streams, checkpoints or schedulers. An engine supplies a {@link Turn} for the
- * logical model call, then records streamed text as it arrives and prepares the terminal
- * response and tool plan. The runtime commits those records with the corresponding
- * checkpoint through {@link RunJournalWriter#commit} before dispatching any tool.
- *
- * <p>
- * The engine owns turn identities and their recovery: the same logical call must retain
- * its identity across retries and restarts, and different calls within a run must have
- * different turn ids. Summarisation and history trimming do not change that identity.
- * The recorder uses the supplied ids without allocating or advancing execution positions.
- *
- * <p>
- * The request fingerprint is taken from the request the provider actually receives, after
- * every request-mutating interceptor and hook. A component that rewrites the request
- * non-deterministically - for example summarisation that calls a model to produce the
- * summary - can rebuild a different request for the same turn after a restart. Such a turn
- * fails closed with a conflict rather than replaying a response produced for other input;
- * it is not recovered automatically. Applications that need automatic recovery across such
- * a rewrite must make the rewrite deterministic or disable it while journaling.
+ * Stateless: every preparation method returns immutable records and writes nothing. The
+ * runtime owns the store, lease, revision and committed snapshot, and decides whether
+ * journaling is in use at all. It commits the request fingerprint before calling the
+ * provider, and the response with all its plans and the checkpoint in one
+ * {@link RunStore#commit} before dispatching a tool. Store exceptions propagate unchanged;
+ * they are not model failures.
  *
  * <p>
  * Entry ids of one turn:
  * <ul>
- * <li>{@code <turnId>#req} - the request fingerprint, written before the call</li>
- * <li>{@code <turnId>#progress.<attempt>#delta.<seq>} - streamed text, diagnostic
- * only</li>
+ * <li>{@code <turnId>#req} - the request fingerprint</li>
+ * <li>{@code <turnId>#progress.<attempt>#delta.<seq>} - streamed text, diagnostic only</li>
  * <li>{@code <turnId>#resp} - the complete terminal response</li>
- * <li>{@code <turnId>#task.<ordinal>} - the tool plan, committed atomically with the
- * response and checkpoint by the runtime</li>
+ * <li>{@code <turnId>#task.<ordinal>} - one planned tool call</li>
  * </ul>
  *
  * <p>
- * An interrupted turn is never re-asked: a recorded request without a recorded response is
- * evidence that its outcome is unknown, whether or not the provider call was issued.
- * Repeating it would make cost and outcome depend on how often a worker restarted.
- * Budgeted re-asking belongs to the retry path.
+ * An interrupted turn is never re-asked: a request without a response means its outcome is
+ * unknown, and budgeted re-asking belongs to the retry path.
  */
 public final class ModelTurnRecorder {
 
-	private final RunJournalWriter journal;
+	private static final int ENTRY_SCHEMA_VERSION = 1;
 
-	private ModelTurnRecorder(RunJournalWriter journal) {
-		this.journal = requireNonNull(journal, "journal cannot be null");
-	}
+	private static final String PLAN_PREFIX = "#task.";
 
-	/** Builds a recorder, or returns {@code null} when journaling is off. */
-	public static ModelTurnRecorder of(RunJournalWriter journal) {
-		return journal == null ? null : new ModelTurnRecorder(journal);
+	/** Creates a stateless recorder; the runtime decides whether to use journaling. */
+	public ModelTurnRecorder() {
 	}
 
 	/**
 	 * Engine-supplied identity of one logical model call. The engine restores the same
 	 * identity on recovery and assigns distinct turn ids to different calls within a run.
-	 * @param streamId the run id bound to the runtime's journal writer
+	 * @param runId the run to which the prepared records belong
 	 * @param turnId the stable logical call identity within that run
 	 */
-	public record Turn(String streamId, String turnId) {
+	public record Turn(String runId, String turnId) {
 
 		public Turn {
-			requireNonNull(streamId, "streamId cannot be null");
-			requireNonNull(turnId, "turnId cannot be null");
+			if (runId == null || runId.isBlank() || turnId == null || turnId.isBlank()) {
+				throw new IllegalArgumentException("runId and turnId must not be blank");
+			}
 		}
 
 	}
@@ -108,52 +89,93 @@ public final class ModelTurnRecorder {
 	 * it.
 	 *
 	 * <p>
-	 * A recorded request whose fingerprint differs fails closed: replaying it would hand the
-	 * engine a plan the model never produced for this input. This is also how a
-	 * non-deterministic request rewrite surfaces after a restart; see the class
-	 * documentation. A recorded request without a recorded response also fails closed,
-	 * because the outcome is unknown rather than missing.
+	 * Reads only the supplied snapshot. A response requires its matching request and exactly
+	 * the tool plans described by that response and request. Orphaned or incompatible data
+	 * fails closed. These checks validate current contents, not historical commit boundaries
+	 * or the meaning of an application-owned checkpoint.
+	 *
+	 * <p>
+	 * The fingerprint covers the request the provider actually received, after every
+	 * request-mutating interceptor. A rewrite that differs on the second call - for example
+	 * summarisation that asks a model for its summary - therefore fails closed here instead
+	 * of replaying a response produced for other input. Applications that need automatic
+	 * recovery across such a rewrite must make it deterministic while journaling.
+	 *
+	 * <p>
+	 * This method cannot detect snapshot staleness. After an empty result, the runtime must
+	 * commit the request using this snapshot's revision before calling the model. A conflict
+	 * requires reloading and repeating replay, not merely retrying with a newer revision.
 	 * @param turn the engine-supplied identity of this logical call
 	 * @param request the request about to be issued
-	 * @return the recorded response, or empty when the model has not been called yet
-	 * @throws ModelTurnJournalException when the recorded request differs, or when a turn
-	 * was issued but its response was never recorded
+	 * @param snapshot the runtime's consistent committed view of the run
+	 * @return the recorded response, or empty when no request, response or plan is recorded
+	 * @throws ModelTurnJournalException when recorded data is incomplete, incompatible or
+	 * does not match the run or request
 	 */
-	public Optional<ChatResponse> replay(Turn turn, ChatRequest request) {
-		Optional<RunEntry> recorded = journal.find(turn.streamId(), turn.turnId() + "#req");
-		if (recorded.isPresent()) {
-			String hash = ModelTurnCodec.decodeRequestHash(recorded.get().payload().json());
-			if (!hash.equals(ModelTurnCodec.requestHash(request))) {
-				throw new ModelTurnJournalException("Model turn " + turn.turnId()
-						+ " was recorded for a different request; refusing to replay it. This happens when the"
-						+ " request is rewritten non-deterministically, for example by summarisation, or when"
-						+ " the engine reuses a turn identity",
-						new RunStoreConflictException(
-								"Journal entry id identifies different data: " + turn.streamId() + "/" + turn.turnId()));
-			}
+	public Optional<ChatResponse> replay(Turn turn, ChatRequest request, RunSnapshot snapshot) {
+		requireNonNull(turn, "turn cannot be null");
+		requireNonNull(request, "request cannot be null");
+		requireNonNull(snapshot, "snapshot cannot be null");
+		if (!turn.runId().equals(snapshot.spec().runId())) {
+			throw new ModelTurnJournalException("Run snapshot does not match model turn " + turn.turnId());
 		}
-		Optional<RunEntry> response = journal.find(turn.streamId(), turn.turnId() + "#resp");
-		if (response.isPresent()) {
-			return response.map(entry -> ModelTurnCodec.decodeResponse(entry.payload().json()));
+		RunEntry recorded = snapshot.journal().get(turn.turnId() + "#req");
+		RunEntry response = snapshot.journal().get(turn.turnId() + "#resp");
+		Map<String, RunEntry> plans = recordedPlans(turn, snapshot);
+		if (recorded == null && response == null && plans.isEmpty()) {
+			return Optional.empty();
 		}
-		if (recorded.isPresent()) {
+		if (recorded == null) {
+			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " is missing its request fingerprint");
+		}
+		validateEntry(recorded, turn.turnId() + "#req", RunEntry.Kind.MODEL_CALL, ModelTurnCodec.REQUEST_TYPE);
+		String hash = ModelTurnCodec.decodeRequestHash(recorded.payload().json());
+		if (hash == null || hash.isBlank()) {
+			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " has an invalid request fingerprint");
+		}
+		if (!hash.equals(ModelTurnCodec.requestHash(request))) {
+			throw new ModelTurnJournalException("Model turn " + turn.turnId()
+					+ " was recorded for a different request; refusing to replay it. This happens when the"
+					+ " request is rewritten non-deterministically, for example by summarisation, or when"
+					+ " the engine reuses a turn identity",
+					new RunStoreConflictException(
+							"Journal entry id identifies different data: " + turn.runId() + "/" + turn.turnId()));
+		}
+		if (response == null) {
 			throw new ModelTurnJournalException("Model turn " + turn.turnId()
 					+ " was issued but its response was never recorded; the turn cannot be replayed automatically");
 		}
-		return Optional.empty();
+		validateEntry(response, turn.turnId() + "#resp", RunEntry.Kind.MODEL_CALL, ModelTurnCodec.RESPONSE_TYPE);
+		ChatResponse decoded = ModelTurnCodec.decodeResponse(response.payload().json());
+		List<RunEntry> expected = preparePlans(turn, decoded, request.tools());
+		if (plans.size() != expected.size()) {
+			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " has an incomplete or extra tool plan");
+		}
+		for (RunEntry planned : expected) {
+			RunEntry actual = plans.get(planned.id());
+			if (actual == null) {
+				throw new ModelTurnJournalException("Missing tool plan entry " + planned.id());
+			}
+			validateEntry(actual, planned.id(), RunEntry.Kind.TASK_CALL, ModelTurnCodec.PLAN_TYPE);
+			if (!actual.equals(planned)) {
+				throw new ModelTurnJournalException("Recorded tool plan does not match the response and request: "
+						+ planned.id());
+			}
+		}
+		return Optional.of(decoded);
 	}
 
-	/** Records the request fingerprint before the provider call is issued. */
-	public void recordRequest(Turn turn, ChatRequest request) {
-		append(turn, List.of(new RunEntry(ModelTurnCodec.SCHEMA_VERSION, turn.turnId() + "#req",
+	/** Prepares the request fingerprint; the runtime commits it before calling the provider. */
+	public List<RunEntry> prepareRequest(Turn turn, ChatRequest request) {
+		return List.of(new RunEntry(ENTRY_SCHEMA_VERSION, turn.turnId() + "#req",
 				RunEntry.Kind.MODEL_CALL, new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.REQUEST_TYPE,
-						ModelTurnCodec.encodeRequest(request)))));
+						ModelTurnCodec.encodeRequest(request))));
 	}
 
 	/**
 	 * Prepares the terminal response and every tool plan without publishing any records.
 	 * The runtime must commit this entire batch with the corresponding checkpoint through
-	 * {@link RunJournalWriter#commit} before dispatching the first tool. Preparing the batch
+	 * {@link RunStore#commit} before dispatching the first tool. Preparing the batch
 	 * does not authorize dispatch.
 	 * @param turn the turn being prepared
 	 * @param response the terminal response the engine is about to use
@@ -163,26 +185,15 @@ public final class ModelTurnRecorder {
 	 */
 	public List<RunEntry> prepareResponse(Turn turn, ChatResponse response, Iterable<ToolDefinition> tools) {
 		List<RunEntry> entries = new ArrayList<>();
-		entries.add(new RunEntry(ModelTurnCodec.SCHEMA_VERSION, turn.turnId() + "#resp", RunEntry.Kind.MODEL_CALL,
+		entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, turn.turnId() + "#resp", RunEntry.Kind.MODEL_CALL,
 				new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.RESPONSE_TYPE,
 						ModelTurnCodec.encodeResponse(response))));
-		Map<String, ToolDefinition> byName = new HashMap<>();
-		if (tools != null) {
-			tools.forEach(definition -> byName.put(definition.name(), definition));
-		}
-		int ordinal = 0;
-		for (ToolCall call : response.toolCalls()) {
-			entries.add(new RunEntry(ModelTurnCodec.SCHEMA_VERSION, turn.turnId() + "#task." + ordinal,
-					RunEntry.Kind.TASK_CALL,
-					new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.PLAN_TYPE,
-							ModelTurnCodec.encodeToolPlan(call, byName.get(call.name()), ordinal))));
-			ordinal++;
-		}
+		entries.addAll(preparePlans(turn, response, tools));
 		return List.copyOf(entries);
 	}
 
 	/**
-	 * Records text received while a response is still streaming.
+	 * Prepares diagnostic text received while a response is still streaming.
 	 *
 	 * <p>
 	 * These entries are diagnostic: they explain how far a lost stream got. They are never
@@ -190,18 +201,22 @@ public final class ModelTurnRecorder {
 	 * trigger tool execution. The attempt identifier keeps text from an abandoned attempt
 	 * from colliding with a later one, and is stable for every chunk of one attempt so the
 	 * recorded text stays ordered.
+	 *
+	 * <p>
+	 * The runtime submits these through its single commit coordinator, retaining the
+	 * checkpoint, and handles their completion before committing the terminal response.
 	 * @param attempt the attempt token obtained from {@link #newAttempt()}
 	 * @param seq the chunk ordinal within this attempt
 	 * @param text the text delta received
 	 */
-	public void recordDelta(Turn turn, String attempt, int seq, String text) {
+	public List<RunEntry> prepareDelta(Turn turn, String attempt, int seq, String text) {
 		if (text == null || text.isEmpty()) {
-			return;
+			return List.of();
 		}
-		append(turn, List.of(new RunEntry(ModelTurnCodec.SCHEMA_VERSION,
+		return List.of(new RunEntry(ENTRY_SCHEMA_VERSION,
 				turn.turnId() + "#progress." + attempt + "#delta." + seq, RunEntry.Kind.EVENT,
 				new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.DELTA_TYPE,
-						ModelTurnCodec.encodeDelta(text)))));
+						ModelTurnCodec.encodeDelta(text))));
 	}
 
 	/**
@@ -213,15 +228,53 @@ public final class ModelTurnRecorder {
 		return UUID.randomUUID().toString();
 	}
 
-	private void append(Turn turn, List<RunEntry> entries) {
-		try {
-			journal.append(turn.streamId(), entries);
+	private List<RunEntry> preparePlans(Turn turn, ChatResponse response, Iterable<ToolDefinition> tools) {
+		List<RunEntry> entries = new ArrayList<>();
+		Map<String, ToolDefinition> byName = new HashMap<>();
+		if (tools != null) {
+			tools.forEach(definition -> byName.put(definition.name(), definition));
 		}
-		catch (ModelTurnJournalException already) {
-			throw already;
+		int ordinal = 0;
+		for (ToolCall call : response.toolCalls()) {
+			entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, planId(turn, ordinal),
+					RunEntry.Kind.TASK_CALL,
+					new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.PLAN_TYPE,
+							ModelTurnCodec.encodeToolPlan(call, byName.get(call.name()), ordinal))));
+			ordinal++;
 		}
-		catch (RuntimeException failure) {
-			throw new ModelTurnJournalException("Failed to journal model turn " + turn.turnId(), failure);
+		return entries;
+	}
+
+	private static String planId(Turn turn, int ordinal) {
+		return turn.turnId() + PLAN_PREFIX + ordinal;
+	}
+
+	/**
+	 * Plan entries of this turn, keyed by id. Any entry under the turn's plan prefix counts,
+	 * so an extra entry is visible as a size mismatch rather than being silently ignored.
+	 * The suffix must be digits: a turn id may itself contain {@code #task.}, and without
+	 * that check another turn's entries would leak into this one.
+	 */
+	private Map<String, RunEntry> recordedPlans(Turn turn, RunSnapshot snapshot) {
+		String prefix = turn.turnId() + PLAN_PREFIX;
+		Map<String, RunEntry> plans = new HashMap<>();
+		snapshot.journal().forEach((id, entry) -> {
+			if (id.startsWith(prefix) && isOrdinal(id.substring(prefix.length()))) {
+				plans.put(id, entry);
+			}
+		});
+		return plans;
+	}
+
+	private static boolean isOrdinal(String suffix) {
+		return !suffix.isEmpty() && suffix.chars().allMatch(c -> c >= '0' && c <= '9');
+	}
+
+	private void validateEntry(RunEntry entry, String id, RunEntry.Kind kind, String type) {
+		if (!id.equals(entry.id()) || entry.schemaVersion() != ENTRY_SCHEMA_VERSION || entry.kind() != kind
+				|| !type.equals(entry.payload().type())
+				|| entry.payload().schemaVersion() != ModelTurnCodec.SCHEMA_VERSION) {
+			throw new ModelTurnJournalException("Incompatible journal entry " + id);
 		}
 	}
 

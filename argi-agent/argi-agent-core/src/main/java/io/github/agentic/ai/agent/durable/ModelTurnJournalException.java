@@ -16,14 +16,14 @@
 package io.github.agentic.ai.agent.durable;
 
 /**
- * A model-turn payload could not be encoded or decoded, a request/progress append failed,
- * or recorded data does not describe the request being issued. Runtime commits through
- * RunJournalWriter retain the original RunStore exception types.
+ * A model-turn payload could not be encoded or decoded, or recorded data is incomplete,
+ * incompatible or does not describe the run and request being replayed. This component
+ * performs no storage writes; runtime commits retain the original RunStore exception types.
  *
  * <p>
  * This is not a model failure. An engine that converts caught model exceptions into
  * user-visible error messages must rethrow this type instead. The runtime must also
- * propagate writer commit failures before dispatching tools.
+ * propagate storage commit failures before dispatching tools.
  */
 public class ModelTurnJournalException extends IllegalStateException {
 
