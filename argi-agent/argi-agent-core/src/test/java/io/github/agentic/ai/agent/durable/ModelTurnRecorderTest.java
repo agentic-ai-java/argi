@@ -84,7 +84,7 @@ class ModelTurnRecorderTest {
 		// Array order is positional, so it carries meaning and must not be sorted.
 		assertThat(ModelTurnCodec.canonicalArguments("{\"tags\":[\"b\",\"a\"]}"))
 			.isEqualTo("{\"tags\":[\"b\",\"a\"]}");
-		// Argument validation is opt-in, so an unparseable argument must pass through.
+		// Argument validation is opt-in, so an unparsable argument must pass through.
 		assertThat(ModelTurnCodec.canonicalArguments("not json at all")).isEqualTo("not json at all");
 		assertThat(ModelTurnCodec.canonicalArguments("{}")).isEqualTo("{}");
 		assertThat(ModelTurnCodec.canonicalArguments(null)).isNull();
