@@ -343,7 +343,8 @@ public final class ReActAgent implements Agent {
 			for (int turn = 0; turn < maxTurns; turn++) {
 				context.control().assertActive();
 				ToolRegistry availableTools = resolveTools(state);
-				ChatResponse response = modelTurn(messages, state, usage, availableTools);
+				AtomicReference<ToolRegistry> effectiveTools = new AtomicReference<>(availableTools);
+				ChatResponse response = modelTurn(messages, state, usage, availableTools, effectiveTools);
 				if (response.messages().isEmpty()) {
 					throw new IllegalStateException("Model response did not contain an assistant message");
 				}
@@ -356,7 +357,7 @@ public final class ReActAgent implements Agent {
 					return;
 				}
 				for (ToolCall call : response.toolCalls()) {
-					ToolStep step = executeTool(call, messages, state, availableTools);
+					ToolStep step = executeTool(call, messages, state, effectiveTools.get());
 					if (step.suspension() != null) {
 						AgentOutcome outcome = new AgentOutcome(AgentOutcome.Status.SUSPENDED, messages, state,
 								usage.value(), step.suspension());
@@ -378,17 +379,29 @@ public final class ReActAgent implements Agent {
 			}
 			ToolRegistry dynamic = Objects.requireNonNull(dynamicToolProvider.apply(Map.copyOf(state)),
 					"dynamic tool provider returned no registry");
-			List<Tool> combined = new ArrayList<>(tools.tools());
-			combined.addAll(dynamic.tools());
-			return new ToolRegistry(combined);
+			// Static bindings shadow same-named dynamic disclosures instead of failing the
+			// merge (issue #268: a testable duplicate-name policy, consistent with
+			// ModelRequest.getTools()'s distinct order).
+			Map<String, Tool> combined = new LinkedHashMap<>();
+			for (Tool tool : tools.tools()) {
+				combined.put(tool.definition().name(), tool);
+			}
+			for (Tool tool : dynamic.tools()) {
+				combined.putIfAbsent(tool.definition().name(), tool);
+			}
+			return new ToolRegistry(List.copyOf(combined.values()));
 		}
 
 		private ChatResponse modelTurn(List<ChatMessage> messages, Map<String, Object> state,
-				UsageAccumulator usage, ToolRegistry availableTools) {
+				UsageAccumulator usage, ToolRegistry availableTools,
+				AtomicReference<ToolRegistry> effectiveTools) {
 			context.control().assertActive();
 			ModelRequest request = ModelRequest.builder().messages(messages).toolRegistry(availableTools)
 				.trustedExecutionContext(context.trusted()).context(state).attributes(state).build();
-			ModelCallHandler handler = modelRequest -> invokeModel(modelRequest, usage);
+			// The effective tool set is only known at the end of the interceptor chain,
+			// where selection semantics are resolved; execution in the same turn must use
+			// exactly the set the model was shown (issue #268: declared and executed agree).
+			ModelCallHandler handler = modelRequest -> invokeModel(modelRequest, usage, effectiveTools);
 			for (int index = interceptors.size() - 1; index >= 0; index--) {
 				ModelInterceptor interceptor = interceptors.get(index);
 				ModelCallHandler next = handler;
@@ -401,8 +414,37 @@ public final class ReActAgent implements Agent {
 			return response.getChatResponse();
 		}
 
-		private ModelResponse invokeModel(ModelRequest request, UsageAccumulator usage) {
-			ChatRequest chatRequest = new ChatRequest(request.getMessages(), request.getToolRegistry().definitions(),
+		/**
+		 * Resolves the effective tool set at the end of the interceptor chain: static
+		 * bindings and the invocation-local dynamic registry merged (static shadows
+		 * dynamic on name conflicts, matching {@link ModelRequest#getTools()}), narrowed
+		 * by the explicit selection when one is specified. An explicit empty selection
+		 * disables all tool disclosure and execution; an absent selection uses every
+		 * binding.
+		 */
+		private ToolRegistry effectiveToolSet(ModelRequest request) {
+			List<String> selection = request.hasToolSelection() ? request.getTools() : null;
+			if (selection == null && request.getDynamicToolRegistry().tools().isEmpty()) {
+				return request.getToolRegistry();
+			}
+			Map<String, Tool> effective = new LinkedHashMap<>();
+			for (Tool tool : request.getToolRegistry().tools()) {
+				effective.put(tool.definition().name(), tool);
+			}
+			for (Tool tool : request.getDynamicToolRegistry().tools()) {
+				effective.putIfAbsent(tool.definition().name(), tool);
+			}
+			if (selection != null) {
+				effective.keySet().retainAll(selection);
+			}
+			return new ToolRegistry(List.copyOf(effective.values()));
+		}
+
+		private ModelResponse invokeModel(ModelRequest request, UsageAccumulator usage,
+				AtomicReference<ToolRegistry> effectiveTools) {
+			ToolRegistry effective = effectiveToolSet(request);
+			effectiveTools.set(effective);
+			ChatRequest chatRequest = new ChatRequest(request.getMessages(), effective.definitions(),
 					request.getOptions(), request.getAttributes());
 			if (streamModel) {
 				return ModelResponse.of(collectModelStream(chatRequest, usage));
