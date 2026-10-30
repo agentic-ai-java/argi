@@ -57,16 +57,18 @@ import static java.util.Objects.requireNonNull;
  * </ul>
  *
  * <p>
- * A matching request without a response or plan may be re-asked within its per-turn attempt
- * limit. By default two calls are allowed in total, including the first. Every invocation
- * requires a committed reservation from {@link #prepareAttempt(Turn, ChatRequest, RunSnapshot)};
- * restarting never resets the count. Even a reservation whose call was not issued consumes
- * an attempt. Run-wide, token and cost budgets remain runtime responsibilities.
+ * A matching request without a response or plan is re-asked only when its
+ * {@link ModelTurnAttemptPolicy} uses {@link MissingResponsePolicy#REASK}, and within its
+ * per-turn attempt limit. By default recovery fails closed and the total limit is one call.
+ * Every invocation requires a committed reservation from
+ * {@link #prepareAttempt(Turn, ChatRequest, RunSnapshot)}; restarting never resets the count.
+ * Even a reservation whose call was not issued consumes an attempt. Run-wide, token and cost
+ * budgets remain runtime responsibilities.
  */
 public final class ModelTurnRecorder {
 
 	/** Total model-call reservations per turn, including the first invocation. */
-	public static final int DEFAULT_MAX_ATTEMPTS = 2;
+	public static final int DEFAULT_MAX_ATTEMPTS = ModelTurnAttemptPolicy.DEFAULT_MAX_ATTEMPTS;
 
 	private static final int ENTRY_SCHEMA_VERSION = 1;
 
@@ -200,9 +202,26 @@ public final class ModelTurnRecorder {
 						ModelTurnCodec.encodeRequest(request))));
 	}
 
-	/** Prepares a model-call reservation using {@link #DEFAULT_MAX_ATTEMPTS}. */
+	/** Prepares a model-call reservation using {@link ModelTurnAttemptPolicy#DEFAULT}. */
 	public List<RunEntry> prepareAttempt(Turn turn, ChatRequest request, RunSnapshot snapshot) {
-		return prepareAttempt(turn, request, snapshot, DEFAULT_MAX_ATTEMPTS);
+		return prepareAttempt(turn, request, snapshot, ModelTurnAttemptPolicy.DEFAULT);
+	}
+
+	/**
+	 * Prepares the next model-call reservation using the default fail-closed recovery policy
+	 * and the supplied total attempt limit.
+	 * @param turn the logical model call
+	 * @param request the effective provider request
+	 * @param snapshot the committed view used for replay and the reservation commit
+	 * @param maxAttempts positive total invocation limit
+	 * @return immutable entries to commit before at most one provider invocation
+	 * @throws ModelTurnJournalException if the turn already has a result, its data is
+	 * incompatible, recovery re-asking is disabled, or its model-call budget is exhausted
+	 * @throws IllegalArgumentException if maxAttempts is not positive
+	 */
+	public List<RunEntry> prepareAttempt(Turn turn, ChatRequest request, RunSnapshot snapshot, int maxAttempts) {
+		return prepareAttempt(turn, request, snapshot,
+				new ModelTurnAttemptPolicy(MissingResponsePolicy.FAIL_CLOSED, maxAttempts));
 	}
 
 	/**
@@ -215,20 +234,21 @@ public final class ModelTurnRecorder {
 	 * The limit includes the first call. A legacy request without attempt records counts as
 	 * one reservation. Reservations are never refunded for a lost response or an interrupted
 	 * invocation; changing the limit does not reset the stored count. Streaming delta tokens
-	 * are unrelated to this count. This limit does not replace runtime-owned run budgets.
+	 * are unrelated to this count. {@link MissingResponsePolicy#FAIL_CLOSED} rejects another
+	 * reservation after an earlier call is reserved without a response.
+	 * {@link MissingResponsePolicy#REASK} permits it while the total limit has room. This limit
+	 * does not replace runtime-owned run budgets.
 	 * @param turn the logical model call
 	 * @param request the effective provider request
 	 * @param snapshot the committed view used for replay and the reservation commit
-	 * @param maxAttempts positive total invocation limit; 1 disables recovery re-asking
+	 * @param policy recovery policy and positive total invocation limit
 	 * @return immutable entries to commit before at most one provider invocation
 	 * @throws ModelTurnJournalException if the turn already has a result, its data is
-	 * incompatible, or its model-call budget is exhausted
-	 * @throws IllegalArgumentException if maxAttempts is not positive
+	 * incompatible, recovery re-asking is disabled, or its model-call budget is exhausted
 	 */
-	public List<RunEntry> prepareAttempt(Turn turn, ChatRequest request, RunSnapshot snapshot, int maxAttempts) {
-		if (maxAttempts < 1) {
-			throw new IllegalArgumentException("maxAttempts must be positive");
-		}
+	public List<RunEntry> prepareAttempt(Turn turn, ChatRequest request, RunSnapshot snapshot,
+			ModelTurnAttemptPolicy policy) {
+		requireNonNull(policy, "policy cannot be null");
 		if (replay(turn, request, snapshot).isPresent()) {
 			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " already has a recorded response");
 		}
@@ -236,9 +256,13 @@ public final class ModelTurnRecorder {
 		boolean hasRequest = snapshot.journal().containsKey(ModelTurnEntryIds.request(turn));
 		int used = hasRequest ? reservedAttempts(turn,
 				recordedEntries(snapshot, id -> ModelTurnEntryIds.attemptOrdinal(turn, id).isPresent()), hash) : 0;
-		if (used >= maxAttempts) {
+		if (used > 0 && policy.missingResponsePolicy() == MissingResponsePolicy.FAIL_CLOSED) {
+			throw new ModelTurnJournalException("Recovery re-asking is disabled for model turn " + turn.turnId());
+		}
+		if (used >= policy.maxAttempts()) {
 			throw new ModelTurnJournalException(
-					"Model-call budget exhausted for turn " + turn.turnId() + " (maxAttempts=" + maxAttempts + ")");
+					"Model-call budget exhausted for turn " + turn.turnId()
+							+ " (maxAttempts=" + policy.maxAttempts() + ")");
 		}
 		List<RunEntry> entries = new ArrayList<>();
 		if (!hasRequest) {

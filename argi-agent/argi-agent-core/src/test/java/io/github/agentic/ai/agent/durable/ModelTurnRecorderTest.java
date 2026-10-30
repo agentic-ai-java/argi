@@ -76,6 +76,9 @@ class ModelTurnRecorderTest {
 
 	private static final ChatResponse RESPONSE = toolCallingResponse("call-1");
 
+	private static final ModelTurnAttemptPolicy REASK_TWO_ATTEMPTS =
+			new ModelTurnAttemptPolicy(MissingResponsePolicy.REASK, 2);
+
 	private final MemoryRunStore store = new MemoryRunStore();
 
 	private RunStore runtimeStore = store;
@@ -187,7 +190,7 @@ class ModelTurnRecorderTest {
 		reload();
 		assertThat(snapshot.journal()).containsOnlyKeys("agent:0#req", "agent:0#attempt.1");
 		assertThatThrownBy(() -> executeReference(1, countedModel(modelCalls), call -> tools.incrementAndGet()))
-				.isInstanceOf(ModelTurnJournalException.class).hasMessageContaining("budget exhausted");
+				.isInstanceOf(ModelTurnJournalException.class).hasMessageContaining("re-asking is disabled");
 		assertThat(modelCalls.get()).isZero();
 		assertThat(tools.get()).isZero();
 	}
@@ -239,15 +242,16 @@ class ModelTurnRecorderTest {
 	@ParameterizedTest
 	@ValueSource(ints = { 1, 2, 3 })
 	void committedReservationsSurviveReloadsAndEnforceTheConfiguredLimit(int maxAttempts) {
+		ModelTurnAttemptPolicy policy = new ModelTurnAttemptPolicy(MissingResponsePolicy.REASK, maxAttempts);
 		for (int ordinal = 1; ordinal <= maxAttempts; ordinal++) {
-			commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot, maxAttempts));
+			commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot, policy));
 			reload();
 			assertThat(snapshot.journal()).containsKey("agent:0#attempt." + ordinal);
 		}
 		AtomicInteger modelCalls = new AtomicInteger();
 		AtomicInteger tools = new AtomicInteger();
 
-		assertThatThrownBy(() -> executeReference(maxAttempts, countedModel(modelCalls),
+		assertThatThrownBy(() -> executeReference(policy, countedModel(modelCalls),
 				call -> tools.incrementAndGet())).isInstanceOf(ModelTurnJournalException.class)
 				.hasMessageContaining("budget exhausted");
 
@@ -256,7 +260,7 @@ class ModelTurnRecorderTest {
 	}
 
 	@Test
-	void aLostResponseCanBeReaskedOnceByDefaultAfterReload() {
+	void aLostResponseFailsClosedByDefaultAfterReload() {
 		IllegalStateException unavailable = new IllegalStateException("response storage unavailable");
 		runtimeStore = new FailingRunStore(store, ModelTurnCodec.RESPONSE_TYPE, false, unavailable);
 		AtomicInteger modelCalls = new AtomicInteger();
@@ -268,7 +272,29 @@ class ModelTurnRecorderTest {
 
 		runtimeStore = store;
 		reload();
-		ChatResponse recovered = executeReference(model, call -> tools.incrementAndGet());
+		assertThatThrownBy(() -> executeReference(model, call -> tools.incrementAndGet()))
+				.isInstanceOf(ModelTurnJournalException.class).hasMessageContaining("re-asking is disabled");
+
+		assertThat(modelCalls.get()).isEqualTo(1);
+		assertThat(tools.get()).isZero();
+		assertThat(snapshot.journal()).containsOnlyKeys("agent:0#req", "agent:0#attempt.1");
+	}
+
+	@Test
+	void aLostResponseCanBeReaskedWhenExplicitlyEnabled() {
+		IllegalStateException unavailable = new IllegalStateException("response storage unavailable");
+		runtimeStore = new FailingRunStore(store, ModelTurnCodec.RESPONSE_TYPE, false, unavailable);
+		AtomicInteger modelCalls = new AtomicInteger();
+		AtomicInteger tools = new AtomicInteger();
+		Supplier<ChatResponse> model = () -> toolCallingResponse("provider-call-" + modelCalls.incrementAndGet());
+		ModelTurnAttemptPolicy policy = REASK_TWO_ATTEMPTS;
+
+		assertThatThrownBy(() -> executeReference(policy, model, call -> tools.incrementAndGet())).isSameAs(unavailable);
+		assertThat(tools.get()).isZero();
+
+		runtimeStore = store;
+		reload();
+		ChatResponse recovered = executeReference(policy, model, call -> tools.incrementAndGet());
 
 		assertThat(modelCalls.get()).isEqualTo(2);
 		assertThat(tools.get()).isEqualTo(1);
@@ -279,14 +305,23 @@ class ModelTurnRecorderTest {
 	@Test
 	void aLegacyRequestCountsAsTheFirstReservation() {
 		commit(null, recorder.prepareRequest(TURN, REQUEST));
-		List<RunEntry> recovery = recorder.prepareAttempt(TURN, REQUEST, snapshot);
+		ModelTurnAttemptPolicy policy = REASK_TWO_ATTEMPTS;
+		List<RunEntry> recovery = recorder.prepareAttempt(TURN, REQUEST, snapshot, policy);
 		assertThat(recovery).extracting(RunEntry::id).containsExactly("agent:0#attempt.2");
 
 		commit(null, recovery);
 		reload();
 
-		assertThatThrownBy(() -> recorder.prepareAttempt(TURN, REQUEST, snapshot))
+		assertThatThrownBy(() -> recorder.prepareAttempt(TURN, REQUEST, snapshot, policy))
 				.isInstanceOf(ModelTurnJournalException.class).hasMessageContaining("budget exhausted");
+	}
+
+	@Test
+	void attemptLimitAloneDoesNotEnableRecoveryReasking() {
+		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot));
+
+		assertThatThrownBy(() -> recorder.prepareAttempt(TURN, REQUEST, snapshot, 5))
+				.isInstanceOf(ModelTurnJournalException.class).hasMessageContaining("re-asking is disabled");
 	}
 
 	@Test
@@ -461,9 +496,9 @@ class ModelTurnRecorderTest {
 	void providerCallIdsAndAttemptReservationsDoNotChangePlanIdentity() {
 		List<RunEntry> firstEntries = recorder.prepareResponse(TURN, toolCallingResponse("provider-one"), TOOLS);
 		PlannedToolCall first = ModelTurnCodec.decodeToolPlan(TURN, firstEntries.get(1));
-		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot));
+		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot, REASK_TWO_ATTEMPTS));
 		reload();
-		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot));
+		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot, REASK_TWO_ATTEMPTS));
 		commit(checkpoint(), recorder.prepareResponse(TURN, toolCallingResponse("provider-two"), TOOLS));
 
 		RecordedModelTurn recorded = recorder.replayTurn(TURN, REQUEST, snapshot).orElseThrow();
@@ -527,12 +562,18 @@ class ModelTurnRecorderTest {
 
 	/** In-process reference ordering; production recovery and tool receipts remain runtime concerns. */
 	private ChatResponse executeReference(Supplier<ChatResponse> model, Consumer<ToolCall> dispatch) {
-		return executeReference(ModelTurnRecorder.DEFAULT_MAX_ATTEMPTS, model, dispatch);
+		return executeReference(ModelTurnAttemptPolicy.DEFAULT, model, dispatch);
 	}
 
 	private ChatResponse executeReference(int maxAttempts, Supplier<ChatResponse> model, Consumer<ToolCall> dispatch) {
+		return executeReference(new ModelTurnAttemptPolicy(MissingResponsePolicy.FAIL_CLOSED, maxAttempts), model,
+				dispatch);
+	}
+
+	private ChatResponse executeReference(ModelTurnAttemptPolicy policy, Supplier<ChatResponse> model,
+			Consumer<ToolCall> dispatch) {
 		ChatResponse response = recorder.replay(TURN, REQUEST, snapshot).orElseGet(() -> {
-			commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot, maxAttempts));
+			commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot, policy));
 			ChatResponse result = model.get();
 			commit(checkpoint(), recorder.prepareResponse(TURN, result, REQUEST.tools()));
 			return result;
