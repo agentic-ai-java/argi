@@ -318,7 +318,7 @@ public final class ReActAgent implements Agent {
 		public void cancel() {
 			if (cancelled.compareAndSet(false, true)) {
 				context.control().cancel();
-				Flow.Subscription subscription = modelSubscription.get();
+				Flow.Subscription subscription = modelSubscription.getAndSet(null);
 				if (subscription != null) {
 					subscription.cancel();
 				}
@@ -431,7 +431,7 @@ public final class ReActAgent implements Agent {
 		private ChatResponse collectModelStream(Flow.Publisher<ChatEvent> publisher, UsageAccumulator usage) {
 			CompletableFuture<ChatResponse> future = new CompletableFuture<>();
 			try (AutoCloseable ignored = context.control().onLoss(() -> {
-				Flow.Subscription subscription = modelSubscription.get();
+				Flow.Subscription subscription = modelSubscription.getAndSet(null);
 				if (subscription != null) {
 					subscription.cancel();
 				}
@@ -444,6 +444,15 @@ public final class ReActAgent implements Agent {
 					public void onSubscribe(Flow.Subscription subscription) {
 						if (!modelSubscription.compareAndSet(null, subscription)) {
 							subscription.cancel();
+							return;
+						}
+						// A subscription that arrives after the run was cancelled (or after
+						// the control was stopped) must never be asked for data: granting
+						// demand here would start an upstream model call nobody waits for.
+						if (cancelled.get() || future.isCancelled()) {
+							if (modelSubscription.compareAndSet(subscription, null)) {
+								subscription.cancel();
+							}
 							return;
 						}
 						subscription.request(Long.MAX_VALUE);
