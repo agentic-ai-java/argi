@@ -816,8 +816,9 @@ public class AgentToolNode implements NodeActionWithConfig {
 
 	/**
 	 * The state a tool may read in strict mode: an {@link OverAllState} whose data map and
-	 * one-level-deep collections reject mutation, so state writes can escape only through
-	 * the patch channel. Without strict mode the state passes through untouched.
+	 * every reachable {@code List}/{@code Map} — nested to any depth — reject mutation,
+	 * so state writes can escape only through the patch channel. Without strict mode the
+	 * state passes through untouched.
 	 * @param state the state the node was invoked with
 	 * @return the state a tool may read
 	 */

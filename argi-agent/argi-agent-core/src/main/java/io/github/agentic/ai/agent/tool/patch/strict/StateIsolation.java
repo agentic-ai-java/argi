@@ -17,6 +17,7 @@ package io.github.agentic.ai.agent.tool.patch.strict;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,17 +27,20 @@ import java.util.Map;
  *
  * <p>
  * Tools historically received the shared state (or a shallow snapshot of it), so a tool
- * could mutate a shared {@code List} or {@code Map} value directly and bypass the patch
- * channel — the hazard the graph runtime only documents as advice. Strict mode replaces
- * that advice with a structural guarantee: the view handed to a tool rejects every
- * mutation, one level deep, so state writes can escape only through the tool's patch.
+ * could mutate a shared {@code List} or {@code Map} value — at any nesting depth — and
+ * bypass the patch channel. Strict mode replaces that hazard with a structural
+ * guarantee: every {@code List} and {@code Map} reached through {@code List}/{@code Map}
+ * nesting rejects mutation, so state writes can escape only through the tool's patch.
  * </p>
  *
  * <p>
- * Collection values are defensively copied before wrapping, so later structural changes
- * to the underlying state cannot surface through an outstanding view mid-execution.
- * Deeper nesting is intentionally left untouched: patches are validated as whole units
- * at the merge boundary, not per-element.
+ * Containers are wrapped over a private backing, so later structural changes to the
+ * underlying state cannot surface through an outstanding view mid-execution. Elements
+ * are wrapped, never duplicated. Repeated or cyclic container references reuse the same
+ * wrapper, so wrapping terminates on cyclic structures. Values that are neither
+ * {@code List} nor {@code Map} — scalars, business objects, arrays, other collection
+ * types — pass through unchanged: their mutability is outside the declared boundary of
+ * strict mode, which protects collection containers only.
  * </p>
  */
 public final class StateIsolation {
@@ -46,29 +50,57 @@ public final class StateIsolation {
 
 	/**
 	 * Returns an unmodifiable view of the given state whose {@code List} and {@code Map}
-	 * values are unmodifiable as well.
+	 * values — nested through further Lists and Maps to any depth — are unmodifiable as
+	 * well.
 	 * @param state the state a tool may read, or {@code null}
-	 * @return an unmodifiable, one-level-deep read view; empty when the input is null or
-	 * empty
+	 * @return an unmodifiable, recursively wrapped read view; empty when the input is
+	 * null or empty
 	 */
 	public static Map<String, Object> readOnlyView(Map<String, Object> state) {
 		if (state == null || state.isEmpty()) {
 			return Map.of();
 		}
 		Map<String, Object> view = new LinkedHashMap<>();
+		IdentityHashMap<Object, Object> seen = new IdentityHashMap<>();
 		for (Map.Entry<String, Object> entry : state.entrySet()) {
-			Object value = entry.getValue();
-			if (value instanceof List<?> list) {
-				view.put(entry.getKey(), Collections.unmodifiableList(new ArrayList<>(list)));
-			}
-			else if (value instanceof Map<?, ?> map) {
-				view.put(entry.getKey(), Collections.unmodifiableMap(new LinkedHashMap<>(map)));
-			}
-			else {
-				view.put(entry.getKey(), value);
-			}
+			view.put(entry.getKey(), wrap(entry.getValue(), seen));
 		}
 		return Collections.unmodifiableMap(view);
+	}
+
+	/**
+	 * Wraps one value: containers get a private backing with wrapped elements behind an
+	 * unmodifiable facade, everything else passes through. The wrapper is registered
+	 * before recursing so cyclic or shared containers resolve to the same instance.
+	 */
+	private static Object wrap(Object value, IdentityHashMap<Object, Object> seen) {
+		if (value instanceof List<?> list) {
+			Object wrapper = seen.get(list);
+			if (wrapper != null) {
+				return wrapper;
+			}
+			List<Object> backing = new ArrayList<>(list.size());
+			wrapper = Collections.unmodifiableList(backing);
+			seen.put(list, wrapper);
+			for (Object element : list) {
+				backing.add(wrap(element, seen));
+			}
+			return wrapper;
+		}
+		if (value instanceof Map<?, ?> map) {
+			Object wrapper = seen.get(map);
+			if (wrapper != null) {
+				return wrapper;
+			}
+			Map<Object, Object> backing = new LinkedHashMap<>(map.size());
+			wrapper = Collections.unmodifiableMap(backing);
+			seen.put(map, wrapper);
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				backing.put(entry.getKey(), wrap(entry.getValue(), seen));
+			}
+			return wrapper;
+		}
+		return value;
 	}
 
 }

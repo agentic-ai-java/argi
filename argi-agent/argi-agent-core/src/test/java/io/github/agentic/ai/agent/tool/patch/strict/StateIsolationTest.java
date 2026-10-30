@@ -72,4 +72,71 @@ class StateIsolationTest {
 		assertThat(StateIsolation.readOnlyView(Map.of())).isEmpty();
 	}
 
+	// === nested containers: mutation is rejected at any depth ===
+
+	@Test
+	void nestedMapInsideListRejectsMutation() {
+		Map<String, Object> record = new java.util.HashMap<>(Map.of("approved", false));
+		Map<String, Object> view = StateIsolation.readOnlyView(Map.of("records", List.of(record)));
+		@SuppressWarnings("unchecked")
+		List<Map<String, Object>> records = (List<Map<String, Object>>) view.get("records");
+		assertThatThrownBy(() -> records.get(0).put("approved", true))
+			.isInstanceOf(UnsupportedOperationException.class);
+		assertThat(record).containsEntry("approved", false);
+	}
+
+	@Test
+	void nestedListInsideMapRejectsMutation() {
+		List<Object> items = new java.util.ArrayList<>(List.of("a"));
+		Map<String, Object> view = StateIsolation.readOnlyView(Map.of("groups", Map.of("items", items)));
+		@SuppressWarnings("unchecked")
+		Map<String, List<Object>> groups = (Map<String, List<Object>>) view.get("groups");
+		assertThatThrownBy(() -> groups.get("items").add("b")).isInstanceOf(UnsupportedOperationException.class);
+		assertThat(items).containsExactly("a");
+	}
+
+	@Test
+	void multiLevelNestingRejectsMutationAtEveryDepth() {
+		Map<String, Object> leaf = new java.util.HashMap<>(Map.of("approved", false));
+		List<Object> middle = new java.util.ArrayList<>(List.of(leaf));
+		Map<String, Object> view = StateIsolation.readOnlyView(Map.of("matrix", List.of(middle)));
+		@SuppressWarnings("unchecked")
+		List<List<Map<String, Object>>> matrix = (List<List<Map<String, Object>>>) view.get("matrix");
+		assertThatThrownBy(() -> matrix.get(0).add(Map.of("extra", true)))
+			.isInstanceOf(UnsupportedOperationException.class);
+		assertThatThrownBy(() -> matrix.get(0).get(0).put("approved", true))
+			.isInstanceOf(UnsupportedOperationException.class);
+		assertThat(leaf).containsEntry("approved", false);
+		assertThat(middle).hasSize(1);
+	}
+
+	@Test
+	void cyclicStructureIsWrappedWithoutRecursionOverflow() {
+		List<Object> cycle = new java.util.ArrayList<>();
+		cycle.add(cycle);
+		Map<String, Object> view = StateIsolation.readOnlyView(Map.of("cycle", cycle));
+		@SuppressWarnings("unchecked")
+		List<Object> wrapped = (List<Object>) view.get("cycle");
+		assertThatThrownBy(() -> wrapped.add("x")).isInstanceOf(UnsupportedOperationException.class);
+		assertThat(wrapped.get(0)).isSameAs(wrapped);
+	}
+
+	@Test
+	void sharedNestedContainerIsWrappedOnce() {
+		Map<String, Object> shared = new java.util.HashMap<>(Map.of("k", 1));
+		Map<String, Object> view = StateIsolation.readOnlyView(Map.of("left", shared, "right", shared));
+		assertThat(view.get("left")).isSameAs(view.get("right"));
+	}
+
+	@Test
+	void nonContainerMutableValuesPassThroughUnwrapped() {
+		// Declared boundary: strict mode protects List/Map containers; other mutable
+		// types (arrays, business objects) keep their existing pass-through behavior.
+		String[] array = { "a" };
+		StringBuilder builder = new StringBuilder("b");
+		Map<String, Object> view = StateIsolation.readOnlyView(Map.of("array", array, "builder", builder));
+		assertThat(view.get("array")).isSameAs(array);
+		assertThat(view.get("builder")).isSameAs(builder);
+	}
+
 }

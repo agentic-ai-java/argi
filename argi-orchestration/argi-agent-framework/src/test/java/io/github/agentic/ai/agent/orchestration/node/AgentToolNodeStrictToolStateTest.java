@@ -200,6 +200,37 @@ class AgentToolNodeStrictToolStateTest {
 		assertThat(messages(output).get(0).metadata()).containsEntry("failureKind", "execution");
 	}
 
+	// === nested state: List<Map> mutation cannot bypass the patch channel ===
+
+	@Test
+	void sequentialStrictRejectsNestedCollectionMutation() throws Exception {
+		var seeded = seededRecords();
+		Tool mutator = nestedMutator("mutator", CompletableFuture.completedFuture(ToolResult.text("done")));
+		var output = executeSeeded(false, true, null, null, seeded, mutator);
+		assertThat(seeded.get(0)).containsEntry("approved", false);
+		assertThat(messages(output)).hasSize(1);
+	}
+
+	@Test
+	void parallelStrictRejectsNestedCollectionMutation() throws Exception {
+		var seeded = seededRecords();
+		Tool mutator = nestedMutator("mutator", CompletableFuture.completedFuture(ToolResult.text("done")));
+		var output = executeSeeded(true, true, null, null, seeded, mutator, writer("writer", "kept", "fine"));
+		assertThat(seeded.get(0)).containsEntry("approved", false);
+		assertThat(output).containsEntry("kept", "fine");
+		assertThat(messages(output)).hasSize(2);
+	}
+
+	@Test
+	void parallelStrictLeavesNestedStateUnchangedOnToolTimeout() throws Exception {
+		// The call never completes, so the node's execution timeout (2s) fails it; the
+		// nested mutation attempt was already rejected by the read view regardless.
+		var seeded = seededRecords();
+		Tool blocking = nestedMutator("blocking", new CompletableFuture<>());
+		var output = executeSeeded(true, true, null, null, seeded, blocking);
+		assertThat(seeded.get(0)).containsEntry("approved", false);
+	}
+
 	// === legacy pins: strict off, behavior byte-identical ===
 
 	@Test
@@ -271,6 +302,49 @@ class AgentToolNodeStrictToolStateTest {
 		}
 		return nodeBuilder(parallel, strict, policy, tools).build()
 			.apply(state(calls, strategies), RunnableConfig.builder().build());
+	}
+
+	private static Map<String, Object> executeSeeded(boolean parallel, boolean strict,
+			ToolContextPatchPolicy policy, Map<String, KeyStrategy> strategies, List<Map<String, Object>> records,
+			Tool... tools) throws Exception {
+		var calls = new ArrayList<ToolCall>();
+		for (int index = 0; index < tools.length; index++) {
+			calls.add(new ToolCall("call-" + index, tools[index].definition().name(), "{}"));
+		}
+		Map<String, Object> data = new java.util.LinkedHashMap<>();
+		data.put("messages", new ArrayList<>(List.of(ChatMessage.assistant("", calls))));
+		data.put("records", records);
+		var state = new OverAllState(data);
+		if (strategies != null) {
+			state.registerKeyAndStrategy(strategies);
+		}
+		return nodeBuilder(parallel, strict, policy, tools).build().apply(state, RunnableConfig.builder().build());
+	}
+
+	/** A mutable {@code List<Map>} value — the nesting level the one-level view missed. */
+	private static List<Map<String, Object>> seededRecords() {
+		Map<String, Object> record = new java.util.HashMap<>(Map.of("approved", false));
+		return new ArrayList<>(List.of(record));
+	}
+
+	/**
+	 * A tool that reaches the nested {@code records} maps through the state view and
+	 * flips {@code approved} — the depth the one-level view missed. The rejection is
+	 * swallowed so the configured result stage still completes the call.
+	 */
+	private static Tool nestedMutator(String name, CompletionStage<ToolResult> stage) {
+		return tool(name, (call, context) -> {
+			var visible = (OverAllState) context.attributes().get(AGENT_STATE_CONTEXT_KEY);
+			@SuppressWarnings("unchecked")
+			List<Map<String, Object>> records = (List<Map<String, Object>>) visible.data().get("records");
+			try {
+				records.get(0).put("approved", true);
+			}
+			catch (UnsupportedOperationException ignored) {
+				// The rejection itself is the guard; the call then finishes per its stage.
+			}
+			return stage;
+		});
 	}
 
 	private static AgentToolNode.Builder nodeBuilder(boolean parallel, boolean strict, ToolContextPatchPolicy policy,

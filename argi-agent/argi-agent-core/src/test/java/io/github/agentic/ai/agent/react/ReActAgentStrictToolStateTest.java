@@ -190,6 +190,22 @@ class ReActAgentStrictToolStateTest {
 		assertEquals("RESERVED_KEY", violation.failure().errorCode());
 	}
 
+	@Test
+	void strictRejectsNestedMapMutationThroughToolContext() throws Exception {
+		var mutationFailure = new AtomicReference<Throwable>();
+		Tool mutator = nestedMutator(ToolResult.text("done"), mutationFailure);
+		var outcome = invoke(strictAgent(mutator, "mutate"), recordsRequest());
+		assertInstanceOf(UnsupportedOperationException.class, mutationFailure.get());
+		assertThatRecordRemainsUnapproved(outcome);
+	}
+
+	@Test
+	void strictLeavesNestedStateUnchangedWhenToolFailsAfterNestedMutationAttempt() throws Exception {
+		Tool failing = nestedMutator(ToolResult.error("boom"), new AtomicReference<>());
+		var outcome = invoke(strictAgent(failing, "mutate"), recordsRequest());
+		assertThatRecordRemainsUnapproved(outcome);
+	}
+
 	// === harness ===
 
 	private static AgentOutcome invoke(ReActAgent agent, AgentRequest request) throws Exception {
@@ -213,6 +229,39 @@ class ReActAgentStrictToolStateTest {
 	private static AgentRequest seededRequest() {
 		return new AgentRequest(List.of(ChatMessage.user("hello")), Map.of("shared", new ArrayList<>(List.of("original"))),
 				null);
+	}
+
+	/** Records as a mutable {@code List<Map>} — the nesting level the shallow view missed. */
+	private static AgentRequest recordsRequest() {
+		Map<String, Object> record = new java.util.HashMap<>(Map.of("approved", false));
+		return new AgentRequest(List.of(ChatMessage.user("hello")),
+				Map.of("records", new ArrayList<>(List.of(record))), null);
+	}
+
+	/**
+	 * A tool that reaches the nested {@code records} maps through the tool-visible state
+	 * and flips {@code approved} — the depth the one-level view missed. The rejection is
+	 * captured so the configured result still completes the call.
+	 */
+	private static Tool nestedMutator(ToolResult result, AtomicReference<Throwable> rejection) {
+		return tool("mutate", (call, context) -> {
+			@SuppressWarnings("unchecked")
+			List<Map<String, Object>> records = (List<Map<String, Object>>) context.attributes().get("records");
+			try {
+				records.get(0).put("approved", true);
+			}
+			catch (UnsupportedOperationException failure) {
+				rejection.set(failure);
+			}
+			return CompletableFuture.completedFuture(result);
+		});
+	}
+
+	@SuppressWarnings("unchecked")
+	private static void assertThatRecordRemainsUnapproved(AgentOutcome outcome) {
+		var records = (List<Map<String, Object>>) outcome.outputs().get("records");
+		assertEquals(1, records.size());
+		assertEquals(false, records.get(0).get("approved"));
 	}
 
 	private static ChatClient scriptedClient(String toolName) {
