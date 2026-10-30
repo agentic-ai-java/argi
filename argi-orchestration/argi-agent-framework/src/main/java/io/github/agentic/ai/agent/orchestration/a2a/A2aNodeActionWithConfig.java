@@ -43,6 +43,7 @@ import io.github.agentic.ai.workflow.graph.observation.trace.AgentTracer;
 import org.springframework.util.StringUtils;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -256,6 +257,14 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 				post.setHeader("Accept", "text/event-stream");
 				post.setEntity(new StringEntity(requestPayload, ContentType.APPLICATION_JSON));
 
+				// Cancelling the subscription must reach the transport: otherwise a silent
+				// remote peer keeps the worker blocked in the synchronous read below and the
+				// connection open until it sends another byte or closes on its own.
+				sink.onCancel(() -> abort(httpClient, post));
+				if (sink.isCancelled()) {
+					return;
+				}
+
 				// The worker thread has no ambient observation, so the producer context is
 				// carried explicitly through the captured trace context and linked through
 				// the shared delegation id instead of a parent/child relationship.
@@ -325,14 +334,20 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 									}
 								}
 								catch (Exception ex) {
-									receiveSpan.error(ex);
+									if (!sink.isCancelled()) {
+										receiveSpan.error(ex);
+									}
 									emit(sink, buildStreamingOutput("Error: " + ex.getMessage(), state));
 								}
 							}
-							receiveSpan.success();
+							if (!sink.isCancelled()) {
+								receiveSpan.success();
+							}
 						}
 						catch (Exception ex) {
-							receiveSpan.error(ex);
+							if (!sink.isCancelled()) {
+								receiveSpan.error(ex);
+							}
 							throw ex;
 						}
 						finally {
@@ -340,10 +355,14 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 						}
 						return null;
 					});
-					sendSpan.success();
+					if (!sink.isCancelled()) {
+						sendSpan.success();
+					}
 				}
 				catch (Exception e) {
-					sendSpan.error(e);
+					if (!sink.isCancelled()) {
+						sendSpan.error(e);
+					}
 					throw e;
 				}
 				finally {
@@ -369,6 +388,25 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		if (!sink.isCancelled()) {
 			sink.next(GraphResponse.done(buildFinalResult(outputKey, accumulated.toString())));
 			sink.complete();
+		}
+	}
+
+	/**
+	 * Release the exchange owned by a cancelled subscription. The request is cancelled
+	 * first so the client aborts the in-flight execution; closing the per-invocation
+	 * client then shuts down its connection, which unblocks the worker still reading a
+	 * response that the peer has not finished sending. Both steps are idempotent and the
+	 * client is never shared with other runs.
+	 * @param httpClient the client created for this invocation
+	 * @param post the request whose exchange must be released
+	 */
+	private static void abort(CloseableHttpClient httpClient, HttpPost post) {
+		post.cancel();
+		try {
+			httpClient.close();
+		}
+		catch (IOException ignored) {
+			// best-effort teardown of an exchange that is already being abandoned
 		}
 	}
 
