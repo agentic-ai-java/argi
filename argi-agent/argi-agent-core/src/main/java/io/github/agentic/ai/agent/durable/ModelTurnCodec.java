@@ -22,6 +22,7 @@ import io.github.agentic.ai.api.chat.ContentPart;
 import io.github.agentic.ai.api.chat.GenerationOptions;
 import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.api.chat.ToolDefinition;
+import io.github.agentic.ai.runtime.execution.run.RunEntry;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamReadFeature;
@@ -179,13 +180,52 @@ public final class ModelTurnCodec {
 	 * <p>
 	 * Arguments are stored and hashed in canonical form, so two semantically equal
 	 * invocations that differ only in whitespace or object-key order produce the same
-	 * record and the same hash. The hash is intended to become an idempotency key for
-	 * external effects, which only holds if formatting cannot change it.
+	 * record and the same hash. The hash checks input consistency; the logical task is
+	 * identified separately by {@link ToolTaskIdentity}.
 	 */
 	public static String encodeToolPlan(ToolCall call, ToolDefinition definition, int ordinal) {
 		String arguments = canonicalArguments(call.arguments());
 		return write(new ToolPlan(ordinal, call.name(), definition == null ? null : definitionVersion(definition),
 				sha256(arguments), arguments));
+	}
+
+	/**
+	 * Reads an existing plan without resolving tools or validating argument schemas.
+	 * Checks the envelope, stored field types, task identity and argument hash only.
+	 * The caller supplies the owning turn because entries are scoped to a run by storage,
+	 * not by their payload. This method neither verifies a complete model turn nor grants
+	 * permission to dispatch; use the recorder to validate the full committed snapshot.
+	 * @param turn the owning logical model call
+	 * @param entry the stored TASK_CALL entry
+	 * @return the typed view of the stored plan, including a possibly absent definition
+	 * @throws ModelTurnJournalException if the journal entry is incompatible or inconsistent
+	 */
+	public static PlannedToolCall decodeToolPlan(ModelTurnRecorder.Turn turn, RunEntry entry) {
+		Objects.requireNonNull(turn, "turn cannot be null");
+		Objects.requireNonNull(entry, "entry cannot be null");
+		if (entry.schemaVersion() != 1 || entry.kind() != RunEntry.Kind.TASK_CALL
+				|| entry.payload().schemaVersion() != SCHEMA_VERSION || !PLAN_TYPE.equals(entry.payload().type())) {
+			throw new ModelTurnJournalException("Incompatible tool plan entry " + entry.id());
+		}
+		JsonNode plan = read(entry.payload().json(), JsonNode.class);
+		JsonNode ordinal = plan.get("ordinal");
+		JsonNode name = plan.get("toolName");
+		JsonNode definition = plan.get("definitionVersion");
+		JsonNode hash = plan.get("argumentsHash");
+		JsonNode arguments = plan.get("arguments");
+		if (ordinal == null || !ordinal.isInt() || ordinal.intValue() < 0
+				|| name == null || !name.isTextual() || name.textValue().isBlank()
+				|| (definition != null && !definition.isNull() && !definition.isTextual())
+				|| hash == null || !hash.isTextual() || arguments == null || !arguments.isTextual()) {
+			throw new ModelTurnJournalException("Invalid tool plan fields in entry " + entry.id());
+		}
+		ToolTaskIdentity identity = new ToolTaskIdentity(turn.runId(), turn.turnId(), ordinal.intValue());
+		if (!identity.entryId().equals(entry.id()) || !sha256(arguments.textValue()).equals(hash.textValue())) {
+			throw new ModelTurnJournalException("Inconsistent tool plan identity or argument hash in entry " + entry.id());
+		}
+		return new PlannedToolCall(identity, name.textValue(),
+				definition == null || definition.isNull() ? null : definition.textValue(),
+				hash.textValue(), arguments.textValue());
 	}
 
 	/**

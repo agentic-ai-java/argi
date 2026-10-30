@@ -23,6 +23,13 @@
  * every planned tool call. Preparation is stateless and has no storage
  * side effects. The runtime persists the data before dispatching tools; recovery then
  * validates and replays a completed turn's recorded result instead of asking the model again.
+ * {@link io.github.agentic.ai.agent.durable.RecordedModelTurn} exposes that response and
+ * its ordered {@link io.github.agentic.ai.agent.durable.PlannedToolCall} views. Each plan
+ * has a {@link io.github.agentic.ai.agent.durable.ToolTaskIdentity}; its argument hash
+ * checks input consistency and is not a substitute for the logical task identity.
+ * These views preserve the existing journal format. Reading a plan does not resolve
+ * its tool, validate its argument schema or authorize dispatch; an unknown tool or
+ * malformed argument string can still be recorded and read.
  *
  * <p>
  * The contract deliberately knows no graph, session, scheduler or streaming library: it

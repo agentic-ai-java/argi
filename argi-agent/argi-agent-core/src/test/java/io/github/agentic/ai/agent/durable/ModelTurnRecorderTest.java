@@ -387,6 +387,70 @@ class ModelTurnRecorderTest {
 	}
 
 	@Test
+	void replayTurnExposesTheSameCommittedPlansOnInitialReadAndRecoveryWithoutWriting() {
+		assertThat(recorder.replayTurn(TURN, REQUEST, snapshot)).isEmpty();
+		List<ToolCall> calls = List.of(new ToolCall("provider-first", "search", "{\"q\":\"same\"}"),
+				new ToolCall("provider-second", "search", "{\"q\":\"same\"}"));
+		ChatResponse response = new ChatResponse("response", "model", List.of(ChatMessage.assistant("", calls)),
+				calls, FinishReason.TOOL_CALLS, null, Map.of());
+		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot));
+		assertThat(recorder.replayTurn(TURN, REQUEST, snapshot)).isEmpty();
+		commit(checkpoint(), recorder.prepareResponse(TURN, response, TOOLS));
+		RunSnapshot before = snapshot;
+
+		RecordedModelTurn initial = recorder.replayTurn(TURN, REQUEST, snapshot).orElseThrow();
+		reload();
+		RecordedModelTurn recovered = recorder.replayTurn(TURN, REQUEST, snapshot).orElseThrow();
+
+		assertThat(recovered).isEqualTo(initial);
+		assertThat(recorder.replay(TURN, REQUEST, snapshot)).contains(recovered.response());
+		assertThat(recovered.plans()).extracting(PlannedToolCall::identity).containsExactly(
+				new ToolTaskIdentity(RUN_ID, TURN.turnId(), 0), new ToolTaskIdentity(RUN_ID, TURN.turnId(), 1));
+		assertThat(recovered.plans().get(0).argumentsHash()).isEqualTo(recovered.plans().get(1).argumentsHash());
+		for (PlannedToolCall plan : recovered.plans()) {
+			assertThat(plan.arguments()).isEqualTo("{\"q\":\"same\"}");
+			assertThat(plan.definitionFingerprint()).isEqualTo(ModelTurnCodec.definitionVersion(TOOLS.get(0)));
+			assertThat(ModelTurnCodec.decodeToolPlan(TURN, snapshot.journal().get(plan.identity().entryId())))
+					.isEqualTo(plan);
+			assertThat(recovered.response().toolCalls().get(plan.identity().ordinal()))
+					.isEqualTo(calls.get(plan.identity().ordinal()));
+		}
+		assertThat(store.find(run.namespace(), RUN_ID)).contains(before);
+		assertThatThrownBy(() -> recovered.plans().clear()).isInstanceOf(UnsupportedOperationException.class);
+	}
+
+	@Test
+	void providerCallIdsAndAttemptReservationsDoNotChangePlanIdentity() {
+		List<RunEntry> firstEntries = recorder.prepareResponse(TURN, toolCallingResponse("provider-one"), TOOLS);
+		PlannedToolCall first = ModelTurnCodec.decodeToolPlan(TURN, firstEntries.get(1));
+		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot));
+		reload();
+		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot));
+		commit(checkpoint(), recorder.prepareResponse(TURN, toolCallingResponse("provider-two"), TOOLS));
+
+		RecordedModelTurn recorded = recorder.replayTurn(TURN, REQUEST, snapshot).orElseThrow();
+
+		assertThat(recorded.plans()).containsExactly(first);
+		assertThat(recorded.response().toolCalls().get(0).id()).isEqualTo("provider-two");
+	}
+
+	@Test
+	void replayTurnRecordsUnknownToolsAndMalformedArgumentsWithoutAnExecutionGate() {
+		ToolCall call = new ToolCall("provider", "not-disclosed", "{ invalid JSON");
+		ChatResponse response = new ChatResponse("response", "model",
+				List.of(ChatMessage.assistant("", List.of(call))), List.of(call), FinishReason.TOOL_CALLS, null, Map.of());
+		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot));
+		commit(checkpoint(), recorder.prepareResponse(TURN, response, REQUEST.tools()));
+
+		RecordedModelTurn recorded = recorder.replayTurn(TURN, REQUEST, snapshot).orElseThrow();
+
+		assertThat(recorded.plans()).hasSize(1);
+		assertThat(recorded.plans().get(0).toolName()).isEqualTo(call.name());
+		assertThat(recorded.plans().get(0).arguments()).isEqualTo(call.arguments());
+		assertThat(recorded.plans().get(0).definitionFingerprint()).isNull();
+	}
+
+	@Test
 	void textOnlyResultsReplayWithoutToolPlans() {
 		ChatResponse text = new ChatResponse("response", "model", List.of(ChatMessage.assistant("done")),
 				List.of(), FinishReason.STOP, null, Map.of());
@@ -401,6 +465,7 @@ class ModelTurnRecorderTest {
 		assertThat(executeReference(model, call -> tools.incrementAndGet())).isEqualTo(text);
 		assertThat(modelCalls.get()).isEqualTo(1);
 		assertThat(tools.get()).isZero();
+		assertThat(recorder.replayTurn(TURN, REQUEST, snapshot).orElseThrow().plans()).isEmpty();
 	}
 
 	@Test

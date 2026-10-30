@@ -94,8 +94,17 @@ public final class ModelTurnRecorder {
 	}
 
 	/**
-	 * Returns the recorded response of this turn when the request is the one that produced
-	 * it.
+	 * Returns only the response from {@link #replayTurn(Turn, ChatRequest, RunSnapshot)},
+	 * with the same journal consistency checks and no storage side effects.
+	 */
+	public Optional<ChatResponse> replay(Turn turn, ChatRequest request, RunSnapshot snapshot) {
+		return replayTurn(turn, request, snapshot).map(RecordedModelTurn::response);
+	}
+
+	/**
+	 * Returns the recorded response and ordered tool plans of this turn when the request
+	 * is the one that produced them. Both initial execution after a successful response
+	 * commit and recovery can consume this same view of the committed snapshot.
 	 *
 	 * <p>
 	 * Reads only the supplied snapshot. A response requires its matching request and exactly
@@ -118,11 +127,11 @@ public final class ModelTurnRecorder {
 	 * @param turn the engine-supplied identity of this logical call
 	 * @param request the request about to be issued
 	 * @param snapshot the runtime's consistent committed view of the run
-	 * @return the recorded response, or empty when the turn has no committed result or plan
+	 * @return the response and plans, or empty when the turn has no committed result or plan
 	 * @throws ModelTurnJournalException when recorded data is incomplete, incompatible or
 	 * does not match the run or request
 	 */
-	public Optional<ChatResponse> replay(Turn turn, ChatRequest request, RunSnapshot snapshot) {
+	public Optional<RecordedModelTurn> replayTurn(Turn turn, ChatRequest request, RunSnapshot snapshot) {
 		requireNonNull(turn, "turn cannot be null");
 		requireNonNull(request, "request cannot be null");
 		requireNonNull(snapshot, "snapshot cannot be null");
@@ -165,18 +174,20 @@ public final class ModelTurnRecorder {
 		if (plans.size() != expected.size()) {
 			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " has an incomplete or extra tool plan");
 		}
+		List<PlannedToolCall> decodedPlans = new ArrayList<>();
 		for (RunEntry planned : expected) {
 			RunEntry actual = plans.get(planned.id());
 			if (actual == null) {
 				throw new ModelTurnJournalException("Missing tool plan entry " + planned.id());
 			}
-			validateEntry(actual, planned.id(), RunEntry.Kind.TASK_CALL, ModelTurnCodec.PLAN_TYPE);
+			PlannedToolCall decodedPlan = ModelTurnCodec.decodeToolPlan(turn, actual);
 			if (!actual.equals(planned)) {
 				throw new ModelTurnJournalException("Recorded tool plan does not match the response and request: "
 						+ planned.id());
 			}
+			decodedPlans.add(decodedPlan);
 		}
-		return Optional.of(decoded);
+		return Optional.of(new RecordedModelTurn(decoded, decodedPlans));
 	}
 
 	/**
@@ -314,7 +325,7 @@ public final class ModelTurnRecorder {
 	}
 
 	private static String planId(Turn turn, int ordinal) {
-		return turn.turnId() + PLAN_PREFIX + ordinal;
+		return new ToolTaskIdentity(turn.runId(), turn.turnId(), ordinal).entryId();
 	}
 
 	/**
