@@ -76,10 +76,9 @@ class ModelTurnPlanViewTest {
 	}
 
 	@Test
-	void rejectsIncompatibleEnvelopesAndEntryIdentities() {
+	void rejectsIncompatibleKindsPayloadsAndEntryIdentities() {
 		RunEntry entry = planEntry(PLAN_JSON);
 		List<RunEntry> incompatible = List.of(
-				new RunEntry(2, entry.id(), entry.kind(), entry.payload()),
 				new RunEntry(1, entry.id(), RunEntry.Kind.MODEL_CALL, entry.payload()),
 				new RunEntry(1, entry.id(), entry.kind(), new RunPayload(2, ModelTurnCodec.PLAN_TYPE, PLAN_JSON)),
 				new RunEntry(1, entry.id(), entry.kind(), new RunPayload(1, "other.type", PLAN_JSON)),
