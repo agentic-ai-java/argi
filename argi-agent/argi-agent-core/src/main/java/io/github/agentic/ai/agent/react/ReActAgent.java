@@ -591,6 +591,15 @@ public final class ReActAgent implements Agent {
 				if (result.status() != AgentResult.Status.COMPLETED) {
 					throw new AgentExecutionException(result);
 				}
+				// A successful repair replaces the delivered terminal: the message that
+				// actually passed validation becomes the final message while the failed
+				// original stays in history, and stream consumers see it through the
+				// complete-message event before the finished snapshot.
+				ChatMessage delivered = result.message();
+				if (delivered != null && !Objects.equals(delivered.text(), terminal.text())) {
+					messages.add(delivered);
+					emit(new AgentEvent.Message("model-repair", delivered));
+				}
 				if (result.data() != null) {
 					outputs.put("structuredOutput", result.data());
 				}
