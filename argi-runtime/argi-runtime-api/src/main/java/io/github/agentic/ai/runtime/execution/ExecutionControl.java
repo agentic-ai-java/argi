@@ -20,6 +20,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -60,6 +61,11 @@ public final class ExecutionControl implements ExecutionGuard, AutoCloseable {
 		this.ownership = ownership;
 		this.ownershipRegistration = ownership == null ? () -> {
 		} : requireNonNull(ownership.onLoss(this::loseOwnership), "ownership registration cannot be null");
+	}
+
+	@Override
+	public Optional<Instant> deadline() {
+		return Optional.ofNullable(this.deadline);
 	}
 
 	@Override

@@ -15,6 +15,9 @@
  */
 package io.github.agentic.ai.runtime.execution;
 
+import java.time.Instant;
+import java.util.Optional;
+
 /**
  * Execution-local liveness guard exposed without lease credentials or engine state.
  */
@@ -23,5 +26,17 @@ public interface ExecutionGuard {
 	void assertActive();
 
 	AutoCloseable onLoss(Runnable cancellation);
+
+	/**
+	 * The deadline this guard enforces synchronously through {@link #assertActive()},
+	 * or empty when the guard has no deadline of its own. Executors that block on an
+	 * in-flight operation use it to decide whether the wait must be sliced so the
+	 * deadline is enforced while the operation is still pending; a guard without a
+	 * deadline can be waited on plainly, because every stop path fires
+	 * {@link #onLoss(Runnable)} synchronously.
+	 */
+	default Optional<Instant> deadline() {
+		return Optional.empty();
+	}
 
 }

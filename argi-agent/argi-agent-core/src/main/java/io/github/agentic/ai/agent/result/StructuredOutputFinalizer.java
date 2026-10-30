@@ -21,6 +21,8 @@ import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -38,7 +40,7 @@ import io.github.agentic.ai.api.chat.GenerationOptions;
 import io.github.agentic.ai.api.chat.ToolChoice;
 import io.github.agentic.ai.api.chat.Usage;
 import io.github.agentic.ai.agent.AgentResult;
-import io.github.agentic.ai.runtime.execution.ExecutionControl;
+import io.github.agentic.ai.runtime.execution.ExecutionGuard;
 import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
@@ -76,13 +78,15 @@ import tools.jackson.databind.json.JsonMapper;
  * </p>
  *
  * <p>
- * Passing the run's {@link ExecutionControl} makes the repair re-ask execution-aware:
- * a control that is already stopped (cancelled, past its deadline, ownership lost)
+ * Passing the run's {@link ExecutionGuard} makes the repair re-ask execution-aware:
+ * a guard that is already stopped (cancelled, past its deadline, ownership lost)
  * skips the re-ask and propagates the stop instead of returning a validation failure,
- * a stop raised while the re-ask is in flight cancels that call and propagates the
- * stop reason, and a deadline that expires during the re-ask stops the delivery after
- * it. Without a control, a cancelled or failing repair client degrades to the marked
- * repair failure instead.
+ * and a stop raised while the re-ask is in flight cancels that call and propagates
+ * the stop. A deadline carried by the guard is enforced while the response is still
+ * pending — a request that never returns is cancelled once the deadline expires —
+ * and a deadline that expires after the response returned still stops the delivery
+ * before publishing it. Without a guard, a cancelled or failing repair client
+ * degrades to the marked repair failure instead.
  * </p>
  */
 public final class StructuredOutputFinalizer {
@@ -95,6 +99,13 @@ public final class StructuredOutputFinalizer {
 	private static final SchemaRegistry SCHEMAS = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12);
 
 	private static final String ROOT_PATH = "$";
+
+	/**
+	 * The in-flight repair re-ask is awaited in slices of this length so the run's
+	 * synchronous deadline boundary is enforced while the response is still pending;
+	 * an expired deadline cancels the underlying call within one slice.
+	 */
+	private static final long DEADLINE_POLL_MILLIS = 25L;
 
 	private final ChatClient repairClient;
 
@@ -127,23 +138,25 @@ public final class StructuredOutputFinalizer {
 
 	/**
 	 * Finalizes the terminal message of a run against the configured output schema under
-	 * the run's execution control. The control governs the optional repair re-ask: a
-	 * control that is already stopped (cancelled, past its deadline, ownership lost)
-	 * skips the re-ask and propagates the stop instead of returning a validation
-	 * failure, a stop raised while the re-ask is in flight cancels that call and
-	 * propagates the stop reason, and a deadline that expires during the re-ask stops
-	 * the delivery after it. Validation failures themselves are never thrown. Without a
-	 * control, a cancelled or failing repair client degrades to a marked repair failure
+	 * the run's execution guard. The guard governs the optional repair re-ask: a guard
+	 * that is already stopped (cancelled, past its deadline, ownership lost) skips the
+	 * re-ask and propagates the stop instead of returning a validation failure, and a
+	 * stop raised while the re-ask is in flight cancels that call and propagates the
+	 * stop. A deadline carried by the guard is enforced while the response is still
+	 * pending — a request that never returns is cancelled once the deadline expires —
+	 * and a deadline that expires after the response returned still stops the delivery
+	 * before publishing it. Validation failures themselves are never thrown. Without a
+	 * guard, a cancelled or failing repair client degrades to a marked repair failure
 	 * instead.
 	 * @param terminal the terminal assistant message; must not be {@code null}
 	 * @param outputSchema the configured JSON Schema for the output, or {@code null} or
 	 * blank when the run has none
 	 * @param usage the token usage recorded for the run, or {@code null} when unknown
-	 * @param control the run's execution control, or {@code null} to keep the
+	 * @param control the run's execution guard, or {@code null} to keep the
 	 * uncontrolled legacy behavior
 	 * @return the delivery result; never {@code null} and never thrown over
 	 */
-	public AgentResult finalizeOutput(ChatMessage terminal, String outputSchema, Usage usage, ExecutionControl control) {
+	public AgentResult finalizeOutput(ChatMessage terminal, String outputSchema, Usage usage, ExecutionGuard control) {
 		if (outputSchema == null || outputSchema.isEmpty()) {
 			return AgentResult.completed(terminal, usage, null);
 		}
@@ -222,7 +235,7 @@ public final class StructuredOutputFinalizer {
 	 * assistant message, or {@code null} when the repair client itself failed.
 	 */
 	private ChatMessage attemptRepair(ChatMessage terminal, String outputSchema,
-			List<AgentResult.OutputValidationIssue> issues, ExecutionControl control) {
+			List<AgentResult.OutputValidationIssue> issues, ExecutionGuard control) {
 		try {
 			String issueSummary = issues.stream()
 				.map(issue -> issue.errorCode()
@@ -254,16 +267,28 @@ public final class StructuredOutputFinalizer {
 			throw cancelled;
 		}
 		catch (RuntimeException ex) {
+			if (control != null) {
+				// A stop-shaped failure (a guard whose assertActive throws a plain
+				// RuntimeException, such as a lost checkpoint lease) must propagate as
+				// that stop instead of degrading to a marked repair failure; an active
+				// guard confirms the failure was the client's own.
+				control.assertActive();
+			}
 			return null;
 		}
 	}
 
 	/**
-	 * Performs the repair re-ask bound to the run's control: a stop raised while the
-	 * call is in flight cancels the pending call, and the cancellation observed while
-	 * waiting is translated back into the control's stop reason by the caller.
+	 * Performs the repair re-ask bound to the run's guard: a stop raised while the call
+	 * is in flight cancels the pending call, and the cancellation observed while waiting
+	 * is translated back into the guard's stop by the caller. When the guard carries a
+	 * deadline the wait is sliced so the synchronous deadline boundary is enforced while
+	 * the response is still pending — a request that never returns is cancelled once the
+	 * deadline expires instead of blocking the delivery. A guard without a deadline is
+	 * waited on plainly: every stop path fires the onLoss registration synchronously,
+	 * and slicing would only add idle wakeups.
 	 */
-	private ChatResponse callUnderControl(ChatRequest request, ExecutionControl control) {
+	private ChatResponse callUnderControl(ChatRequest request, ExecutionGuard control) {
 		CompletableFuture<ChatResponse> pending = this.repairClient.call(request).toCompletableFuture();
 		AtomicReference<Throwable> failure = new AtomicReference<>();
 		pending.whenComplete((response, error) -> {
@@ -272,7 +297,20 @@ public final class StructuredOutputFinalizer {
 			}
 		});
 		try (AutoCloseable ignored = control.onLoss(() -> pending.cancel(true))) {
-			return pending.get();
+			if (control.deadline().isEmpty()) {
+				return pending.get();
+			}
+			while (true) {
+				try {
+					return pending.get(DEADLINE_POLL_MILLIS, TimeUnit.MILLISECONDS);
+				}
+				catch (TimeoutException notYet) {
+					// Deadline checks are synchronous on the guard: a deadline that
+					// expires stops the run here, and the stop invokes the onLoss
+					// registration above, cancelling the underlying in-flight call.
+					control.assertActive();
+				}
+			}
 		}
 		catch (InterruptedException interrupted) {
 			pending.cancel(true);

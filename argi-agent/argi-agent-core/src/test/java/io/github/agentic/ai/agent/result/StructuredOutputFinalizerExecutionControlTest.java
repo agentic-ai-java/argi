@@ -32,6 +32,7 @@ import java.util.function.Function;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import io.github.agentic.ai.agent.AgentResult;
 import io.github.agentic.ai.api.chat.ChatClient;
@@ -171,6 +172,65 @@ class StructuredOutputFinalizerExecutionControlTest {
 
 		assertThat(stopped.reason()).isEqualTo(ExecutionStoppedException.Reason.DEADLINE_EXCEEDED);
 		assertThat(client.calls.get()).isEqualTo(1);
+	}
+
+	@Test
+	@Timeout(10)
+	@DisplayName("a repair request that never returns is cancelled once the deadline expires")
+	void neverReturningRepairRequestIsCancelledAtTheDeadline() {
+		final CompletableFuture<ChatResponse> pending = new CompletableFuture<>();
+		final ControlledClient client = new ControlledClient(request -> pending);
+		final ExecutionControl control = new ExecutionControl(trustedContext(Instant.now().plusMillis(500)),
+				Clock.systemUTC());
+		final StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		final long startNanos = System.nanoTime();
+		final ExecutionStoppedException stopped = catchThrowableOfType(
+				() -> repairing.finalizeOutput(invalidTerminal(), SCHEMA, Usage.unknown(), control),
+				ExecutionStoppedException.class);
+
+		assertThat(stopped.reason()).isEqualTo(ExecutionStoppedException.Reason.DEADLINE_EXCEEDED);
+		assertThat(client.calls.get()).isEqualTo(1);
+		// The deadline boundary must cancel the real in-flight request, not only stop
+		// the waiting thread.
+		assertThat(pending.isCancelled()).isTrue();
+		assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)).isLessThan(4000L);
+	}
+
+	@Test
+	@Timeout(10)
+	@DisplayName("a repair response completing while the deadline is far away delivers normally")
+	void completionRacingTheDeadlineDeliversNormally() throws Exception {
+		final CountDownLatch callStarted = new CountDownLatch(1);
+		final CompletableFuture<ChatResponse> pending = new CompletableFuture<>();
+		final ControlledClient client = new ControlledClient(request -> {
+			callStarted.countDown();
+			return pending;
+		});
+		final ExecutionControl control = new ExecutionControl(trustedContext(Instant.now().plusSeconds(30)),
+				Clock.systemUTC());
+		final StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		final Thread completer = new Thread(() -> {
+			try {
+				callStarted.await(3, TimeUnit.SECONDS);
+				pending.complete(repairResponse("{\"status\":\"ok\"}"));
+			}
+			catch (InterruptedException ignored) {
+				Thread.currentThread().interrupt();
+			}
+		});
+		completer.start();
+		try {
+			final AgentResult result = repairing.finalizeOutput(invalidTerminal(), SCHEMA, Usage.unknown(), control);
+
+			assertThat(result.status()).isEqualTo(AgentResult.Status.COMPLETED);
+			assertThat(result.data()).isNotNull();
+			assertThat(client.calls.get()).isEqualTo(1);
+		}
+		finally {
+			completer.join(TimeUnit.SECONDS.toMillis(3));
+		}
 	}
 
 	@Test

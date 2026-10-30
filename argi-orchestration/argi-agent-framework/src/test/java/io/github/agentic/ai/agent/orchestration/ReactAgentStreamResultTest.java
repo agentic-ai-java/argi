@@ -34,6 +34,7 @@ import io.github.agentic.ai.agent.AgentResult;
 import io.github.agentic.ai.agent.orchestration.node.AgentLlmNode;
 import io.github.agentic.ai.workflow.graph.NodeOutput;
 import io.github.agentic.ai.workflow.graph.OverAllState;
+import io.github.agentic.ai.workflow.graph.RunnableConfig;
 import io.github.agentic.ai.workflow.graph.streaming.OutputType;
 import io.github.agentic.ai.workflow.graph.streaming.StreamingOutput;
 import org.junit.jupiter.api.DisplayName;
@@ -243,7 +244,10 @@ class ReactAgentStreamResultTest {
 	}
 
 	private static Flux<AgentResult> finalizeOutputs(Flux<NodeOutput> source) {
-		return ReflectionTestUtils.invokeMethod(agent(new ScriptedStreamingClient(), null), "finalizeStream", source);
+		// An empty config carries no execution boundary, so the delivery keeps the
+		// uncontrolled behavior these tests assert.
+		return ReflectionTestUtils.invokeMethod(agent(new ScriptedStreamingClient(), null), "finalizeStream", source,
+				RunnableConfig.builder().build());
 	}
 
 	private static NodeOutput terminalOutput(String text, long tokens) {
