@@ -386,6 +386,44 @@ class ModelTurnRecorderTest {
 		assertThat(store.find(run.namespace(), RUN_ID)).contains(before);
 	}
 
+	@ParameterizedTest
+	@ValueSource(strings = { "0", "01", "2147483648" })
+	void malformedReservationIdsRemainVisibleToBudgetValidation(String suffix) {
+		RunEntry request = recorder.prepareRequest(TURN, REQUEST).get(0);
+		RunEntry attempt = new RunEntry(1, TURN.turnId() + "#attempt." + suffix, RunEntry.Kind.MODEL_CALL,
+				new RunPayload(1, ModelTurnCodec.ATTEMPT_TYPE,
+						ModelTurnCodec.encodeAttempt(1, ModelTurnCodec.requestHash(REQUEST))));
+		RunSnapshot recorded = snapshotWithJournal(List.of(request, attempt));
+
+		assertThatThrownBy(() -> recorder.prepareAttempt(TURN, REQUEST, recorded, 5))
+				.isInstanceOf(ModelTurnJournalException.class);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = { "00", "2147483648" })
+	void malformedExtraPlanIdsRemainVisibleToReplay(String suffix) {
+		List<RunEntry> entries = completeEntries();
+		RunEntry plan = entries.get(2);
+		entries.add(new RunEntry(1, TURN.turnId() + "#task." + suffix, plan.kind(), plan.payload()));
+		RunSnapshot recorded = snapshotWithJournal(entries);
+
+		assertThatThrownBy(() -> recorder.replayTurn(TURN, REQUEST, recorded))
+				.isInstanceOf(ModelTurnJournalException.class);
+	}
+
+	@Test
+	void nestedTurnsDoNotAffectReplayOrReservationCounts() {
+		ModelTurnRecorder.Turn nested = new ModelTurnRecorder.Turn(RUN_ID, TURN.turnId() + "#attempt.1#task.0");
+		commit(null, recorder.prepareAttempt(nested, REQUEST, snapshot));
+		commit(checkpoint(), recorder.prepareResponse(nested, RESPONSE, TOOLS));
+
+		assertThat(recorder.replayTurn(TURN, REQUEST, snapshot)).isEmpty();
+		assertThat(recorder.prepareAttempt(TURN, REQUEST, snapshot, 1)).extracting(RunEntry::id)
+				.containsExactly("agent:0#req", "agent:0#attempt.1");
+		assertThat(recorder.replayTurn(nested, REQUEST, snapshot).orElseThrow().plans().get(0).identity())
+				.isEqualTo(new ToolTaskIdentity(RUN_ID, nested.turnId(), 0));
+	}
+
 	@Test
 	void replayTurnExposesTheSameCommittedPlansOnInitialReadAndRecoveryWithoutWriting() {
 		assertThat(recorder.replayTurn(TURN, REQUEST, snapshot)).isEmpty();

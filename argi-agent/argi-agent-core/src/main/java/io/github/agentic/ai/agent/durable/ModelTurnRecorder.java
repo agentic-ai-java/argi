@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 import static java.util.Objects.requireNonNull;
 
@@ -46,7 +47,7 @@ import static java.util.Objects.requireNonNull;
  * they are not model failures.
  *
  * <p>
- * Entry ids of one turn:
+ * Entry ids are generated and recognized by {@link ModelTurnEntryIds}:
  * <ul>
  * <li>{@code <turnId>#req} - the request fingerprint</li>
  * <li>{@code <turnId>#attempt.<ordinal>} - a model-call reservation, starting at 1</li>
@@ -68,10 +69,6 @@ public final class ModelTurnRecorder {
 	public static final int DEFAULT_MAX_ATTEMPTS = 2;
 
 	private static final int ENTRY_SCHEMA_VERSION = 1;
-
-	private static final String PLAN_PREFIX = "#task.";
-
-	private static final String ATTEMPT_PREFIX = "#attempt.";
 
 	/** Creates a stateless recorder; the runtime decides whether to use journaling. */
 	public ModelTurnRecorder() {
@@ -138,17 +135,19 @@ public final class ModelTurnRecorder {
 		if (!turn.runId().equals(snapshot.spec().runId())) {
 			throw new ModelTurnJournalException("Run snapshot does not match model turn " + turn.turnId());
 		}
-		RunEntry recorded = snapshot.journal().get(turn.turnId() + "#req");
-		RunEntry response = snapshot.journal().get(turn.turnId() + "#resp");
-		Map<String, RunEntry> plans = recordedEntries(turn, snapshot, PLAN_PREFIX);
-		Map<String, RunEntry> attempts = recordedEntries(turn, snapshot, ATTEMPT_PREFIX);
+		RunEntry recorded = snapshot.journal().get(ModelTurnEntryIds.request(turn));
+		RunEntry response = snapshot.journal().get(ModelTurnEntryIds.response(turn));
+		Map<String, RunEntry> plans = recordedEntries(snapshot,
+				id -> ModelTurnEntryIds.planOrdinal(turn, id).isPresent());
+		Map<String, RunEntry> attempts = recordedEntries(snapshot,
+				id -> ModelTurnEntryIds.attemptOrdinal(turn, id).isPresent());
 		if (recorded == null && response == null && plans.isEmpty() && attempts.isEmpty()) {
 			return Optional.empty();
 		}
 		if (recorded == null) {
 			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " is missing its request fingerprint");
 		}
-		validateEntry(recorded, turn.turnId() + "#req", RunEntry.Kind.MODEL_CALL, ModelTurnCodec.REQUEST_TYPE);
+		validateEntry(recorded, ModelTurnEntryIds.request(turn), RunEntry.Kind.MODEL_CALL, ModelTurnCodec.REQUEST_TYPE);
 		String hash = ModelTurnCodec.decodeRequestHash(recorded.payload().json());
 		if (hash == null || hash.isBlank()) {
 			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " has an invalid request fingerprint");
@@ -168,7 +167,7 @@ public final class ModelTurnRecorder {
 			}
 			return Optional.empty();
 		}
-		validateEntry(response, turn.turnId() + "#resp", RunEntry.Kind.MODEL_CALL, ModelTurnCodec.RESPONSE_TYPE);
+		validateEntry(response, ModelTurnEntryIds.response(turn), RunEntry.Kind.MODEL_CALL, ModelTurnCodec.RESPONSE_TYPE);
 		ChatResponse decoded = ModelTurnCodec.decodeResponse(response.payload().json());
 		List<RunEntry> expected = preparePlans(turn, decoded, request.tools());
 		if (plans.size() != expected.size()) {
@@ -196,7 +195,7 @@ public final class ModelTurnRecorder {
 	 * {@link #prepareAttempt(Turn, ChatRequest, RunSnapshot)} before calling the provider.
 	 */
 	public List<RunEntry> prepareRequest(Turn turn, ChatRequest request) {
-		return List.of(new RunEntry(ENTRY_SCHEMA_VERSION, turn.turnId() + "#req",
+		return List.of(new RunEntry(ENTRY_SCHEMA_VERSION, ModelTurnEntryIds.request(turn),
 				RunEntry.Kind.MODEL_CALL, new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.REQUEST_TYPE,
 						ModelTurnCodec.encodeRequest(request))));
 	}
@@ -234,8 +233,9 @@ public final class ModelTurnRecorder {
 			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " already has a recorded response");
 		}
 		String hash = ModelTurnCodec.requestHash(request);
-		boolean hasRequest = snapshot.journal().containsKey(turn.turnId() + "#req");
-		int used = hasRequest ? reservedAttempts(turn, recordedEntries(turn, snapshot, ATTEMPT_PREFIX), hash) : 0;
+		boolean hasRequest = snapshot.journal().containsKey(ModelTurnEntryIds.request(turn));
+		int used = hasRequest ? reservedAttempts(turn,
+				recordedEntries(snapshot, id -> ModelTurnEntryIds.attemptOrdinal(turn, id).isPresent()), hash) : 0;
 		if (used >= maxAttempts) {
 			throw new ModelTurnJournalException(
 					"Model-call budget exhausted for turn " + turn.turnId() + " (maxAttempts=" + maxAttempts + ")");
@@ -245,7 +245,7 @@ public final class ModelTurnRecorder {
 			entries.addAll(prepareRequest(turn, request));
 		}
 		int ordinal = used + 1;
-		entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, turn.turnId() + ATTEMPT_PREFIX + ordinal,
+		entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, ModelTurnEntryIds.attempt(turn, ordinal),
 				RunEntry.Kind.MODEL_CALL, new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.ATTEMPT_TYPE,
 						ModelTurnCodec.encodeAttempt(ordinal, hash))));
 		return List.copyOf(entries);
@@ -264,7 +264,7 @@ public final class ModelTurnRecorder {
 	 */
 	public List<RunEntry> prepareResponse(Turn turn, ChatResponse response, Iterable<ToolDefinition> tools) {
 		List<RunEntry> entries = new ArrayList<>();
-		entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, turn.turnId() + "#resp", RunEntry.Kind.MODEL_CALL,
+		entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, ModelTurnEntryIds.response(turn), RunEntry.Kind.MODEL_CALL,
 				new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.RESPONSE_TYPE,
 						ModelTurnCodec.encodeResponse(response))));
 		entries.addAll(preparePlans(turn, response, tools));
@@ -293,7 +293,7 @@ public final class ModelTurnRecorder {
 			return List.of();
 		}
 		return List.of(new RunEntry(ENTRY_SCHEMA_VERSION,
-				turn.turnId() + "#progress." + attempt + "#delta." + seq, RunEntry.Kind.EVENT,
+				ModelTurnEntryIds.delta(turn, attempt, seq), RunEntry.Kind.EVENT,
 				new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.DELTA_TYPE,
 						ModelTurnCodec.encodeDelta(text))));
 	}
@@ -315,7 +315,7 @@ public final class ModelTurnRecorder {
 		}
 		int ordinal = 0;
 		for (ToolCall call : response.toolCalls()) {
-			entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, planId(turn, ordinal),
+			entries.add(new RunEntry(ENTRY_SCHEMA_VERSION, ModelTurnEntryIds.plan(turn, ordinal),
 					RunEntry.Kind.TASK_CALL,
 					new RunPayload(ModelTurnCodec.SCHEMA_VERSION, ModelTurnCodec.PLAN_TYPE,
 							ModelTurnCodec.encodeToolPlan(call, byName.get(call.name()), ordinal))));
@@ -324,20 +324,11 @@ public final class ModelTurnRecorder {
 		return entries;
 	}
 
-	private static String planId(Turn turn, int ordinal) {
-		return new ToolTaskIdentity(turn.runId(), turn.turnId(), ordinal).entryId();
-	}
-
-	/**
-	 * Numbered entries of this turn, keyed by id. Extra ordinals remain visible to validation.
-	 * The suffix must be digits: a turn id may itself contain {@code #task.} or
-	 * {@code #attempt.}, and without that check another turn's entries would leak into this one.
-	 */
-	private Map<String, RunEntry> recordedEntries(Turn turn, RunSnapshot snapshot, String entryPrefix) {
-		String prefix = turn.turnId() + entryPrefix;
+	/** Matching entries keyed by id; extra ordinals remain visible to validation. */
+	private Map<String, RunEntry> recordedEntries(RunSnapshot snapshot, Predicate<String> matches) {
 		Map<String, RunEntry> entries = new HashMap<>();
 		snapshot.journal().forEach((id, entry) -> {
-			if (id.startsWith(prefix) && isOrdinal(id.substring(prefix.length()))) {
+			if (matches.test(id)) {
 				entries.put(id, entry);
 			}
 		});
@@ -346,19 +337,15 @@ public final class ModelTurnRecorder {
 
 	private int reservedAttempts(Turn turn, Map<String, RunEntry> attempts, String requestHash) {
 		// A request written before attempt journaling still reserves its first invocation.
-		int used = attempts.size() + (attempts.containsKey(turn.turnId() + ATTEMPT_PREFIX + 1) ? 0 : 1);
+		int used = attempts.size() + (attempts.containsKey(ModelTurnEntryIds.attempt(turn, 1)) ? 0 : 1);
 		attempts.forEach((id, entry) -> {
 			validateEntry(entry, id, RunEntry.Kind.MODEL_CALL, ModelTurnCodec.ATTEMPT_TYPE);
 			int ordinal = ModelTurnCodec.decodeAttemptOrdinal(entry.payload().json(), requestHash);
-			if (ordinal > used || !id.equals(turn.turnId() + ATTEMPT_PREFIX + ordinal)) {
+			if (ordinal > used || !id.equals(ModelTurnEntryIds.attempt(turn, ordinal))) {
 				throw new ModelTurnJournalException("Invalid or non-contiguous model attempt entry " + id);
 			}
 		});
 		return used;
-	}
-
-	private static boolean isOrdinal(String suffix) {
-		return !suffix.isEmpty() && suffix.chars().allMatch(c -> c >= '0' && c <= '9');
 	}
 
 	private void validateEntry(RunEntry entry, String id, RunEntry.Kind kind, String type) {

@@ -36,7 +36,7 @@ public record ToolTaskIdentity(String runId, String turnId, int ordinal) {
 
 	/** Journal key local to the owning run, not a globally scoped idempotency key. */
 	public String entryId() {
-		return turnId + "#task." + ordinal;
+		return ModelTurnEntryIds.plan(new ModelTurnRecorder.Turn(runId, turnId), ordinal);
 	}
 
 }
