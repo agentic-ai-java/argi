@@ -23,6 +23,7 @@ import io.github.agentic.ai.agent.AgentRequest;
 import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatEvent;
 import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.ChatRequest;
 import io.github.agentic.ai.api.chat.ChatResponse;
 import io.github.agentic.ai.api.chat.ToolCall;
@@ -440,11 +441,35 @@ public final class ReActAgent implements Agent {
 			return new ToolRegistry(List.copyOf(effective.values()));
 		}
 
+		/**
+		 * Composes the outgoing message list for a model call. When an interceptor set a
+		 * system message, it becomes the single SYSTEM entry at the head of the request
+		 * and replaces any SYSTEM messages already present in the conversation list (two
+		 * SYSTEM entries would be transmitted verbatim by the Spring/LangChain4j
+		 * adapters and concatenated by the Google ADK adapter); all other messages keep
+		 * their order. The composition is a local copy for this call only — the run-level
+		 * message list is never written back, so nothing accumulates across turns. With
+		 * no interceptor-set system message the incoming list is passed through
+		 * unchanged.
+		 */
+		private List<ChatMessage> composeMessages(ModelRequest request) {
+			ChatMessage systemMessage = request.getSystemMessage();
+			if (systemMessage == null) {
+				return request.getMessages();
+			}
+			List<ChatMessage> composed = new ArrayList<>(request.getMessages().size() + 1);
+			composed.add(systemMessage);
+			request.getMessages().stream()
+					.filter(message -> message.role() != ChatRole.SYSTEM)
+					.forEach(composed::add);
+			return List.copyOf(composed);
+		}
+
 		private ModelResponse invokeModel(ModelRequest request, UsageAccumulator usage,
 				AtomicReference<ToolRegistry> effectiveTools) {
 			ToolRegistry effective = effectiveToolSet(request);
 			effectiveTools.set(effective);
-			ChatRequest chatRequest = new ChatRequest(request.getMessages(), effective.definitions(),
+			ChatRequest chatRequest = new ChatRequest(composeMessages(request), effective.definitions(),
 					request.getOptions(), request.getAttributes());
 			if (streamModel) {
 				return ModelResponse.of(collectModelStream(chatRequest, usage));
