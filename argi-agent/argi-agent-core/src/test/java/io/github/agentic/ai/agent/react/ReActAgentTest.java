@@ -381,6 +381,195 @@ class ReActAgentTest {
 		assertEquals(List.of("only"), disclosed);
 	}
 	
+	// ------------------------------------------------------------------
+	// issue #269: execution uses the bindings disclosed by the successful turn
+	// ------------------------------------------------------------------
+	
+	@Test
+	void interceptorRegistryReplacementExecutesTheReplacement() throws Exception {
+		// Issue repro: an interceptor swaps the whole registry for a same-named
+		// implementation B; the disclosed-and-executed binding must be B, not A.
+		AtomicInteger originalExecutions = new AtomicInteger();
+		AtomicInteger replacementExecutions = new AtomicInteger();
+		Tool original = tool("lookup", "{}", (ignored, context) -> {
+			originalExecutions.incrementAndGet();
+			return CompletableFuture.completedFuture(ToolResult.text("original"));
+		});
+		Tool replacement = tool("lookup", "{}", (ignored, context) -> {
+			replacementExecutions.incrementAndGet();
+			return CompletableFuture.completedFuture(ToolResult.text("replacement"));
+		});
+		ToolCall call = new ToolCall("call-1", "lookup", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("use", List.of(call)),
+			List.of(call), 1), response(ChatMessage.assistant("done"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "swap-registry";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).toolRegistry(new ToolRegistry(List.of(replacement))).build());
+			}
+		};
+		AgentOutcome outcome = ReActAgent.builder(client).tools(new ToolRegistry(List.of(original)))
+			.interceptors(List.of(interceptor)).build().invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		assertEquals(0, originalExecutions.get());
+		assertEquals(1, replacementExecutions.get());
+		assertTrue(outcome.messages().stream().anyMatch(message -> "replacement".equals(message.text())));
+	}
+	
+	@Test
+	void interceptorAddedToolsAreExecutableEvenWhenAbsentFromTheStaticRegistry() throws Exception {
+		ToolCall call = new ToolCall("call-1", "added", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("use", List.of(call)),
+			List.of(call), 1), response(ChatMessage.assistant("done"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "add-tool";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				Tool added = tool("added", "{}", (ignored, context) ->
+					CompletableFuture.completedFuture(ToolResult.text("added result")));
+				return next.call(ModelRequest.builder(request).toolRegistry(new ToolRegistry(List.of(added))).build());
+			}
+		};
+		AgentOutcome outcome = ReActAgent.builder(client).tools(new ToolRegistry(List.of()))
+			.interceptors(List.of(interceptor)).build().invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		assertTrue(outcome.messages().stream().anyMatch(message -> "added result".equals(message.text())));
+	}
+	
+	@Test
+	void removedToolDoesNotFallBackToThePreChainBinding() throws Exception {
+		ToolCall call = new ToolCall("call-1", "removed", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("use", List.of(call)),
+			List.of(call), 1), response(ChatMessage.assistant("done"), List.of(), 1)));
+		AtomicInteger removedExecutions = new AtomicInteger();
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "remove-tool";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).toolRegistry(new ToolRegistry(List.of())).build());
+			}
+		};
+		Tool removed = tool("removed", "{}", (ignored, context) -> {
+			removedExecutions.incrementAndGet();
+			return CompletableFuture.completedFuture(ToolResult.text("should not run"));
+		});
+		AgentOutcome outcome = ReActAgent.builder(client).tools(new ToolRegistry(List.of(removed)))
+			.interceptors(List.of(interceptor)).build().invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		// The model was shown no tools; a call for the removed name must not reach the
+		// pre-chain binding (it surfaces as the unknown-tool error path instead).
+		assertEquals(0, removedExecutions.get());
+		assertTrue(outcome.messages().stream()
+			.anyMatch(message -> message.text().contains("Unknown tool: removed")));
+	}
+	
+	@Test
+	void eachTurnExecutesWithThatTurnsOwnBindings() throws Exception {
+		ToolCall firstCall = new ToolCall("call-1", "turn-tool", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(
+			response(ChatMessage.assistant("use", List.of(firstCall)), List.of(firstCall), 1),
+			response(ChatMessage.assistant("done"), List.of(), 1)));
+		AtomicInteger turnOneExecutions = new AtomicInteger();
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "turn-one-only";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+			// Only the first model call discloses the tool; the second turn runs with an
+			// empty registry even though the shared message list keeps growing.
+			if (client.requests.isEmpty()) {
+				Tool turnTool = tool("turn-tool", "{}", (ignored, context) -> {
+					turnOneExecutions.incrementAndGet();
+					return CompletableFuture.completedFuture(ToolResult.text("turn one"));
+				});
+				return next.call(ModelRequest.builder(request).toolRegistry(new ToolRegistry(List.of(turnTool))).build());
+			}
+			return next.call(ModelRequest.builder(request).toolRegistry(new ToolRegistry(List.of())).build());
+			}
+		};
+		AgentOutcome outcome = ReActAgent.builder(client).interceptors(List.of(interceptor))
+			.build().invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		assertEquals(1, turnOneExecutions.get());
+		assertTrue(outcome.messages().stream().anyMatch(message -> "turn one".equals(message.text())));
+	}
+	
+	@Test
+	void streamingToolCallExecutesTheReplacementBinding() throws Exception {
+		AtomicInteger originalExecutions = new AtomicInteger();
+		AtomicInteger replacementExecutions = new AtomicInteger();
+		Tool original = tool("lookup", "{}", (ignored, context) -> {
+			originalExecutions.incrementAndGet();
+			return CompletableFuture.completedFuture(ToolResult.text("original"));
+		});
+		Tool replacement = tool("lookup", "{}", (ignored, context) -> {
+			replacementExecutions.incrementAndGet();
+			return CompletableFuture.completedFuture(ToolResult.text("replacement"));
+		});
+		ToolCall call = new ToolCall("call-1", "lookup", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(
+				response(ChatMessage.assistant("use", List.of(call)), List.of(call), 1),
+				response(ChatMessage.assistant("done"), List.of(), 1))) {
+			public Flow.Publisher<ChatEvent> stream(ChatRequest request) {
+				requests.add(request);
+				return subscriber -> subscriber.onSubscribe(new Flow.Subscription() {
+					public void request(long demand) {
+						subscriber.onNext(ChatEvent.textDelta("use"));
+						subscriber.onNext(ChatEvent.response(responses.remove()));
+						subscriber.onComplete();
+					}
+
+					public void cancel() {
+					}
+				});
+			}
+		};
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "swap-registry";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).toolRegistry(new ToolRegistry(List.of(replacement))).build());
+			}
+		};
+		ReActAgent agent = ReActAgent.builder(client).streamModel(true).tools(new ToolRegistry(List.of(original)))
+			.interceptors(List.of(interceptor)).build();
+	
+		try (AgentExecutionContext context = context()) {
+			CompletableFuture<AgentOutcome> outcome = new CompletableFuture<>();
+			agent.stream(request(), context).subscribe(new Flow.Subscriber<>() {
+				public void onSubscribe(Flow.Subscription subscription) {
+					subscription.request(Long.MAX_VALUE);
+				}
+	
+				public void onNext(AgentEvent event) {
+					if (event instanceof AgentEvent.Finished finished) {
+						outcome.complete(finished.outcome());
+					}
+				}
+	
+				public void onError(Throwable error) {
+					outcome.completeExceptionally(error);
+				}
+	
+				public void onComplete() {
+				}
+			});
+			outcome.get(3, TimeUnit.SECONDS);
+		}
+		assertEquals(0, originalExecutions.get());
+		assertEquals(1, replacementExecutions.get());
+	}
+	
 	@Test
 	void deniedToolCanSuspendForHumanApproval() throws Exception {
 		ToolCall call = new ToolCall("call-1", "danger", "{}");
