@@ -30,7 +30,7 @@ public record WorkflowDefinition(String id, String version, List<WorkflowStep> s
 		if (steps.isEmpty()) {
 			throw new IllegalArgumentException("workflow must contain at least one step");
 		}
-		metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+		metadata = metadata == null ? Map.of() : WorkflowDataSnapshot.metadata(metadata);
 	}
 
 	public WorkflowDefinition(String id, String version, List<WorkflowStep> steps) {

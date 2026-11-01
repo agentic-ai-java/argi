@@ -23,7 +23,14 @@ public sealed interface WorkflowValue
 		permits WorkflowValue.Literal, WorkflowValue.Input, WorkflowValue.State, WorkflowValue.StepOutput,
 		WorkflowValue.Compare, WorkflowValue.All, WorkflowValue.Any, WorkflowValue.Not {
 
+	/**
+	 * A detached immutable snapshot of supported definition data. Nested lists and
+	 * string-keyed maps are copied; unsupported mutable objects are rejected.
+	 */
 	record Literal(Object value) implements WorkflowValue {
+		public Literal {
+			value = WorkflowDataSnapshot.value(value);
+		}
 	}
 
 	record Input(String path) implements WorkflowValue {
