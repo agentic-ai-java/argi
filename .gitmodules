@@ -15,6 +15,8 @@
 [submodule "benchmark"]
 	path = benchmark
 	url = https://github.com/agentic-ai-java/argi-benchmark.git
+	branch = main
 [submodule "example"]
 	path = example
 	url = https://github.com/agentic-ai-java/argi-example.git
+	branch = main
