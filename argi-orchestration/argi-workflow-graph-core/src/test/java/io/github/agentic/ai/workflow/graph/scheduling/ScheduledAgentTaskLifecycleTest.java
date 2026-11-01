@@ -246,7 +246,7 @@ class ScheduledAgentTaskLifecycleTest {
 		ScheduledAgentManagerFactory.getInstance().registerProvider(() -> manager);
 	}
 
-	private CompiledGraph graphFailingFirstAttempts(AtomicInteger attempts, int failures) throws Exception {
+	static CompiledGraph graphFailingFirstAttempts(AtomicInteger attempts, int failures) throws Exception {
 		Map<String, KeyStrategy> strategies = new HashMap<>();
 		strategies.put("result", (left, right) -> right);
 		return new StateGraph("schedule-lifecycle-test", () -> strategies)
@@ -276,9 +276,9 @@ class ScheduledAgentTaskLifecycleTest {
 		return events.stream().filter(event::equals).count();
 	}
 
-	private static final class RecordingScheduledAgentManager implements ScheduledAgentManager {
+	static final class RecordingScheduledAgentManager implements ScheduledAgentManager {
 
-		private final RecordingTaskScheduler scheduler = new RecordingTaskScheduler();
+		final RecordingTaskScheduler scheduler = new RecordingTaskScheduler();
 
 		private final Map<String, ScheduledAgentTask> tasks = new HashMap<>();
 
@@ -286,8 +286,15 @@ class ScheduledAgentTaskLifecycleTest {
 
 		private final AtomicInteger sequence = new AtomicInteger();
 
+		private int shutdownCount;
+
+		private boolean rejectRegistrations;
+
 		@Override
 		public String registerTask(ScheduledAgentTask task) {
+			if (rejectRegistrations) {
+				throw new IllegalStateException("Task registration rejected");
+			}
 			String taskId = "test-task-" + sequence.incrementAndGet();
 			tasks.put(taskId, task);
 			return taskId;
@@ -321,12 +328,21 @@ class ScheduledAgentTaskLifecycleTest {
 
 		@Override
 		public boolean isShutdown() {
-			return false;
+			return shutdownCount > 0;
 		}
 
 		@Override
 		public void shutdown() {
+			shutdownCount++;
 			tasks.clear();
+		}
+
+		void rejectRegistrations() {
+			rejectRegistrations = true;
+		}
+
+		int shutdownCount() {
+			return shutdownCount;
 		}
 
 		int unregisterCount(String taskId) {
@@ -336,7 +352,7 @@ class ScheduledAgentTaskLifecycleTest {
 
 	}
 
-	private static final class RecordingTaskScheduler implements TaskScheduler {
+	static final class RecordingTaskScheduler implements TaskScheduler {
 
 		private final Queue<Runnable> scheduledTasks = new ArrayDeque<>();
 
