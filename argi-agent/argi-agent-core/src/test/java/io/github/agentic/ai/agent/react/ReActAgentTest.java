@@ -23,6 +23,7 @@ import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatClientCapabilities;
 import io.github.agentic.ai.api.chat.ChatEvent;
 import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.ChatRequest;
 import io.github.agentic.ai.api.chat.ChatResponse;
 import io.github.agentic.ai.api.chat.FinishReason;
@@ -132,6 +133,165 @@ class ReActAgentTest {
 		assertEquals(2, interceptorCalls.get());
 	}
 
+	// ------------------------------------------------------------------
+	// issue #270: interceptor-set system message reaches the model request
+	// ------------------------------------------------------------------
+	
+	@Test
+	void interceptorSystemMessageReachesTheModelRequest() throws Exception {
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("answer"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "policy";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).systemMessage(ChatMessage.system("required-policy")).build());
+			}
+		};
+		ReActAgent agent = ReActAgent.builder(client).interceptors(List.of(interceptor)).build();
+	
+		agent.invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		List<ChatMessage> sent = client.requests.get(0).messages();
+		assertEquals(ChatRole.SYSTEM, sent.get(0).role());
+		assertEquals("required-policy", sent.get(0).text());
+	}
+	
+	@Test
+	void interceptorSystemMessageReplacesExistingSystemMessagesExactlyOnce() throws Exception {
+		// A user-provided SYSTEM message in the conversation is replaced by the
+		// interceptor-set one; exactly one SYSTEM entry is transmitted.
+		AgentRequest withSystem = AgentRequest.messages(List.of(
+			ChatMessage.system("user-provided-policy"), ChatMessage.user("hello")));
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("answer"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "policy";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).systemMessage(ChatMessage.system("interceptor-policy")).build());
+			}
+		};
+		ReActAgent agent = ReActAgent.builder(client).interceptors(List.of(interceptor)).build();
+	
+		agent.invoke(withSystem, context()).get(3, TimeUnit.SECONDS);
+	
+		List<ChatMessage> sent = client.requests.get(0).messages();
+		assertEquals(1, sent.stream().filter(message -> message.role() == ChatRole.SYSTEM).count());
+		assertEquals("interceptor-policy", sent.get(0).text());
+		assertTrue(sent.stream().anyMatch(message -> "hello".equals(message.text())));
+	}
+	
+	@Test
+	void withoutInterceptorSystemMessageTheConversationIsUnchanged() throws Exception {
+		AgentRequest withSystem = AgentRequest.messages(List.of(
+			ChatMessage.system("user-provided-policy"), ChatMessage.user("hello")));
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("answer"), List.of(), 1)));
+		ReActAgent agent = ReActAgent.builder(client).build();
+	
+		agent.invoke(withSystem, context()).get(3, TimeUnit.SECONDS);
+	
+		List<ChatMessage> sent = client.requests.get(0).messages();
+		assertEquals("user-provided-policy", sent.get(0).text());
+		assertEquals("hello", sent.get(1).text());
+	}
+	
+	@Test
+	void systemMessageDoesNotAccumulateAcrossToolCallTurns() throws Exception {
+		ToolCall call = new ToolCall("call-1", "lookup", "{}");
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("use", List.of(call)),
+			List.of(call), 1), response(ChatMessage.assistant("done"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "policy";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).systemMessage(ChatMessage.system("required-policy")).build());
+			}
+		};
+		Tool lookup = tool("lookup", "{}", (ignored, context) ->
+			CompletableFuture.completedFuture(ToolResult.text("lookup result")));
+		ReActAgent agent = ReActAgent.builder(client).tools(new ToolRegistry(List.of(lookup)))
+			.interceptors(List.of(interceptor)).build();
+	
+		agent.invoke(request(), context()).get(3, TimeUnit.SECONDS);
+	
+		assertEquals(2, client.requests.size());
+		for (ChatRequest sent : client.requests) {
+			assertEquals(1, sent.messages().stream()
+				.filter(message -> message.role() == ChatRole.SYSTEM).count());
+			assertEquals("required-policy", sent.messages().get(0).text());
+		}
+	}
+	
+	@Test
+	void streamingRunAlsoReceivesTheInterceptorSystemMessage() throws Exception {
+		StreamingClient client = new StreamingClient();
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "policy";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).systemMessage(ChatMessage.system("required-policy")).build());
+			}
+		};
+		ReActAgent agent = ReActAgent.builder(client).streamModel(true)
+			.interceptors(List.of(interceptor)).build();
+	
+		try (AgentExecutionContext context = context()) {
+			CompletableFuture<AgentOutcome> outcome = new CompletableFuture<>();
+			agent.stream(request(), context).subscribe(new Flow.Subscriber<>() {
+				public void onSubscribe(Flow.Subscription subscription) {
+					subscription.request(Long.MAX_VALUE);
+				}
+	
+				public void onNext(AgentEvent event) {
+					if (event instanceof AgentEvent.Finished finished) {
+						outcome.complete(finished.outcome());
+					}
+				}
+	
+				public void onError(Throwable error) {
+					outcome.completeExceptionally(error);
+				}
+	
+				public void onComplete() {
+				}
+			});
+			outcome.get(3, TimeUnit.SECONDS);
+		}
+		List<ChatMessage> sent = client.requests.get(0).messages();
+		assertEquals(ChatRole.SYSTEM, sent.get(0).role());
+		assertEquals("required-policy", sent.get(0).text());
+	}
+	
+	@Test
+	void nonSystemMessagesKeepTheirOrderAroundTheInjectedSystemMessage() throws Exception {
+		AgentRequest multi = AgentRequest.messages(List.of(
+			ChatMessage.user("first"), ChatMessage.assistant("reply"), ChatMessage.user("second")));
+		ScriptedClient client = new ScriptedClient(List.of(response(ChatMessage.assistant("answer"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "policy";
+			}
+	
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).systemMessage(ChatMessage.system("required-policy")).build());
+			}
+		};
+		ReActAgent agent = ReActAgent.builder(client).interceptors(List.of(interceptor)).build();
+	
+		agent.invoke(multi, context()).get(3, TimeUnit.SECONDS);
+	
+		List<String> texts = client.requests.get(0).messages().stream()
+			.map(ChatMessage::text).toList();
+		assertEquals(List.of("required-policy", "first", "reply", "second"), texts);
+	}
+	
 	@Test
 	void emitsStreamingDeltasAndSupportsDynamicTools() throws Exception {
 		Tool dynamic = tool("dynamic", "{\"type\":\"object\"}",
