@@ -65,6 +65,7 @@ public class LocalFilesystemBackend implements FilesystemBackend {
 	private static final String EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents";
 	private static final int MAX_LINE_LENGTH = 10000;
 	private static final int LINE_NUMBER_WIDTH = 6;
+	private static final int MAX_RIPGREP_DIAGNOSTIC_LENGTH = 4096;
 
 	private final Path cwd;
 	private final boolean virtualMode;
@@ -487,6 +488,13 @@ public class LocalFilesystemBackend implements FilesystemBackend {
 		} catch (PatternSyntaxException e) {
 			return "Invalid regex pattern: " + e.getMessage();
 		}
+		if (glob != null) {
+			try {
+				FileSystems.getDefault().getPathMatcher("glob:" + glob);
+			} catch (IllegalArgumentException e) {
+				return "Invalid glob pattern: " + e.getMessage();
+			}
+		}
 
 		// Resolve base path
 		Path baseFull;
@@ -504,10 +512,12 @@ public class LocalFilesystemBackend implements FilesystemBackend {
 		}
 
 		// Try ripgrep first
-		Map<String, List<LineMatch>> results = ripgrepSearch(pattern, baseFull, glob);
-		if (results == null) {
-			results = javaSearch(pattern, baseFull, glob);
+		RipgrepSearchResult ripgrepResult = ripgrepSearch(pattern, baseFull, glob);
+		if (ripgrepResult.error() != null) {
+			return ripgrepResult.error();
 		}
+		Map<String, List<LineMatch>> results = ripgrepResult.fallbackToJava()
+				? javaSearch(pattern, baseFull, glob) : ripgrepResult.matches();
 
 		List<GrepMatch> matches = new ArrayList<>();
 		for (Map.Entry<String, List<LineMatch>> entry : results.entrySet()) {
@@ -520,7 +530,7 @@ public class LocalFilesystemBackend implements FilesystemBackend {
 
 	// Helper methods
 
-	private Map<String, List<LineMatch>> ripgrepSearch(String pattern, Path baseFull, String includeGlob) {
+	private RipgrepSearchResult ripgrepSearch(String pattern, Path baseFull, String includeGlob) {
 		boolean explicitFile = Files.isRegularFile(baseFull, LinkOption.NOFOLLOW_LINKS);
 		List<String> cmd = new ArrayList<>();
 		cmd.add("rg");
@@ -543,62 +553,128 @@ public class LocalFilesystemBackend implements FilesystemBackend {
 
 		try {
 			if (explicitFile && Files.size(baseFull) > maxFileSizeBytes) {
-				return Collections.emptyMap();
+				return RipgrepSearchResult.matches(Collections.emptyMap());
 			}
 			ProcessBuilder pb = new ProcessBuilder(cmd);
-			Process process = pb.start();
-
-			Map<String, List<LineMatch>> results = new HashMap<>();
-			ObjectMapper mapper = new ObjectMapper();
-
-			try (BufferedReader reader = new BufferedReader(
-					new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-				String line;
-				while ((line = reader.readLine()) != null) {
-					try {
-						JsonNode data = mapper.readTree(line);
-						if (!"match".equals(data.path("type").asText())) {
-							continue;
-						}
-						JsonNode pdata = data.path("data");
-						String ftext = pdata.path("path").path("text").asText(null);
-						if (ftext == null) {
-							continue;
-						}
-						Path p = Paths.get(ftext);
-						String virt;
-						if (virtualMode) {
-							try {
-								Path resolved = p.toAbsolutePath().normalize();
-								Path relative = cwd.relativize(resolved);
-								virt = "/" + relative.toString().replace("\\", "/");
-							} catch (Exception e) {
-								continue;
-							}
-						} else {
-							virt = p.toString();
-						}
-						Integer ln = pdata.path("line_number").asInt(0);
-						if (ln == 0) {
-							continue;
-						}
-						String lt = pdata.path("lines").path("text").asText("");
-						if (lt.endsWith("\n")) {
-							lt = lt.substring(0, lt.length() - 1);
-						}
-						results.computeIfAbsent(virt, k -> new ArrayList<>())
-							.add(new LineMatch(ln, lt));
-					} catch (Exception ignored) {
-						// Skip malformed JSON lines
-					}
+			Process process;
+			try {
+				process = pb.start();
+			} catch (IOException e) {
+				if (!ripgrepCommandExistsOnPath()) {
+					return RipgrepSearchResult.fallback();
 				}
+				return RipgrepSearchResult.error("Unable to start ripgrep: " + e.getMessage());
 			}
 
-			process.waitFor();
-			return results;
+			StringBuilder diagnostics = new StringBuilder();
+			Thread diagnosticReader = new Thread(() -> readRipgrepDiagnostics(process, diagnostics),
+					"argi-ripgrep-diagnostics");
+			diagnosticReader.setDaemon(true);
+			diagnosticReader.start();
+
+			try {
+				Map<String, List<LineMatch>> results = new HashMap<>();
+				ObjectMapper mapper = new ObjectMapper();
+
+				try (BufferedReader reader = new BufferedReader(
+						new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+					String line;
+					while ((line = reader.readLine()) != null) {
+						try {
+							JsonNode data = mapper.readTree(line);
+							if (!"match".equals(data.path("type").asText())) {
+								continue;
+							}
+							JsonNode pdata = data.path("data");
+							String ftext = pdata.path("path").path("text").asText(null);
+							if (ftext == null) {
+								continue;
+							}
+							Path p = Paths.get(ftext);
+							String virt;
+							if (virtualMode) {
+								try {
+									Path resolved = p.toAbsolutePath().normalize();
+									Path relative = cwd.relativize(resolved);
+									virt = "/" + relative.toString().replace("\\", "/");
+								} catch (Exception e) {
+									continue;
+								}
+							} else {
+								virt = p.toString();
+							}
+							Integer ln = pdata.path("line_number").asInt(0);
+							if (ln == 0) {
+								continue;
+							}
+							String lt = pdata.path("lines").path("text").asText("");
+							if (lt.endsWith("\n")) {
+								lt = lt.substring(0, lt.length() - 1);
+							}
+							results.computeIfAbsent(virt, k -> new ArrayList<>())
+								.add(new LineMatch(ln, lt));
+						} catch (Exception ignored) {
+							// Skip malformed JSON lines
+						}
+					}
+				}
+
+				int exitCode = process.waitFor();
+				diagnosticReader.join();
+				if (exitCode == 0) {
+					return RipgrepSearchResult.matches(results);
+				}
+				if (exitCode == 1) {
+					return RipgrepSearchResult.matches(Collections.emptyMap());
+				}
+				String diagnostic = diagnostics.toString().trim();
+				if (diagnostic.contains("regex parse error:")) {
+					return RipgrepSearchResult.fallback();
+				}
+				String message = "ripgrep failed with exit code " + exitCode;
+				return RipgrepSearchResult.error(diagnostic.isEmpty() ? message : message + ": " + diagnostic);
+			} catch (InterruptedException | IOException e) {
+				process.destroyForcibly();
+				diagnosticReader.interrupt();
+				throw e;
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			return RipgrepSearchResult.error("ripgrep search was interrupted");
 		} catch (Exception e) {
-			// Ripgrep not available or failed, return null to fallback to Java search
-			return null;
+			return RipgrepSearchResult.error("Unable to read ripgrep results: " + e.getMessage());
+		}
+	}
+
+	private boolean ripgrepCommandExistsOnPath() {
+		String path = System.getenv("PATH");
+		if (path == null || path.isEmpty()) {
+			return false;
+		}
+		String pathSeparator = System.getProperty("path.separator");
+		for (String directory : path.split(Pattern.quote(pathSeparator))) {
+			Path executable = directory.isEmpty() ? Paths.get("rg") : Paths.get(directory).resolve("rg");
+			if (Files.isRegularFile(executable)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private void readRipgrepDiagnostics(Process process, StringBuilder diagnostics) {
+		try (InputStreamReader reader = new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8)) {
+			char[] buffer = new char[512];
+			int count;
+			while ((count = reader.read(buffer)) != -1) {
+				int remaining = MAX_RIPGREP_DIAGNOSTIC_LENGTH - diagnostics.length();
+				if (remaining > 0) {
+					diagnostics.append(buffer, 0, Math.min(count, remaining));
+				}
+			}
+		} catch (IOException e) {
+			if (diagnostics.length() < MAX_RIPGREP_DIAGNOSTIC_LENGTH) {
+				diagnostics.append("Unable to read ripgrep diagnostics: ").append(e.getMessage());
+			}
 		}
 	}
 
@@ -732,6 +808,22 @@ public class LocalFilesystemBackend implements FilesystemBackend {
 	private String formatTimestamp(Instant instant) {
 		return instant.atOffset(ZoneOffset.UTC)
 			.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+	}
+
+	private record RipgrepSearchResult(Map<String, List<LineMatch>> matches, boolean fallbackToJava, String error) {
+
+		private static RipgrepSearchResult matches(Map<String, List<LineMatch>> matches) {
+			return new RipgrepSearchResult(matches, false, null);
+		}
+
+		private static RipgrepSearchResult fallback() {
+			return new RipgrepSearchResult(null, true, null);
+		}
+
+		private static RipgrepSearchResult error(String error) {
+			return new RipgrepSearchResult(null, false, error);
+		}
+
 	}
 
 	private static class LineMatch {
