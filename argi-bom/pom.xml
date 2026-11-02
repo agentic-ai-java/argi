@@ -73,7 +73,7 @@
         <jackson-bom.version>3.2.4</jackson-bom.version>
         <bouncycastle.version>1.86</bouncycastle.version>
         <jsoup.version>1.23.2</jsoup.version>
-        <tomcat.version>11.0.26</tomcat.version>
+        <tomcat.version>11.0.27</tomcat.version>
 
         <!-- Plugin Versions -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
