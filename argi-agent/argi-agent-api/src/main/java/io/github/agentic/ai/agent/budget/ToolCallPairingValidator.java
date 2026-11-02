@@ -19,13 +19,12 @@ import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.ToolCall;
 
+import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 
 /**
  * Validates that the tool calls of a conversation and their results stay paired.
@@ -34,7 +33,9 @@ import java.util.Set;
  * Compression may remove a message. When it removes a tool result, the assistant
  * message which requested the tool call is left with an unanswered call; when it
  * removes the assistant message, the tool result is left without a call. Both break
- * the conversation, so the budget gate refuses to dispatch such a request.
+ * the conversation, so the budget gate refuses to dispatch such a request. The
+ * validation is position-aware: a result must follow the assistant message which
+ * requested the call, and neither calls nor results may repeat.
  */
 public final class ToolCallPairingValidator {
 
@@ -59,7 +60,17 @@ public final class ToolCallPairingValidator {
 		/**
 		 * The same tool call appears more than once.
 		 */
-		DUPLICATE_TOOL_CALL
+		DUPLICATE_TOOL_CALL,
+
+		/**
+		 * The same tool result appears more than once.
+		 */
+		DUPLICATE_TOOL_RESULT,
+
+		/**
+		 * A tool result appears before the assistant message which requested the call.
+		 */
+		RESULT_BEFORE_CALL
 	}
 
 	/**
@@ -90,14 +101,20 @@ public final class ToolCallPairingValidator {
 	public static Optional<Violation> validate(List<ChatMessage> messages) {
 		Objects.requireNonNull(messages, "messages must not be null");
 		Map<String, Integer> callCounts = new HashMap<>();
-		Set<String> calls = new LinkedHashSet<>();
-		for (ChatMessage message : messages) {
+		Map<String, Integer> callFirstIndex = new HashMap<>();
+		Map<String, List<Integer>> resultIndexes = new HashMap<>();
+		for (int index = 0; index < messages.size(); index++) {
+			ChatMessage message = messages.get(index);
 			for (ToolCall call : message.toolCalls()) {
 				if (call.id() == null) {
 					continue;
 				}
 				callCounts.merge(call.id(), 1, Integer::sum);
-				calls.add(call.id());
+				callFirstIndex.putIfAbsent(call.id(), index);
+			}
+			if (message.role() == ChatRole.TOOL && message.toolCallId() != null) {
+				resultIndexes.computeIfAbsent(message.toolCallId(), key -> new ArrayList<>())
+						.add(index);
 			}
 		}
 		for (Map.Entry<String, Integer> call : callCounts.entrySet()) {
@@ -105,19 +122,25 @@ public final class ToolCallPairingValidator {
 				return Optional.of(new Violation(Kind.DUPLICATE_TOOL_CALL, call.getKey()));
 			}
 		}
-		Set<String> results = new LinkedHashSet<>();
-		for (ChatMessage message : messages) {
-			if (message.role() == ChatRole.TOOL && message.toolCallId() != null) {
-				results.add(message.toolCallId());
+		for (Map.Entry<String, List<Integer>> result : resultIndexes.entrySet()) {
+			if (result.getValue().size() > 1) {
+				return Optional.of(new Violation(Kind.DUPLICATE_TOOL_RESULT, result.getKey()));
 			}
 		}
-		for (String result : results) {
-			if (!calls.contains(result)) {
-				return Optional.of(new Violation(Kind.UNKNOWN_TOOL_RESULT, result));
+		for (Map.Entry<String, List<Integer>> result : resultIndexes.entrySet()) {
+			Integer callIndex = callFirstIndex.get(result.getKey());
+			if (callIndex == null) {
+				return Optional.of(new Violation(Kind.UNKNOWN_TOOL_RESULT, result.getKey()));
+			}
+			// A result must follow the assistant message which requested the call:
+			// a compacted history that moves a result in front of its call would
+			// otherwise reach the provider.
+			if (result.getValue().get(0) < callIndex) {
+				return Optional.of(new Violation(Kind.RESULT_BEFORE_CALL, result.getKey()));
 			}
 		}
-		for (String call : calls) {
-			if (!results.contains(call)) {
+		for (String call : callCounts.keySet()) {
+			if (!resultIndexes.containsKey(call)) {
 				return Optional.of(new Violation(Kind.MISSING_TOOL_RESULT, call));
 			}
 		}

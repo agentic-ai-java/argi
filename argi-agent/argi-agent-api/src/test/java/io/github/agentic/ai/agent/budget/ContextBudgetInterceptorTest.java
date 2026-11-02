@@ -15,6 +15,8 @@
  */
 package io.github.agentic.ai.agent.budget;
 
+import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
+import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.api.chat.ChatMessage;
@@ -56,6 +58,40 @@ class ContextBudgetInterceptorTest {
 		assertThat(estimate.accuracy()).isEqualTo(EstimationAccuracy.APPROXIMATE);
 	}
 
+	// issue #137 review: the budget must hold after interceptor rewrites, so the
+	// budget interceptor has to sit **after** every request-rewriting interceptor
+	// in the chain (innermost). This chain-level case registers [rewriter, budget]:
+	// a small request passes the rewriter, grows beyond the window, and must be
+	// refused before reaching the provider.
+	@Test
+	void budgetStillGuardsAfterARequestRewritingInterceptor() throws Exception {
+		AtomicInteger dispatches = new AtomicInteger();
+		ModelInterceptor rewriter = new ModelInterceptor() {
+			public String getName() {
+				return "rewriter";
+			}
+
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				// Rewrites the small incoming request into an oversized one.
+				return next.call(longRequest());
+			}
+		};
+		ContextBudgetInterceptor budget = ContextBudgetInterceptor.builder()
+			.budget(new ContextWindowBudget(20, 5))
+			.build();
+		// Registration order: the rewriter outermost, the budget innermost (the
+		// terminal position, right before the dispatch).
+		ModelCallHandler chain = request -> {
+			dispatches.incrementAndGet();
+			return response();
+		};
+		ModelCallHandler budgetHandler = request -> budget.interceptModel(request, chain);
+		ModelCallHandler fullChain = request -> rewriter.interceptModel(request, budgetHandler);
+
+		assertThatThrownBy(() -> fullChain.call(request()))
+			.isInstanceOf(ContextWindowBudgetExceededException.class);
+		assertThat(dispatches).hasValue(0);
+	}
 	@Test
 	void anOversizedRequestIsNeverDispatched() {
 		AtomicInteger dispatches = new AtomicInteger();

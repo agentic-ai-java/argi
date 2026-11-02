@@ -69,6 +69,18 @@ public final class ContextBudgetInterceptor extends ModelInterceptor {
 		return new Builder();
 	}
 
+	/**
+	 * Ordering contract: this interceptor must be registered **after** (i.e. more
+	 * innermost than) every interceptor that rewrites the request. The budget is
+	 * checked against the request as seen at this interceptor's position in the
+	 * chain — an outer rewrite that grows the request after the budget check has
+	 * passed would bypass the gate (a chain-level regression test documents this).
+	 * Terminal, non-bypassable enforcement belongs to the runtime dispatch (see
+	 * issue #137 discussion).
+	 */
+	public static final String ORDERING_CONTRACT = "register the context budget interceptor"
+			+ " after every request-rewriting interceptor";
+
 	@Override
 	public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
 		Objects.requireNonNull(request, "request must not be null");
