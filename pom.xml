@@ -100,7 +100,7 @@
         <spring-boot.version>4.1.1</spring-boot.version>
 
         <!-- Adapter versions -->
-        <langchain4j.version>1.22.0</langchain4j.version>
+        <langchain4j.version>1.23.0</langchain4j.version>
         <google-adk.version>1.13.0</google-adk.version>
 
         <!-- Keep security patch families aligned with the published ARGI BOM. -->
