@@ -17,6 +17,8 @@ package io.github.agentic.ai.agent.lifecycle;
 
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -44,6 +46,23 @@ public record ModelCallInvocation(LifecycleIdentity identity, ModelTurnId modelT
 		Objects.requireNonNull(identity, "identity must not be null");
 		Objects.requireNonNull(modelTurn, "modelTurn must not be null");
 		Objects.requireNonNull(request, "request must not be null");
+		request = defensiveCopy(request);
+	}
+
+	/**
+	 * Returns a copy of the request whose collection-valued accessors are immutable:
+	 * observers must not be able to rewrite the execution input (clearing the message
+	 * list or mutating the context map) through the invocation reference. Transforming
+	 * extensions observe this copy and rebuild a replacement from it; the executor
+	 * keeps running on the original request it holds, so a mutated copy would have no
+	 * effect on dispatch.
+	 */
+	private static ModelRequest defensiveCopy(ModelRequest request) {
+		return ModelRequest.builder(request)
+				.messages(List.copyOf(request.getMessages()))
+				.context(Map.copyOf(request.getContext()))
+				.attributes(Map.copyOf(request.getAttributes()))
+				.build();
 	}
 
 }

@@ -16,6 +16,11 @@
 package io.github.agentic.ai.agent.lifecycle;
 
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
+import io.github.agentic.ai.runtime.execution.ExecutionBudget;
+import io.github.agentic.ai.runtime.execution.DelegationScope;
+import io.github.agentic.ai.runtime.execution.PrincipalReference;
+import io.github.agentic.ai.runtime.execution.TenantReference;
+import io.github.agentic.ai.runtime.execution.TrustedExecutionContext;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.api.chat.ChatMessage;
 import java.io.IOException;
@@ -24,7 +29,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,6 +40,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -391,6 +399,86 @@ class LifecycleContractTest {
 		ModelCallOutcome failed = executor.execute(invocation);
 		assertFalse(failed.isSuccess());
 		assertEquals("model unavailable", failed.error());
+	}
+
+	// issue #298 review: request isolation and trusted-context preservation
+
+	@Test
+	void invocationRequestIsIsolatedFromTheCallerAndTheExecutor() {
+		List<ChatMessage> callerMessages = new ArrayList<>();
+		callerMessages.add(ChatMessage.user("hello"));
+		Map<String, Object> callerContext = new HashMap<>();
+		callerContext.put("k", "v");
+		ModelRequest request = ModelRequest.builder().messages(callerMessages)
+			.context(callerContext).attributes(callerContext).build();
+		ModelCallInvocation invocation = new ModelCallInvocation(identity(), MODEL_TURN, request);
+
+		// The invocation holds its own defensive copy, not the request the executor
+		// runs on: mutating what the observer can reach must not touch the caller's
+		// collections or the original request the dispatch keeps using.
+		assertNotSame(request, invocation.request());
+		invocation.request().getMessages().clear();
+		invocation.request().getContext().put("k", "rewritten");
+		// attributes are transmitted as an immutable map: writes are rejected outright.
+		assertThrows(UnsupportedOperationException.class,
+				() -> invocation.request().getAttributes().put("k", "rewritten"));
+		assertEquals("v", callerContext.get("k"));
+		assertEquals(1, callerMessages.size());
+		// The executor's own request keeps its content.
+		assertEquals("hello", request.getMessages().get(0).text());
+		assertEquals("v", request.getContext().get("k"));
+	}
+
+	@Test
+	void mutationGuardRejectsTrustedExecutionContextSwap() {
+		TrustedExecutionContext tenantA = TrustedExecutionContext.builder()
+			.tenant(new TenantReference("run", "tenant-a"))
+				.principal(new PrincipalReference("run", "principal-a"))
+				.runId("run").correlationId("correlation").budget(ExecutionBudget.unlimited())
+				.delegationScope(DelegationScope.none()).build();
+		TrustedExecutionContext tenantB = TrustedExecutionContext.builder()
+			.tenant(new TenantReference("run", "tenant-b"))
+				.principal(new PrincipalReference("run", "principal-b"))
+				.runId("run").correlationId("correlation").budget(ExecutionBudget.unlimited())
+				.delegationScope(DelegationScope.none()).build();
+		ModelCallInvocation original = modelCallWithTrustedContext(tenantA);
+		// Swapping the tenant (or nulling the context out) must be rejected even when
+		// the lifecycle IDs are preserved.
+		ModelCallInvocation swappedTenant = new ModelCallInvocation(original.identity(), original.modelTurn(),
+				ModelRequest.builder(original.request()).trustedExecutionContext(tenantB).build());
+		ModelCallInvocation nulledContext = new ModelCallInvocation(original.identity(), original.modelTurn(),
+				ModelRequest.builder(original.request()).trustedExecutionContext(null).build());
+		LifecycleEvent originalEvent = new LifecycleEvent.ModelCallRequested(original);
+		assertEquals("trusted execution context must not change",
+				LifecycleMutationGuard.check(originalEvent,
+						new LifecycleEvent.ModelCallRequested(swappedTenant)).orElseThrow());
+		assertEquals("trusted execution context must not change",
+				LifecycleMutationGuard.check(originalEvent,
+						new LifecycleEvent.ModelCallRequested(nulledContext)).orElseThrow());
+	}
+
+	@Test
+	void mutationGuardStillAllowsLegitimateRequestTransform() {
+		TrustedExecutionContext tenantA = TrustedExecutionContext.builder()
+			.tenant(new TenantReference("run", "tenant-a"))
+				.principal(new PrincipalReference("run", "principal-a"))
+				.runId("run").correlationId("correlation").budget(ExecutionBudget.unlimited())
+				.delegationScope(DelegationScope.none()).build();
+		ModelCallInvocation original = modelCallWithTrustedContext(tenantA);
+		// A legitimate rewrite keeps the trusted execution context and changes only
+		// message content (e.g. a compaction or redaction pass).
+		ModelCallInvocation rewrittenInvocation = new ModelCallInvocation(original.identity(),
+				original.modelTurn(), ModelRequest.builder(original.request())
+					.messages(List.of(ChatMessage.user("redacted"))).build());
+		LifecycleEvent originalEvent = new LifecycleEvent.ModelCallRequested(original);
+		LifecycleEvent rewrittenEvent = new LifecycleEvent.ModelCallRequested(rewrittenInvocation);
+		assertTrue(LifecycleMutationGuard.check(originalEvent, rewrittenEvent).isEmpty());
+	}
+
+	private static ModelCallInvocation modelCallWithTrustedContext(TrustedExecutionContext trusted) {
+		ModelRequest request = ModelRequest.builder().messages(List.of(ChatMessage.user("hello")))
+			.trustedExecutionContext(trusted).build();
+		return new ModelCallInvocation(identity(), MODEL_TURN, request);
 	}
 
 	@Test

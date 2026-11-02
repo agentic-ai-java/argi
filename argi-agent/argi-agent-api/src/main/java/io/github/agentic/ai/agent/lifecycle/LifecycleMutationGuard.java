@@ -63,6 +63,13 @@ public final class LifecycleMutationGuard {
 			if (!before.invocation().modelTurn().equals(after.invocation().modelTurn())) {
 				return Optional.of("model turn identity must not change");
 			}
+			// The trusted execution context is run identity: a replacement that swaps
+			// the tenant, principal or budget (or nulls it out) must be rejected even
+			// when the lifecycle IDs are preserved.
+			if (!java.util.Objects.equals(before.invocation().request().getTrustedExecutionContext(),
+					after.invocation().request().getTrustedExecutionContext())) {
+				return Optional.of("trusted execution context must not change");
+			}
 			return Optional.empty();
 		}
 		if (original instanceof LifecycleEvent.ToolCallRequested before) {
