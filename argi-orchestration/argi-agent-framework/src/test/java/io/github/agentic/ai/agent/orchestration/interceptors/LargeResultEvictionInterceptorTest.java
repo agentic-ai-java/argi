@@ -71,4 +71,59 @@ class LargeResultEvictionInterceptorTest {
 			.containsEntry("errorCode", "SLOW_QUERY");
 	}
 
+	@Test
+	@DisplayName("a failed write does not produce a pointer to a file which was never written")
+	void failedWriteDoesNotClaimThatTheResultWasPersisted() {
+		FilesystemBackend backend = mock(FilesystemBackend.class);
+		when(backend.write(anyString(), anyString())).thenReturn(new WriteResult(null, "the disk is full", null));
+
+		LargeResultEvictionInterceptor interceptor = LargeResultEvictionInterceptor.builder()
+			.toolTokenLimitBeforeEvict(1)
+			.backend(backend)
+			.build();
+
+		ToolCallResponse original = ToolCallResponse.builder()
+			.content("x".repeat(500))
+			.toolName("reportTool")
+			.toolCallId("call_1")
+			.status(ToolCallResponse.SUCCESS_STATUS)
+			.build();
+
+		ToolCallResponse failed = interceptor.interceptToolCall(
+				new ToolCallRequest("reportTool", "{}", "call_1", new HashMap<>()), r -> original);
+
+		assertThat(failed.getStatus()).isEqualTo(ToolCallResponse.ERROR_STATUS);
+		assertThat(failed.getResult()).doesNotContain("saved in the filesystem").contains("could not be persisted");
+	}
+
+	@Test
+	@DisplayName("a failed write keeps the failure metadata of the original response")
+	void failedWriteKeepsTheOriginalMetadata() {
+		FilesystemBackend backend = mock(FilesystemBackend.class);
+		when(backend.write(anyString(), anyString())).thenReturn(new WriteResult(null, "the disk is full", null));
+
+		LargeResultEvictionInterceptor interceptor = LargeResultEvictionInterceptor.builder()
+			.toolTokenLimitBeforeEvict(1)
+			.backend(backend)
+			.build();
+
+		Map<String, Object> metadata = new HashMap<>();
+		metadata.put(ToolCallResponse.FAILURE_KIND_METADATA_KEY, ToolCallResponse.FAILURE_KIND_EXECUTION);
+		ToolCallResponse original = ToolCallResponse.builder()
+			.content("x".repeat(500))
+			.toolName("reportTool")
+			.toolCallId("call_1")
+			.status(ToolCallResponse.SUCCESS_STATUS)
+			.metadata(metadata)
+			.build();
+
+		ToolCallResponse failed = interceptor.interceptToolCall(
+				new ToolCallRequest("reportTool", "{}", "call_1", new HashMap<>()), r -> original);
+
+		assertThat(failed.getStatus()).isEqualTo(ToolCallResponse.ERROR_STATUS);
+		assertThat(failed.getResult()).doesNotContain("saved in the filesystem").contains("could not be persisted");
+		assertThat(failed.getMetadata())
+			.containsEntry(ToolCallResponse.FAILURE_KIND_METADATA_KEY, ToolCallResponse.FAILURE_KIND_EXECUTION);
+	}
+
 }
