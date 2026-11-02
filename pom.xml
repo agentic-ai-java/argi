@@ -133,7 +133,7 @@
         <surefireArgLine>-Xms512m -Xmx1024m</surefireArgLine>
 
         <!-- plugin versions -->
-        <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
+        <maven-enforcer-plugin.version>3.7.0</maven-enforcer-plugin.version>
         <!-- The version (range) of the JDK we want to use to compile. -->
         <compiler.jdk.version>[17,)</compiler.jdk.version>
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
