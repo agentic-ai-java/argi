@@ -469,12 +469,13 @@ public final class ReActAgent implements Agent {
 				AtomicReference<ToolRegistry> effectiveTools) {
 			ToolRegistry effective = effectiveToolSet(request);
 			effectiveTools.set(effective);
+			ChatClient selectedClient = request.getChatClient() != null ? request.getChatClient() : chatClient;
 			ChatRequest chatRequest = new ChatRequest(composeMessages(request), effective.definitions(),
 					request.getOptions(), request.getAttributes());
 			if (streamModel) {
-				return ModelResponse.of(collectModelStream(chatRequest, usage));
+				return ModelResponse.of(collectModelStream(selectedClient, chatRequest, usage));
 			}
-			CompletableFuture<ChatResponse> future = chatClient.call(chatRequest).toCompletableFuture();
+			CompletableFuture<ChatResponse> future = selectedClient.call(chatRequest).toCompletableFuture();
 			toolOperation.set(future);
 			try (AutoCloseable ignored = context.control().onLoss(() -> future.cancel(true))) {
 				ChatResponse response = await(future);
@@ -490,9 +491,9 @@ public final class ReActAgent implements Agent {
 			}
 		}
 
-		private ChatResponse collectModelStream(ChatRequest request, UsageAccumulator usage) {
-			return collectModelStream(Objects.requireNonNull(chatClient.stream(request), "chat client returned no stream"),
-					usage);
+		private ChatResponse collectModelStream(ChatClient selectedClient, ChatRequest request, UsageAccumulator usage) {
+			return collectModelStream(
+					Objects.requireNonNull(selectedClient.stream(request), "chat client returned no stream"), usage);
 		}
 
 		private ChatResponse collectModelStream(Flow.Publisher<ChatEvent> publisher, UsageAccumulator usage) {

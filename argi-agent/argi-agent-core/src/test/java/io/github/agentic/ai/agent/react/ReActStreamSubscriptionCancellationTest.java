@@ -19,6 +19,10 @@ import io.github.agentic.ai.agent.Agent;
 import io.github.agentic.ai.agent.AgentExecutionContext;
 import io.github.agentic.ai.agent.AgentEvent;
 import io.github.agentic.ai.agent.AgentRequest;
+import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
+import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
+import io.github.agentic.ai.agent.interceptor.ModelRequest;
+import io.github.agentic.ai.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatClientCapabilities;
 import io.github.agentic.ai.api.chat.ChatEvent;
@@ -84,6 +88,42 @@ class ReActStreamSubscriptionCancellationTest {
 			assertEquals(1, model.cancels.get(), "the late subscription must be cancelled");
 		}
 		assertTrue(events.isEmpty(), "a cancelled run must not deliver events");
+	}
+
+	@Test
+	void cancellationTargetsTheClientSelectedByTheInterceptor() throws Exception {
+		DeferredPublisher defaultModel = new DeferredPublisher(
+				response(ChatMessage.assistant("default"), List.of(), 1), false);
+		DeferredPublisher selectedModel = new DeferredPublisher(
+				response(ChatMessage.assistant("selected"), List.of(), 1), false);
+		ScriptedPublisherClient defaultClient = new ScriptedPublisherClient(List.of(defaultModel));
+		ScriptedPublisherClient selectedClient = new ScriptedPublisherClient(List.of(selectedModel));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			@Override
+			public String getName() {
+				return "select-client";
+			}
+
+			@Override
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).chatClient(selectedClient).build());
+			}
+		};
+		List<AgentEvent> events = new CopyOnWriteArrayList<>();
+		try (AgentExecutionContext context = context()) {
+			Flow.Subscription subscription = subscribe(ReActAgent.builder(defaultClient)
+				.streamModel(true)
+				.interceptors(List.of(interceptor))
+				.build(), events, context);
+
+			assertTrue(selectedModel.subscribed.await(3, TimeUnit.SECONDS), "selected publisher was never subscribed");
+			subscription.cancel();
+			selectedModel.deliverOnSubscribe();
+
+			assertTrue(defaultClient.requests.isEmpty(), "the default client must not be invoked");
+			assertEquals(0, selectedModel.requests.get());
+			assertEquals(1, selectedModel.cancels.get());
+		}
 	}
 
 	@Test

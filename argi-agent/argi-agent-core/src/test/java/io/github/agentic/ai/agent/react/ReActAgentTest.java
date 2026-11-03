@@ -56,6 +56,7 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -290,6 +291,149 @@ class ReActAgentTest {
 		List<String> texts = client.requests.get(0).messages().stream()
 			.map(ChatMessage::text).toList();
 		assertEquals(List.of("required-policy", "first", "reply", "second"), texts);
+	}
+
+	// ------------------------------------------------------------------
+	// issue #271: request-selected clients reach the model invocation
+	// ------------------------------------------------------------------
+
+	@Test
+	void interceptorSelectedClientOverridesTheDefaultClient() throws Exception {
+		ScriptedClient primary = new ScriptedClient(
+				List.of(response(ChatMessage.assistant("primary"), List.of(), 1)));
+		ScriptedClient selected = new ScriptedClient(
+				List.of(response(ChatMessage.assistant("selected"), List.of(), 1)));
+		ModelInterceptor interceptor = selectingClient(selected);
+
+		AgentOutcome outcome = ReActAgent.builder(primary).interceptors(List.of(interceptor)).build()
+			.invoke(request(), context())
+			.get(3, TimeUnit.SECONDS);
+
+		assertEquals("selected", outcome.messages().get(outcome.messages().size() - 1).text());
+		assertEquals(0, primary.requests.size());
+		assertEquals(1, selected.requests.size());
+	}
+
+	@Test
+	void streamingRunUsesTheInterceptorSelectedClient() throws Exception {
+		StreamingClient primary = new StreamingClient();
+		StreamingClient selected = new StreamingClient();
+		ModelInterceptor interceptor = selectingClient(selected);
+
+		ReActAgent.builder(primary).streamModel(true).interceptors(List.of(interceptor)).build()
+			.invoke(request(), context())
+			.get(3, TimeUnit.SECONDS);
+
+		assertEquals(0, primary.requests.size());
+		assertEquals(1, selected.requests.size());
+	}
+
+	@Test
+	void fallbackRetryUsesTheClientSelectedOnTheRetryRequest() throws Exception {
+		AtomicInteger primaryCalls = new AtomicInteger();
+		ChatClient primary = new ChatClient() {
+			public CompletionStage<ChatResponse> call(ChatRequest request) {
+				primaryCalls.incrementAndGet();
+				return CompletableFuture.failedFuture(new IllegalStateException("primary unavailable"));
+			}
+
+			public Flow.Publisher<ChatEvent> stream(ChatRequest request) {
+				throw new UnsupportedOperationException();
+			}
+
+			public ChatClientCapabilities capabilities() {
+				return ChatClientCapabilities.basic();
+			}
+		};
+		ScriptedClient fallback = new ScriptedClient(
+				List.of(response(ChatMessage.assistant("fallback"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "fallback";
+			}
+
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				try {
+					return next.call(request);
+				}
+				catch (RuntimeException primaryFailure) {
+					return next.call(ModelRequest.builder(request).chatClient(fallback).build());
+				}
+			}
+		};
+
+		AgentOutcome outcome = ReActAgent.builder(primary).interceptors(List.of(interceptor)).build()
+			.invoke(request(), context())
+			.get(3, TimeUnit.SECONDS);
+
+		assertEquals("fallback", outcome.messages().get(outcome.messages().size() - 1).text());
+		assertEquals(1, primaryCalls.get());
+		assertEquals(1, fallback.requests.size());
+	}
+
+	@Test
+	void allFailedCandidatesReportTheSelectedClientFailure() {
+		AtomicInteger primaryCalls = new AtomicInteger();
+		AtomicInteger fallbackCalls = new AtomicInteger();
+		ChatClient primary = failingClient(primaryCalls, "primary unavailable");
+		ChatClient fallback = failingClient(fallbackCalls, "fallback unavailable");
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "fallback";
+			}
+
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				try {
+					return next.call(request);
+				}
+				catch (RuntimeException primaryFailure) {
+					return next.call(ModelRequest.builder(request).chatClient(fallback).build());
+				}
+			}
+		};
+
+		ExecutionException failure = assertThrows(ExecutionException.class,
+				() -> ReActAgent.builder(primary).interceptors(List.of(interceptor)).build()
+					.invoke(request(), context())
+					.get(3, TimeUnit.SECONDS));
+
+		assertEquals("fallback unavailable", failure.getCause().getMessage());
+		assertEquals(1, primaryCalls.get());
+		assertEquals(1, fallbackCalls.get());
+	}
+
+	@Test
+	void concurrentRunsKeepTheirClientSelectionsIsolated() throws Exception {
+		ScriptedClient primary = new ScriptedClient(
+				List.of(response(ChatMessage.assistant("primary"), List.of(), 1)));
+		ScriptedClient selected = new ScriptedClient(
+				List.of(response(ChatMessage.assistant("selected"), List.of(), 1)));
+		ModelInterceptor interceptor = new ModelInterceptor() {
+			public String getName() {
+				return "route-client";
+			}
+
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				boolean useSelected = request.getMessages().stream()
+					.anyMatch(message -> "route-selected".equals(message.text()));
+				return useSelected
+						? next.call(ModelRequest.builder(request).chatClient(selected).build())
+						: next.call(request);
+			}
+		};
+		ReActAgent agent = ReActAgent.builder(primary).interceptors(List.of(interceptor)).build();
+
+		CompletableFuture<AgentOutcome> primaryRun = agent.invoke(
+				AgentRequest.messages(List.of(ChatMessage.user("route-primary"))), context());
+		CompletableFuture<AgentOutcome> selectedRun = agent.invoke(
+				AgentRequest.messages(List.of(ChatMessage.user("route-selected"))), context());
+		AgentOutcome primaryOutcome = primaryRun.get(3, TimeUnit.SECONDS);
+		AgentOutcome selectedOutcome = selectedRun.get(3, TimeUnit.SECONDS);
+
+		assertEquals("primary", primaryOutcome.messages().get(primaryOutcome.messages().size() - 1).text());
+		assertEquals("selected", selectedOutcome.messages().get(selectedOutcome.messages().size() - 1).text());
+		assertEquals(1, primary.requests.size());
+		assertEquals(1, selected.requests.size());
 	}
 	
 	@Test
@@ -860,6 +1004,35 @@ class ReActAgentTest {
 
 			public CompletionStage<ToolResult> execute(ToolCall call, ToolContext context) {
 				return executor.execute(call, context);
+			}
+		};
+	}
+
+	private static ModelInterceptor selectingClient(ChatClient selected) {
+		return new ModelInterceptor() {
+			public String getName() {
+				return "select-client";
+			}
+
+			public ModelResponse interceptModel(ModelRequest request, ModelCallHandler next) {
+				return next.call(ModelRequest.builder(request).chatClient(selected).build());
+			}
+		};
+	}
+
+	private static ChatClient failingClient(AtomicInteger calls, String message) {
+		return new ChatClient() {
+			public CompletionStage<ChatResponse> call(ChatRequest request) {
+				calls.incrementAndGet();
+				return CompletableFuture.failedFuture(new IllegalStateException(message));
+			}
+
+			public Flow.Publisher<ChatEvent> stream(ChatRequest request) {
+				throw new UnsupportedOperationException();
+			}
+
+			public ChatClientCapabilities capabilities() {
+				return ChatClientCapabilities.basic();
 			}
 		};
 	}
