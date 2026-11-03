@@ -480,7 +480,7 @@ public final class ReActAgent implements Agent {
 			try (AutoCloseable ignored = context.control().onLoss(() -> future.cancel(true))) {
 				ChatResponse response = await(future);
 				usage.add(response.usage());
-				emit(new AgentEvent.UsageUpdate(response.usage()));
+				emit(new AgentEvent.UsageUpdate(usage.value()));
 				return ModelResponse.of(response);
 			}
 			catch (Exception error) {
@@ -531,7 +531,7 @@ public final class ReActAgent implements Agent {
 						context.control().assertActive();
 						switch (event.type()) {
 							case TEXT_DELTA -> emit(new AgentEvent.MessageDelta("model-stream", event.text()));
-							case USAGE -> emit(new AgentEvent.UsageUpdate(event.usage()));
+							case USAGE -> emit(new AgentEvent.UsageUpdate(usage.valueIncluding(event.usage())));
 							case RESPONSE -> response = event.response();
 							case TOOL_CALL -> emit(new AgentEvent.Progress("model.tool-call", Map.of("name",
 									event.toolCall().name())));
@@ -557,6 +557,7 @@ public final class ReActAgent implements Agent {
 				});
 				ChatResponse response = await(future);
 				usage.add(response.usage());
+				emit(new AgentEvent.UsageUpdate(usage.value()));
 				return response;
 			}
 			catch (Exception error) {
@@ -735,6 +736,12 @@ public final class ReActAgent implements Agent {
 
 		private Usage value() {
 			return new Usage(input, output, total);
+		}
+
+		private Usage valueIncluding(Usage currentTurn) {
+			// Current-turn snapshots replace one another; only the final response is committed.
+			return new Usage(add(input, currentTurn.inputTokens()), add(output, currentTurn.outputTokens()),
+					add(total, currentTurn.totalTokens()));
 		}
 
 		private static Long add(Long left, Long right) {
