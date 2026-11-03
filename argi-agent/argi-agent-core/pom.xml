@@ -45,6 +45,10 @@
             <artifactId>argi-runtime-api</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.github.agentic-ai-java</groupId>
+            <artifactId>argi-runtime-core</artifactId>
+        </dependency>
+        <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
