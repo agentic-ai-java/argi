@@ -29,6 +29,7 @@ import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -110,6 +111,9 @@ public final class ModelTurnCodec {
 		.enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
 		.enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
 		.build();
+
+	private static final ObjectReader ARGUMENT_READER = MAPPER.readerFor(JsonNode.class)
+		.with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
 
 	private ModelTurnCodec() {
 	}
@@ -246,7 +250,7 @@ public final class ModelTurnCodec {
 			return arguments;
 		}
 		try {
-			JsonNode tree = MAPPER.readTree(arguments);
+			JsonNode tree = ARGUMENT_READER.readTree(arguments);
 			return tree == null || !tree.isContainerNode() ? arguments : write(sortKeys(tree));
 		}
 		catch (JsonProcessingException malformed) {

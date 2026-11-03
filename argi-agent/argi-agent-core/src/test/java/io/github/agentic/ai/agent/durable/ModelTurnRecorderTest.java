@@ -135,6 +135,52 @@ class ModelTurnRecorderTest {
 	}
 
 	@Test
+	void canonicalArgumentsPreserveNestedDecimalValuesAndArrayOrder() {
+		String arguments = "{\"z\":[0.12345678901234567891,{\"b\":0.12345678901234567890,\"a\":1}],\"a\":true}";
+		String expected = "{\"a\":true,\"z\":[0.12345678901234567891,{\"a\":1,\"b\":0.1234567890123456789}]}";
+		String equivalent = "{ \"a\" : true, \"z\" : [0.123456789012345678910,"
+				+ "{\"a\":1,\"b\":1.2345678901234567890e-1}] }";
+
+		assertThat(ModelTurnCodec.canonicalArguments(arguments)).isEqualTo(expected);
+		assertThat(ModelTurnCodec.canonicalArguments(equivalent)).isEqualTo(expected);
+		assertThat(ModelTurnCodec.canonicalArguments(expected)).isEqualTo(expected);
+	}
+
+	@Test
+	void highPrecisionToolArgumentsProduceDistinctPlansAndHashesAfterRecovery() {
+		List<ToolCall> calls = List.of(new ToolCall("first", "search", "{\"value\":0.12345678901234567890}"),
+				new ToolCall("second", "search", "{\"value\":0.12345678901234567891}"));
+		assertThat(ModelTurnCodec.encodeToolPlan(calls.get(0), TOOLS.get(0), 0))
+				.isNotEqualTo(ModelTurnCodec.encodeToolPlan(calls.get(1), TOOLS.get(0), 0));
+		ChatResponse response = new ChatResponse("response", "model", List.of(ChatMessage.assistant("", calls)),
+				calls, FinishReason.TOOL_CALLS, null, Map.of());
+		commit(null, recorder.prepareAttempt(TURN, REQUEST, snapshot));
+		commit(checkpoint(), recorder.prepareResponse(TURN, response, TOOLS));
+		reload();
+
+		RecordedModelTurn recovered = recorder.replayTurn(TURN, REQUEST, snapshot).orElseThrow();
+
+		assertThat(recovered.plans()).extracting(PlannedToolCall::arguments).containsExactly(
+				"{\"value\":0.1234567890123456789}", "{\"value\":0.12345678901234567891}");
+		assertThat(recovered.plans().get(0).argumentsHash()).isNotEqualTo(recovered.plans().get(1).argumentsHash());
+		assertThat(recovered.response().messages().get(0).toolCalls()).extracting(ToolCall::arguments)
+				.containsExactly("{\"value\":0.1234567890123456789}", "{\"value\":0.12345678901234567891}");
+		assertThat(recovered.response().toolCalls()).isEqualTo(calls);
+	}
+
+	@Test
+	void requestFingerprintsDistinguishHighPrecisionToolArguments() {
+		ChatRequest first = new ChatRequest(List.of(ChatMessage.assistant("",
+				List.of(new ToolCall("call", "search", "{\"value\":0.12345678901234567890}")))),
+				TOOLS, null, Map.of());
+		ChatRequest second = new ChatRequest(List.of(ChatMessage.assistant("",
+				List.of(new ToolCall("call", "search", "{\"value\":0.12345678901234567891}")))),
+				TOOLS, null, Map.of());
+
+		assertThat(ModelTurnCodec.requestHash(first)).isNotEqualTo(ModelTurnCodec.requestHash(second));
+	}
+
+	@Test
 	void referenceDispatchesOnlyAfterTheResponseAllPlansAndCheckpointAreCommitted() {
 		List<ToolCall> calls = List.of(new ToolCall("first", "search", "{\"q\":\"first\"}"),
 				new ToolCall("second", "search", "{\"q\":\"second\"}"));
