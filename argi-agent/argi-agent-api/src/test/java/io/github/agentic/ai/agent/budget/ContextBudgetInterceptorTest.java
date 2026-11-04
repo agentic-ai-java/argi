@@ -20,6 +20,7 @@ import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.GenerationOptions;
 import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.api.chat.ToolDefinition;
 import io.github.agentic.ai.api.tool.Tool;
@@ -56,6 +57,71 @@ class ContextBudgetInterceptorTest {
 		assertThat(estimate.outputReserve()).isEqualTo(100);
 		assertThat(estimate.totalTokens()).isEqualTo(estimate.inputTokens() + 100);
 		assertThat(estimate.accuracy()).isEqualTo(EstimationAccuracy.APPROXIMATE);
+	}
+
+	// issue #137 review: an explicit maxTokens output limit is an output demand —
+	// a request whose requested completion alone exceeds the window must be refused
+	// even when its input is small.
+	@Test
+	void anExplicitOutputDemandBeyondTheWindowIsRefused() {
+		AtomicInteger dispatches = new AtomicInteger();
+		ContextBudgetInterceptor interceptor = ContextBudgetInterceptor.builder()
+			.budget(new ContextWindowBudget(1000, 100))
+			.build();
+		ModelRequest demanded = ModelRequest.builder()
+			.systemMessage(ChatMessage.system("system instructions for the agent"))
+			.messages(List.of(ChatMessage.user("hello")))
+			.options(GenerationOptions.builder().maxTokens(2000).build())
+			.build();
+
+		assertThatThrownBy(() -> interceptor.interceptModel(demanded, r -> {
+			dispatches.incrementAndGet();
+			return response();
+		})).isInstanceOf(ContextWindowBudgetExceededException.class)
+			.satisfies(failure -> {
+				ContextWindowBudgetExceededException exceeded = (ContextWindowBudgetExceededException) failure;
+				assertThat(exceeded.dominantComponent()).isEqualTo(BudgetComponent.OUTPUT_RESERVE);
+			});
+
+		assertThat(dispatches).hasValue(0);
+	}
+
+	// The same gate must not reject a request whose explicit output limit fits.
+	@Test
+	void anExplicitOutputDemandWithinTheWindowStillDispatches() {
+		AtomicInteger dispatches = new AtomicInteger();
+		ContextBudgetInterceptor interceptor = ContextBudgetInterceptor.builder()
+			.budget(new ContextWindowBudget(1000, 100))
+			.build();
+		ModelRequest modest = ModelRequest.builder()
+			.systemMessage(ChatMessage.system("system instructions for the agent"))
+			.messages(List.of(ChatMessage.user("hello")))
+			.options(GenerationOptions.builder().maxTokens(50).build())
+			.build();
+
+		interceptor.interceptModel(modest, r -> {
+			dispatches.incrementAndGet();
+			return response();
+		});
+
+		assertThat(dispatches).hasValue(1);
+	}
+
+	// The estimate itself accounts for the explicit output demand, floored by the
+	// configured reserve.
+	@Test
+	void theEstimateAccountsForAnExplicitMaxTokens() {
+		RequestTokenEstimate estimate = new ApproximateRequestTokenEstimator().estimate(request(), budget());
+
+		ModelRequest demanded = ModelRequest.builder()
+			.messages(List.of(ChatMessage.user("hello")))
+			.options(GenerationOptions.builder().maxTokens(2000).build())
+			.build();
+		RequestTokenEstimate demandedEstimate = new ApproximateRequestTokenEstimator().estimate(demanded, budget());
+
+		assertThat(estimate.outputReserve()).isEqualTo(100);
+		assertThat(demandedEstimate.outputReserve()).isEqualTo(2000);
+		assertThat(demandedEstimate.totalTokens()).isEqualTo(demandedEstimate.inputTokens() + 2000);
 	}
 
 	// issue #137 review: the budget must hold after interceptor rewrites, so the

@@ -40,6 +40,12 @@ import java.util.Set;
  * the request carries an explicit tool selection, only the selected bindings are
  * counted; the dynamic bindings of the request are always counted because they are
  * disclosed next to the selected ones.
+ *
+ * <p>
+ * When the request carries an explicit {@code maxTokens} output limit, the estimate
+ * accounts for that demand instead of the configured output reserve alone: the gate
+ * must refuse a request whose explicitly requested output does not fit into the
+ * window, even when the input itself is small.
  */
 public final class ApproximateRequestTokenEstimator implements RequestTokenEstimator {
 
@@ -73,7 +79,19 @@ public final class ApproximateRequestTokenEstimator implements RequestTokenEstim
 		Objects.requireNonNull(request, "request must not be null");
 		Objects.requireNonNull(budget, "budget must not be null");
 		return new RequestTokenEstimate(systemTokens(request), messageTokens(request), toolSchemaTokens(request),
-				budget.outputReserve(), EstimationAccuracy.APPROXIMATE);
+				outputDemand(request, budget), EstimationAccuracy.APPROXIMATE);
+	}
+
+	/**
+	 * The output demand of the request: an explicit {@code maxTokens} option counts as
+	 * the demanded output, floored by the configured output reserve.
+	 */
+	private int outputDemand(ModelRequest request, ContextWindowBudget budget) {
+		Integer maxTokens = request.getOptions() == null ? null : request.getOptions().maxTokens();
+		if (maxTokens == null) {
+			return budget.outputReserve();
+		}
+		return Math.max(budget.outputReserve(), maxTokens);
 	}
 
 	private int systemTokens(ModelRequest request) {
