@@ -19,13 +19,25 @@ import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
-
+import io.github.agentic.ai.agent.retry.ModelCallFailure;
+import io.github.agentic.ai.agent.retry.ModelCallFailureCategory;
+import io.github.agentic.ai.agent.retry.ModelCallFailureClassifier;
+import io.github.agentic.ai.agent.retry.ModelRetryController;
+import io.github.agentic.ai.agent.retry.RetryDecision;
+import io.github.agentic.ai.agent.retry.RetryPolicy;
+import io.github.agentic.ai.agent.retry.RetryStopReason;
 import io.github.agentic.ai.api.chat.ChatEvent;
+import io.github.agentic.ai.runtime.execution.ExecutionGuard;
+import io.github.agentic.ai.runtime.execution.TrustedExecutionContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.EnumSet;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
@@ -44,10 +56,19 @@ import reactor.adapter.JdkFlowAdapter;
  *     .backoffMultiplier(2.0)
  *     .build();
  * </pre>
+ *
+ * <p>
+ * The retry sequence is bounded on three axes at once: the number of attempts, the
+ * retryability of the observed failure and the deadline of the run. When the model
+ * request carries the guard of its run, a cancelled or expired run stops the sequence
+ * instead of dispatching another provider call.
  */
 public class ModelRetryInterceptor extends ModelInterceptor {
 
 	private static final Logger log = LoggerFactory.getLogger(ModelRetryInterceptor.class);
+
+	/** The longest a single backoff slice blocks before the run control is checked again. */
+	private static final long BACKOFF_SLICE_MILLIS = 100L;
 
 	private final int maxAttempts;
 
@@ -59,12 +80,24 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 
 	private final Predicate<Exception> retryableExceptionPredicate;
 
+	private final ModelCallFailureClassifier failureClassifier;
+
+	private final Set<ModelCallFailureCategory> retryableCategories;
+
+	private final long deadlineReserveMillis;
+
+	private final Clock clock;
+
 	private ModelRetryInterceptor(Builder builder) {
 		this.maxAttempts = builder.maxAttempts;
 		this.initialDelay = builder.initialDelay;
 		this.maxDelay = builder.maxDelay;
 		this.backoffMultiplier = builder.backoffMultiplier;
 		this.retryableExceptionPredicate = builder.retryableExceptionPredicate;
+		this.failureClassifier = builder.failureClassifier;
+		this.retryableCategories = Set.copyOf(builder.retryableCategories);
+		this.deadlineReserveMillis = builder.deadlineReserveMillis;
+		this.clock = builder.clock;
 	}
 
 	public static Builder builder() {
@@ -73,12 +106,16 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 
 	@Override
 	public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
+		ModelRetryController controller = controller(request);
 		Exception lastException = null;
-		long currentDelay = initialDelay;
 
 		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+			checkInterrupted();
+			RetryDecision start = controller.beforeAttempt();
+			if (start.isStop()) {
+				throw terminalFailure(start.stopReason().orElse(RetryStopReason.EXECUTION_STOPPED), lastException);
+			}
 			try {
-				checkInterrupted();
 				if (attempt > 1) {
 					log.info("Retry model call, on the {}th attempt (out of {} attempts).", attempt, maxAttempts);
 				}
@@ -88,7 +125,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 				if (modelResponse.isStreaming()) {
 					return ModelResponse
 						.stream(JdkFlowAdapter.publisherToFlowPublisher(withStreamingRetry(request, handler,
-								JdkFlowAdapter.flowPublisherToFlux(modelResponse.getStream()), attempt, currentDelay)));
+								JdkFlowAdapter.flowPublisherToFlux(modelResponse.getStream()), attempt, controller)));
 				}
 				// Assistant content is data, never an out-of-band error signal.
 				if (attempt > 1) {
@@ -105,23 +142,21 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 				lastException = e;
 				log.warn("Model call failed (attempted {}/{}): {}", attempt, maxAttempts, e.getMessage());
 
-				if (attempt >= maxAttempts) {
-					log.error("The maximum number of retries has been reached {}, and the model call has failed.",
-							maxAttempts);
-					throw new RuntimeException("Model call failed, maximum number of retries reached.", lastException);
-				}
-
-				// Determine if an exception can be retried.
-				if (!retryableExceptionPredicate.test(e)) {
-					log.warn("Exceptions cannot be retried and are thrown immediately: {}", e.getMessage());
-					throw new RuntimeException("Model call failed (non-retryable exception)", e);
+				RetryDecision decision = controller.onFailure(e);
+				if (!decision.isRetry()) {
+					RetryStopReason reason = decision.stopReason().orElse(RetryStopReason.NON_RETRYABLE);
+					if (reason == RetryStopReason.ATTEMPTS_EXHAUSTED) {
+						log.error("The maximum number of retries has been reached {}, and the model call has failed.",
+								maxAttempts);
+					}
+					else if (reason == RetryStopReason.NON_RETRYABLE) {
+						log.warn("Exceptions cannot be retried and are thrown immediately: {}", e.getMessage());
+					}
+					throw terminalFailure(reason, e);
 				}
 
 				// Wait and try again
-				pause(currentDelay);
-
-				// Calculate the next delay time (exponential backoff)
-				currentDelay = RetryDelayCalculator.nextDelay(currentDelay, backoffMultiplier, maxDelay);
+				pause(decision.delay().orElseThrow().toMillis(), controller);
 			}
 		}
 
@@ -130,8 +165,13 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 				lastException);
 	}
 
-	private Flux<ChatEvent> withStreamingRetry(ModelRequest request, ModelCallHandler handler,
-			Flux<ChatEvent> responseFlux, int attempt, long currentDelay) {
+	/**
+	 * Wraps a streaming response. Every subscription of the response owns its attempt
+	 * budget, so that a repeated subscription is not charged for the attempts of an
+	 * earlier one.
+	 */
+	private Flux<ChatEvent> withStreamingRetry(ModelRequest request, ModelCallHandler handler, Flux<ChatEvent> responseFlux,
+			int attempt, ModelRetryController controller) {
 		return Flux.defer(() -> {
 			CancellationException cancellation = cancellation(null);
 			if (cancellation != null) {
@@ -143,13 +183,13 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 					// Retrying after partial output would duplicate chunks downstream.
 					return Flux.error(error);
 				}
-				return retryStreamingModelCall(request, handler, attempt, currentDelay, error);
+				return retryStreamingModelCall(request, handler, attempt, controller, error);
 			});
 		});
 	}
 
 	private Flux<ChatEvent> retryStreamingModelCall(ModelRequest request, ModelCallHandler handler, int failedAttempt,
-			long currentDelay, Throwable error) {
+			ModelRetryController controller, Throwable error) {
 		if (error instanceof Error) {
 			return Flux.error(error);
 		}
@@ -158,43 +198,64 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 			return Flux.error(cancellation);
 		}
 		Exception exception = toException(error);
-		log.warn("Streaming model call failed (attempted {}/{}): {}", failedAttempt, maxAttempts,
-				exception.getMessage());
+		log.warn("Streaming model call failed (attempted {}/{}): {}", failedAttempt, maxAttempts, exception.getMessage());
 
-		if (failedAttempt >= maxAttempts) {
-			log.error("The maximum number of retries has been reached {}, and the streaming model call has failed.",
-					maxAttempts);
-			return Flux.error(new RuntimeException("Model call failed, maximum number of retries reached.", exception));
-		}
-
-		if (!retryableExceptionPredicate.test(exception)) {
-			log.warn("Exceptions cannot be retried and are thrown immediately: {}", exception.getMessage());
-			return Flux.error(new RuntimeException("Model call failed (non-retryable exception)", exception));
+		RetryDecision decision = controller.onFailure(exception, failedAttempt);
+		if (!decision.isRetry()) {
+			if (decision.stopReason().orElse(RetryStopReason.NON_RETRYABLE) == RetryStopReason.NON_RETRYABLE) {
+				log.warn("Exceptions cannot be retried and are thrown immediately: {}", exception.getMessage());
+			}
+			return Flux.error(terminalFailure(decision.stopReason().orElse(RetryStopReason.NON_RETRYABLE), exception));
 		}
 
 		int nextAttempt = failedAttempt + 1;
-		long nextDelay = nextDelay(currentDelay);
-		return delay(currentDelay).thenMany(Flux.defer(() -> {
+		long nextDelay = decision.delay().orElseThrow().toMillis();
+		return delay(nextDelay).thenMany(Flux.defer(() -> {
 			log.info("Retry model call, on the {}th attempt (out of {} attempts).", nextAttempt, maxAttempts);
 			try {
 				checkInterrupted();
+				RetryDecision start = controller.checkAttemptAllowed();
+				if (start.isStop()) {
+					return Flux
+						.error(terminalFailure(start.stopReason().orElse(RetryStopReason.EXECUTION_STOPPED), exception));
+				}
 				ModelResponse retryResponse = handler.call(request);
-				return toStreamingFlux(request, handler, retryResponse, nextAttempt, nextDelay);
+				return toStreamingFlux(request, handler, retryResponse, nextAttempt, controller);
 			}
 			catch (Exception retryError) {
-				return retryStreamingModelCall(request, handler, nextAttempt, nextDelay, retryError);
+				return retryStreamingModelCall(request, handler, nextAttempt, controller, retryError);
 			}
 		}));
 	}
 
-	private void pause(long delay) {
-		checkInterrupted();
+	/**
+	 * Waits for the backoff. A run that carries a guard waits in slices, so that a
+	 * cancellation or an expired deadline stops the wait instead of being noticed
+	 * only when the next attempt would start.
+	 */
+	private void pause(long delay, ModelRetryController controller) {
 		if (delay <= 0) {
 			return;
 		}
+		log.info("Retry after {} ms", delay);
+		ExecutionGuard guard = controller.guard().orElse(null);
+		if (guard == null) {
+			sleep(delay);
+			return;
+		}
+		long remaining = delay;
+		while (remaining > 0) {
+			guard.assertActive();
+			long slice = Math.min(remaining, BACKOFF_SLICE_MILLIS);
+			sleep(slice);
+			remaining -= slice;
+		}
+	}
+
+	private void sleep(long millis) {
+		checkInterrupted();
 		try {
-			log.info("Retry after {} ms", delay);
-			Thread.sleep(delay);
+			Thread.sleep(millis);
 		}
 		catch (InterruptedException failure) {
 			Thread.currentThread().interrupt();
@@ -230,10 +291,10 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 	}
 
 	private Flux<ChatEvent> toStreamingFlux(ModelRequest request, ModelCallHandler handler, ModelResponse modelResponse,
-			int attempt, long currentDelay) {
+			int attempt, ModelRetryController controller) {
 		if (modelResponse.isStreaming()) {
 			return withStreamingRetry(request, handler, JdkFlowAdapter.flowPublisherToFlux(modelResponse.getStream()),
-					attempt, currentDelay);
+					attempt, controller);
 		}
 		return Flux.just(ChatEvent.response(modelResponse.getChatResponse()));
 	}
@@ -245,15 +306,58 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		return Flux.<ChatEvent>empty().delaySubscription(Duration.ofMillis(currentDelay));
 	}
 
-	private long nextDelay(long currentDelay) {
-		return RetryDelayCalculator.nextDelay(currentDelay, backoffMultiplier, maxDelay);
-	}
-
 	private Exception toException(Throwable error) {
 		if (error instanceof Exception exception) {
 			return exception;
 		}
 		return new RuntimeException(error);
+	}
+
+	/**
+	 * Builds the controller of one model call. The deadline of the run comes from its
+	 * guard, and falls back to the trusted execution context of the request.
+	 */
+	private ModelRetryController controller(ModelRequest request) {
+		ExecutionGuard guard = request.getExecutionGuard().orElse(null);
+		Instant deadline = guard == null ? null : guard.deadline().orElse(null);
+		if (deadline == null) {
+			deadline = request.getTrustedExecutionContext()
+				.flatMap(TrustedExecutionContext::deadline)
+				.orElse(null);
+		}
+		RetryPolicy policy = new RetryPolicy(maxAttempts, initialDelay, maxDelay, backoffMultiplier, retryableCategories,
+				deadlineReserveMillis);
+		return new ModelRetryController(policy, this::classify, guard, clock, deadline);
+	}
+
+	/**
+	 * Classifies a failed attempt. Without an explicit classifier the legacy
+	 * predicate decides, so that an existing configuration keeps its behaviour. An
+	 * explicit classifier classifies by failure type instead of by message text.
+	 */
+	private ModelCallFailure classify(Throwable failure) {
+		if (failure instanceof CancellationException || failure instanceof InterruptedException) {
+			return new ModelCallFailure(ModelCallFailureCategory.CANCELLED, failure);
+		}
+		if (failureClassifier != null) {
+			ModelCallFailure classified = failureClassifier.classify(failure);
+			return classified != null ? classified : new ModelCallFailure(ModelCallFailureCategory.UNKNOWN, failure);
+		}
+		boolean retryable = failure instanceof Exception && retryableExceptionPredicate.test((Exception) failure);
+		return new ModelCallFailure(retryable ? ModelCallFailureCategory.TRANSIENT : ModelCallFailureCategory.PERMANENT,
+				failure);
+	}
+
+	private RuntimeException terminalFailure(RetryStopReason reason, Throwable cause) {
+		return switch (reason) {
+			case ATTEMPTS_EXHAUSTED -> new RuntimeException("Model call failed, maximum number of retries reached.",
+					cause);
+			case NON_RETRYABLE -> new RuntimeException("Model call failed (non-retryable exception)", cause);
+			case DEADLINE_EXCEEDED -> new RuntimeException(
+					"Model call failed, the run deadline does not allow another attempt", cause);
+			case CANCELLED -> new RuntimeException("Model call failed, the attempt was cancelled", cause);
+			case EXECUTION_STOPPED -> new RuntimeException("Model call failed, the run stopped", cause);
+		};
 	}
 
 	@Override
@@ -272,6 +376,15 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		private double backoffMultiplier = 2.0;
 
 		private Predicate<Exception> retryableExceptionPredicate = Builder::isRetryableException;
+
+		private ModelCallFailureClassifier failureClassifier;
+
+		private Set<ModelCallFailureCategory> retryableCategories = EnumSet.of(ModelCallFailureCategory.TRANSIENT,
+				ModelCallFailureCategory.RATE_LIMITED);
+
+		private long deadlineReserveMillis;
+
+		private Clock clock = Clock.systemUTC();
 
 		/**
 		 * Set the maximum number of retries (including the first call).
@@ -327,6 +440,50 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		 */
 		public Builder retryableExceptionPredicate(Predicate<Exception> predicate) {
 			this.retryableExceptionPredicate = Objects.requireNonNull(predicate, "predicate must not be null");
+			return this;
+		}
+
+		/**
+		 * Classifies the failures by their type instead of by the text of their
+		 * message. Without an explicit classifier the retryable exception predicate
+		 * decides, which keeps the behaviour of an existing configuration.
+		 * @param failureClassifier The classifier of a failed attempt
+		 */
+		public Builder failureClassifier(ModelCallFailureClassifier failureClassifier) {
+			this.failureClassifier = Objects.requireNonNull(failureClassifier, "failureClassifier must not be null");
+			return this;
+		}
+
+		/**
+		 * Sets the failure categories that may be retried.
+		 * @param retryableCategories The retryable categories, must not be null
+		 */
+		public Builder retryableCategories(Set<ModelCallFailureCategory> retryableCategories) {
+			this.retryableCategories = Objects
+				.requireNonNull(retryableCategories, "retryableCategories must not be null");
+			return this;
+		}
+
+		/**
+		 * Sets the time that must remain before the deadline of the run to start
+		 * another attempt.
+		 * @param deadlineReserve The reserved time, must not be negative
+		 */
+		public Builder deadlineReserve(Duration deadlineReserve) {
+			Objects.requireNonNull(deadlineReserve, "deadlineReserve must not be null");
+			if (deadlineReserve.isNegative()) {
+				throw new IllegalArgumentException("deadlineReserve must be greater than or equal to 0.");
+			}
+			this.deadlineReserveMillis = deadlineReserve.toMillis();
+			return this;
+		}
+
+		/**
+		 * Sets the clock used for the deadline checks.
+		 * @param clock The clock, must not be null
+		 */
+		public Builder clock(Clock clock) {
+			this.clock = Objects.requireNonNull(clock, "clock must not be null");
 			return this;
 		}
 

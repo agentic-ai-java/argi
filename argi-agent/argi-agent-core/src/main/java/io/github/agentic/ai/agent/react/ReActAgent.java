@@ -398,7 +398,11 @@ public final class ReActAgent implements Agent {
 				AtomicReference<ToolRegistry> effectiveTools) {
 			context.control().assertActive();
 			ModelRequest request = ModelRequest.builder().messages(messages).toolRegistry(availableTools)
-				.trustedExecutionContext(context.trusted()).context(state).attributes(state).build();
+				.trustedExecutionContext(context.trusted())
+				.executionGuard(context.control())
+				.context(state)
+				.attributes(state)
+				.build();
 			// The effective tool set is only known at the end of the interceptor chain,
 			// where selection semantics are resolved; execution in the same turn must use
 			// exactly the set the model was shown (issue #268: declared and executed agree).
