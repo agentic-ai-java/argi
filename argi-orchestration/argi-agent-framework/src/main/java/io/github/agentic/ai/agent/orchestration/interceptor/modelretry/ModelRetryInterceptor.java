@@ -125,7 +125,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 				if (modelResponse.isStreaming()) {
 					return ModelResponse
 						.stream(JdkFlowAdapter.publisherToFlowPublisher(withStreamingRetry(request, handler,
-								JdkFlowAdapter.flowPublisherToFlux(modelResponse.getStream()), attempt, controller)));
+								JdkFlowAdapter.flowPublisherToFlux(modelResponse.getStream()), attempt)));
 				}
 				// Assistant content is data, never an out-of-band error signal.
 				if (attempt > 1) {
@@ -167,16 +167,17 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 
 	/**
 	 * Wraps a streaming response. Every subscription of the response owns its attempt
-	 * budget, so that a repeated subscription is not charged for the attempts of an
-	 * earlier one.
+	 * budget: the retry state is created per subscription, so a repeated subscription
+	 * is not charged for the attempts of an earlier one.
 	 */
 	private Flux<ChatEvent> withStreamingRetry(ModelRequest request, ModelCallHandler handler, Flux<ChatEvent> responseFlux,
-			int attempt, ModelRetryController controller) {
+			int attempt) {
 		return Flux.defer(() -> {
 			CancellationException cancellation = cancellation(null);
 			if (cancellation != null) {
 				return Flux.error(cancellation);
 			}
+			ModelRetryController controller = controller(request);
 			AtomicBoolean chunkEmitted = new AtomicBoolean(false);
 			return responseFlux.doOnNext(response -> chunkEmitted.set(true)).onErrorResume(error -> {
 				if (chunkEmitted.get()) {
@@ -210,7 +211,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 
 		int nextAttempt = failedAttempt + 1;
 		long nextDelay = decision.delay().orElseThrow().toMillis();
-		return delay(nextDelay).thenMany(Flux.defer(() -> {
+		return delay(nextDelay, controller).thenMany(Flux.defer(() -> {
 			log.info("Retry model call, on the {}th attempt (out of {} attempts).", nextAttempt, maxAttempts);
 			try {
 				checkInterrupted();
@@ -220,7 +221,7 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 						.error(terminalFailure(start.stopReason().orElse(RetryStopReason.EXECUTION_STOPPED), exception));
 				}
 				ModelResponse retryResponse = handler.call(request);
-				return toStreamingFlux(request, handler, retryResponse, nextAttempt, controller);
+				return toStreamingFlux(request, handler, retryResponse, nextAttempt);
 			}
 			catch (Exception retryError) {
 				return retryStreamingModelCall(request, handler, nextAttempt, controller, retryError);
@@ -291,19 +292,33 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 	}
 
 	private Flux<ChatEvent> toStreamingFlux(ModelRequest request, ModelCallHandler handler, ModelResponse modelResponse,
-			int attempt, ModelRetryController controller) {
+			int attempt) {
 		if (modelResponse.isStreaming()) {
 			return withStreamingRetry(request, handler, JdkFlowAdapter.flowPublisherToFlux(modelResponse.getStream()),
-					attempt, controller);
+					attempt);
 		}
 		return Flux.just(ChatEvent.response(modelResponse.getChatResponse()));
 	}
 
-	private Flux<ChatEvent> delay(long currentDelay) {
+	/**
+	 * Waits for the backoff of a streaming retry. A run that carries a guard waits in
+	 * slices, mirroring the synchronous {@link #pause(long, ModelRetryController)}: a
+	 * cancellation or an expired deadline terminates the wait instead of being noticed
+	 * when the next attempt would start. Without a guard the wait is a plain delayed
+	 * completion, because there is no run control to observe.
+	 */
+	private Flux<ChatEvent> delay(long currentDelay, ModelRetryController controller) {
 		if (currentDelay <= 0) {
 			return Flux.empty();
 		}
-		return Flux.<ChatEvent>empty().delaySubscription(Duration.ofMillis(currentDelay));
+		ExecutionGuard guard = controller.guard().orElse(null);
+		if (guard == null) {
+			return Flux.<ChatEvent>empty().delaySubscription(Duration.ofMillis(currentDelay));
+		}
+		long slices = (currentDelay + BACKOFF_SLICE_MILLIS - 1) / BACKOFF_SLICE_MILLIS;
+		return Flux.interval(Duration.ZERO, Duration.ofMillis(BACKOFF_SLICE_MILLIS)).take(slices)
+			.doOnNext(tick -> guard.assertActive())
+			.thenMany(Flux.empty());
 	}
 
 	private Exception toException(Throwable error) {

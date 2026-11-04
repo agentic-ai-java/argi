@@ -15,10 +15,12 @@
  */
 package io.github.agentic.ai.agent.orchestration.interceptors;
 
+import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.agent.orchestration.interceptor.modelretry.ModelRetryInterceptor;
 import io.github.agentic.ai.agent.retry.TypeBasedModelCallFailureClassifier;
+import io.github.agentic.ai.api.chat.ChatEvent;
 import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatResponse;
 import io.github.agentic.ai.api.chat.Usage;
@@ -31,6 +33,8 @@ import io.github.agentic.ai.runtime.execution.TenantReference;
 import io.github.agentic.ai.runtime.execution.TrustedExecutionContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import reactor.adapter.JdkFlowAdapter;
+import reactor.core.publisher.Flux;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -194,6 +198,48 @@ class ModelRetryInterceptorControlledTest {
 		ModelRequest request = ModelRequest.builder().executionGuard(control).build();
 
 		assertThat(ModelRequest.builder(request).build().getExecutionGuard()).contains(control);
+	}
+
+	/**
+	 * 验证流式重试的响应式退避按切片观察运行状态：取消运行后等待在下一个切片终止，
+	 * 而不是等满整个配置的退避时长。
+	 */
+	@Test
+	void aStreamingBackoffTerminatesWhenTheRunIsCancelled() throws Exception {
+		ExecutionControl control = control(NOW.plusSeconds(60));
+		ModelRetryInterceptor interceptor = ModelRetryInterceptor.builder()
+			.maxAttempts(2)
+			.initialDelay(30000)
+			.clock(CLOCK)
+			.build();
+		AtomicInteger attempts = new AtomicInteger();
+		ModelCallHandler handler = request -> {
+			attempts.incrementAndGet();
+			return ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(Flux
+				.error(new RuntimeException("I/O error: connection lost"))));
+		};
+		ModelResponse response = interceptor.interceptModel(request(control), handler);
+		Flux<ChatEvent> flux = JdkFlowAdapter.flowPublisherToFlux(response.getStream());
+
+		AtomicReference<Throwable> failure = new AtomicReference<>();
+		CountDownLatch done = new CountDownLatch(1);
+		flux.subscribe(events -> {
+		}, error -> {
+			failure.set(error);
+			done.countDown();
+		}, done::countDown);
+		// The failed streaming attempt is counted and the sliced backoff has started.
+		Thread.sleep(200);
+
+		long cancelAt = System.nanoTime();
+		control.cancel();
+		assertThat(done.await(5, TimeUnit.SECONDS)).as("the wait must terminate on cancellation").isTrue();
+		long elapsedMillis = (System.nanoTime() - cancelAt) / 1_000_000;
+
+		assertThat(failure.get()).isInstanceOf(ExecutionStoppedException.class);
+		assertThat(elapsedMillis).as("the cancellation must be observed by the next 100 ms slice, not after 30 s")
+			.isLessThan(5000);
+		assertThat(attempts).hasValue(1);
 	}
 
 	private ModelRequest request(ExecutionControl control) {

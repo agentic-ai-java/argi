@@ -371,6 +371,29 @@ class ModelRetryInterceptorTest {
 		}, "backoffMultiplier 必须 >= 1.0");
 	}
 
+	@Test
+	void testStreamingRetryStateDoesNotLeakAcrossSubscriptions() {
+		ModelRetryInterceptor interceptor = ModelRetryInterceptor.builder().maxAttempts(2).initialDelay(0).build();
+
+		AtomicInteger attemptCount = new AtomicInteger(0);
+
+		ModelCallHandler handler = request -> {
+			attemptCount.incrementAndGet();
+			return streaming(Flux.error(new RuntimeException("I/O error on streaming response")));
+		};
+
+		ModelResponse response = interceptor.interceptModel(ModelRequest.builder().build(), handler);
+		Flux<ChatEvent> responseFlux = JdkFlowAdapter.flowPublisherToFlux(response.getStream());
+
+		// First subscription: consumes its own budget (1 streaming retry) and exhausts.
+		assertThrows(RuntimeException.class, () -> responseFlux.collectList().block(Duration.ofSeconds(2)));
+		assertEquals(2, attemptCount.get(), "第一次订阅应拥有自己的尝试预算");
+
+		// Second subscription: a fresh budget, not the exhausted state of the first one.
+		assertThrows(RuntimeException.class, () -> responseFlux.collectList().block(Duration.ofSeconds(2)));
+		assertEquals(3, attemptCount.get(), "第二次订阅必须获得独立的重试预算");
+	}
+
 	private static ModelResponse streaming(Flux<ChatEvent> events) {
 		return ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(events));
 	}
