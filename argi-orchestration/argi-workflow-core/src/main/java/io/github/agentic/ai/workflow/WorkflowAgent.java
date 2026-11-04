@@ -22,6 +22,7 @@ import io.github.agentic.ai.agent.AgentExecutionContext;
 import io.github.agentic.ai.agent.AgentOutcome;
 import io.github.agentic.ai.agent.AgentRequest;
 import io.github.agentic.ai.api.chat.ChatMessage;
+import io.github.agentic.ai.api.chat.ContentPart;
 import io.github.agentic.ai.api.chat.ToolCall;
 import io.github.agentic.ai.api.chat.Usage;
 import io.github.agentic.ai.api.tool.Tool;
@@ -30,6 +31,7 @@ import io.github.agentic.ai.api.tool.ToolRegistry;
 import io.github.agentic.ai.api.tool.ToolResult;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -263,7 +265,7 @@ public final class WorkflowAgent implements Agent {
 			return executeWithRetry(agent.retry(), () -> executeAgent(agent, data, context), context);
 		}
 		if (step instanceof WorkflowStep.Tool tool) {
-			return executeWithRetry(tool.retry(), () -> executeTool(tool, data, context), context);
+			return executeTool(tool, data, context);
 		}
 		if (step instanceof WorkflowStep.Sequence sequence) {
 			return executeSteps(sequence.steps(), 0, data, context);
@@ -351,27 +353,59 @@ public final class WorkflowAgent implements Agent {
 	}
 
 	private ExecutionResult executeTool(WorkflowStep.Tool step, RunData data, AgentExecutionContext context) {
-		Tool tool = tools.find(step.toolName()).orElseThrow(() ->
-				new WorkflowExecutionException("Unknown workflow tool: " + step.toolName()));
-		Map<String, Object> arguments = resolveMap(step.arguments(), data);
-		String json;
-		try {
-			json = mapper.writeValueAsString(arguments);
+		ToolResult result = executeWithRetry(step.retry(), () -> {
+			Tool tool = tools.find(step.toolName())
+				.orElseThrow(() -> new WorkflowExecutionException("Unknown workflow tool: " + step.toolName()));
+			Map<String, Object> arguments = resolveMap(step.arguments(), data);
+			String json;
+			try {
+				json = mapper.writeValueAsString(arguments);
+			}
+			catch (Exception exception) {
+				throw new WorkflowExecutionException("Workflow tool arguments are not serializable: " + step.id(),
+						exception);
+			}
+			ToolResult attempt = await(tool
+				.execute(new ToolCall(step.id() + ":" + UUID.randomUUID(), step.toolName(), json),
+						new ToolContext(data.state))
+				.toCompletableFuture());
+			if (attempt != null && attempt.error()) {
+				throw new WorkflowExecutionException("Workflow tool failed: " + step.toolName());
+			}
+			return attempt;
+		}, context);
+		// A completed tool effect must not be replayed when handling its result fails.
+		if (result == null) {
+			throw new WorkflowExecutionException("Workflow tool returned a null result: " + step.toolName());
 		}
-		catch (Exception exception) {
-			throw new WorkflowExecutionException("Workflow tool arguments are not serializable: " + step.id(), exception);
-		}
-		ToolResult result = await(tool.execute(new ToolCall(step.id() + ":" + UUID.randomUUID(), step.toolName(), json),
-				new ToolContext(data.state)).toCompletableFuture());
-		if (result.error()) {
-			throw new WorkflowExecutionException("Workflow tool failed: " + step.toolName());
-		}
-		Object output = result.content().isEmpty() ? null : result.content().get(0).text();
+		Object output = toolOutput(result);
 		data.stepOutputs.put(step.id(), output);
 		if (step.outputKey() != null) {
 			data.state.put(step.outputKey(), output);
 		}
 		return ExecutionResult.completed(data);
+	}
+
+	private static Object toolOutput(ToolResult result) {
+		if (result.content().size() == 1 && result.metadata().isEmpty()) {
+			ContentPart part = result.content().get(0);
+			if (part.type() == ContentPart.Type.TEXT && part.text() != null && part.mimeType() == null
+					&& part.data() == null && part.metadata().isEmpty()) {
+				return part.text();
+			}
+		}
+		return Map.of("content", result.content().stream().map(WorkflowAgent::toolContent).toList(), "error",
+				result.error(), "metadata", result.metadata());
+	}
+
+	private static Map<String, Object> toolContent(ContentPart part) {
+		Map<String, Object> content = new LinkedHashMap<>();
+		content.put("type", part.type().name());
+		content.put("text", part.text());
+		content.put("mimeType", part.mimeType());
+		content.put("data", part.data());
+		content.put("metadata", part.metadata());
+		return Collections.unmodifiableMap(content);
 	}
 
 	private ExecutionResult executeParallel(WorkflowStep.Parallel step, RunData data, AgentExecutionContext context) {
@@ -409,8 +443,8 @@ public final class WorkflowAgent implements Agent {
 		return ExecutionResult.completed(data);
 	}
 
-	private ExecutionResult executeWithRetry(WorkflowStep.RetryPolicy policy, Operation operation,
-		AgentExecutionContext context) {
+	private <T> T executeWithRetry(WorkflowStep.RetryPolicy policy, Operation<T> operation,
+			AgentExecutionContext context) {
 		RuntimeException failure = null;
 		for (int attempt = 1; attempt <= policy.maxAttempts(); attempt++) {
 			try {
@@ -430,7 +464,8 @@ public final class WorkflowAgent implements Agent {
 				context.control().assertActive();
 			}
 		}
-		throw new WorkflowExecutionException("Workflow step failed after " + policy.maxAttempts() + " attempts", failure);
+		throw new WorkflowExecutionException("Workflow step failed after " + policy.maxAttempts() + " attempts",
+				failure);
 	}
 
 	private Map<String, Object> resolveMap(Map<String, WorkflowValue> expressions, RunData data) {
@@ -542,8 +577,10 @@ public final class WorkflowAgent implements Agent {
 		}
 	}
 
-	private interface Operation {
-		ExecutionResult run();
+	private interface Operation<T> {
+
+		T run();
+
 	}
 
 	@FunctionalInterface
