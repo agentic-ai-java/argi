@@ -413,13 +413,13 @@ class LifecycleContractTest {
 			.context(callerContext).attributes(callerContext).build();
 		ModelCallInvocation invocation = new ModelCallInvocation(identity(), MODEL_TURN, request);
 
-		// The invocation holds its own defensive copy, not the request the executor
-		// runs on: mutating what the observer can reach must not touch the caller's
-		// collections or the original request the dispatch keeps using.
+		// The invocation holds its own read-only snapshot, not the request the executor
+		// runs on: every collection accessor of the observed request rejects writes, so
+		// an extension cannot rewrite what subsequent extensions observe.
 		assertNotSame(request, invocation.request());
-		invocation.request().getMessages().clear();
-		invocation.request().getContext().put("k", "rewritten");
-		// attributes are transmitted as an immutable map: writes are rejected outright.
+		assertThrows(UnsupportedOperationException.class, () -> invocation.request().getMessages().clear());
+		assertThrows(UnsupportedOperationException.class,
+				() -> invocation.request().getContext().put("k", "rewritten"));
 		assertThrows(UnsupportedOperationException.class,
 				() -> invocation.request().getAttributes().put("k", "rewritten"));
 		assertEquals("v", callerContext.get("k"));
@@ -427,6 +427,39 @@ class LifecycleContractTest {
 		// The executor's own request keeps its content.
 		assertEquals("hello", request.getMessages().get(0).text());
 		assertEquals("v", request.getContext().get("k"));
+	}
+
+	// The event is a snapshot: later changes to the caller's collections are invisible
+	// to extensions that observe the same invocation.
+	@Test
+	void invocationSnapshotIsUnaffectedByLaterCallerMutations() {
+		List<ChatMessage> callerMessages = new ArrayList<>();
+		callerMessages.add(ChatMessage.user("hello"));
+		Map<String, Object> callerContext = new HashMap<>();
+		callerContext.put("k", "v");
+		ModelRequest request = ModelRequest.builder().messages(callerMessages).context(callerContext).build();
+		ModelCallInvocation invocation = new ModelCallInvocation(identity(), MODEL_TURN, request);
+
+		callerMessages.clear();
+		callerMessages.add(ChatMessage.user("replaced"));
+		callerContext.put("k", "rewritten");
+
+		assertEquals("hello", invocation.request().getMessages().get(0).text());
+		assertEquals(1, invocation.request().getMessages().size());
+		assertEquals("v", invocation.request().getContext().get("k"));
+	}
+
+	// A request rebuilt from the read-only view (the transformer path) still carries
+	// the full content, so the view does not break legitimate transforms.
+	@Test
+	void aTransformRebuiltFromTheReadOnlyViewKeepsTheContent() {
+		ModelCallInvocation invocation = modelCall();
+		ModelRequest rebuilt = ModelRequest.builder(invocation.request())
+			.systemMessage(ChatMessage.system("extra instruction"))
+			.build();
+
+		assertEquals(invocation.request().getMessages(), rebuilt.getMessages());
+		assertEquals("extra instruction", rebuilt.getSystemMessage().text());
 	}
 
 	@Test

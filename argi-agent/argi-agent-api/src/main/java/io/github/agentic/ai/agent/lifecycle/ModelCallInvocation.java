@@ -16,7 +16,9 @@
 package io.github.agentic.ai.agent.lifecycle;
 
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
+import io.github.agentic.ai.api.chat.ChatMessage;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -46,23 +48,52 @@ public record ModelCallInvocation(LifecycleIdentity identity, ModelTurnId modelT
 		Objects.requireNonNull(identity, "identity must not be null");
 		Objects.requireNonNull(modelTurn, "modelTurn must not be null");
 		Objects.requireNonNull(request, "request must not be null");
-		request = defensiveCopy(request);
+		request = readOnlySnapshot(request);
 	}
 
 	/**
-	 * Returns a copy of the request whose collection-valued accessors are immutable:
-	 * observers must not be able to rewrite the execution input (clearing the message
-	 * list or mutating the context map) through the invocation reference. Transforming
-	 * extensions observe this copy and rebuild a replacement from it; the executor
-	 * keeps running on the original request it holds, so a mutated copy would have no
-	 * effect on dispatch.
+	 * Returns a genuinely read-only snapshot of the request. Two layers protect the
+	 * event: the snapshot is taken from the caller's request, so later changes to the
+	 * caller's collections are invisible; and the snapshot's collection accessors are
+	 * immutable views, so an extension cannot rewrite what subsequent extensions observe
+	 * (clearing the message list or mutating the context map fails). Transforming
+	 * extensions rebuild a replacement through {@link ModelRequest#builder(ModelRequest)};
+	 * the executor keeps running on the request it holds, so the event never becomes a
+	 * mutation channel into dispatch.
 	 */
-	private static ModelRequest defensiveCopy(ModelRequest request) {
-		return ModelRequest.builder(request)
+	private static ModelRequest readOnlySnapshot(ModelRequest request) {
+		ModelRequest snapshot = ModelRequest.builder(request)
 				.messages(List.copyOf(request.getMessages()))
 				.context(Map.copyOf(request.getContext()))
 				.attributes(Map.copyOf(request.getAttributes()))
 				.build();
+		return new ReadOnlyModelRequest(snapshot);
+	}
+
+	/**
+	 * A request view whose editable collections are exposed as immutable. The framework
+	 * keeps per-subscription {@link ModelRequest} copies mutable by design (subscription
+	 * isolation); the lifecycle event is the read-only surface on top of a snapshot.
+	 */
+	private static final class ReadOnlyModelRequest extends ModelRequest {
+
+		private ReadOnlyModelRequest(ModelRequest source) {
+			super(source.getSystemMessage(), source.getMessages(), source.getOptions(), source.getChatClient(),
+					source.getToolRegistry(), source.getTools(), source.hasToolSelection(),
+					source.getDynamicToolRegistry(), source.getToolDescriptions(), source.getContext(),
+					source.getAttributes(), source.getTrustedExecutionContext().orElse(null));
+		}
+
+		@Override
+		public List<ChatMessage> getMessages() {
+			return Collections.unmodifiableList(super.getMessages());
+		}
+
+		@Override
+		public Map<String, Object> getContext() {
+			return Collections.unmodifiableMap(super.getContext());
+		}
+
 	}
 
 }
