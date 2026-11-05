@@ -13,6 +13,7 @@ import React, {
 import { createApiClient, GraphRunResponse } from "@/lib/argi-api";
 import { toast } from "sonner";
 import { useGraphThreads } from "./GraphThread";
+import { extractTextContent } from "@/components/graph/graph-output";
 
 export interface GraphNodeOutput extends GraphRunResponse {
   /** Index in execution order */
@@ -105,7 +106,8 @@ export function GraphStreamProvider({ children }: GraphStreamProviderProps) {
           if (event.state && Object.keys(event.state).length > 0) {
             setCurrentState(event.state as Record<string, unknown>);
           }
-          const text = event.chunk ?? event.message?.content ?? "";
+          const text =
+            event.chunk ?? extractTextContent(event.message?.content);
           if (text) {
             setAccumulatedChunk((prev) => prev + text);
           }

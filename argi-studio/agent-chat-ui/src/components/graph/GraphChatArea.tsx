@@ -4,13 +4,7 @@ import React, { useState, FormEvent, useMemo } from "react";
 import { useGraphStream } from "@/providers/GraphStream";
 import { useGraphThreads } from "@/providers/GraphThread";
 import { Button } from "@/components/ui/button";
-
-function extractTextFromState(state: Record<string, unknown> | null): string {
-  if (!state?.messages || !Array.isArray(state.messages)) return "";
-  const messages = state.messages as Array<{ content?: string; text?: string }>;
-  const last = messages[messages.length - 1];
-  return last?.content ?? last?.text ?? "";
-}
+import { extractTextContent, extractTextFromState } from "./graph-output";
 
 export function GraphChatArea() {
   const {
@@ -40,10 +34,11 @@ export function GraphChatArea() {
     if (accumulatedChunk) return accumulatedChunk;
     const fromState = extractTextFromState(currentState);
     if (fromState) return fromState;
-    const lastWithMessage = [...nodeOutputs]
+    const lastMessageText = [...nodeOutputs]
       .reverse()
-      .find((o) => o.message?.content);
-    return lastWithMessage?.message?.content ?? "";
+      .map((output) => extractTextContent(output.message?.content))
+      .find((text) => text.length > 0);
+    return lastMessageText ?? "";
   }, [accumulatedChunk, currentState, nodeOutputs]);
 
   return (
