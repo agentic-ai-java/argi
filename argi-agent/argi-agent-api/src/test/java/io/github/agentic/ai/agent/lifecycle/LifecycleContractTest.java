@@ -462,6 +462,50 @@ class LifecycleContractTest {
 		assertEquals("extra instruction", rebuilt.getSystemMessage().text());
 	}
 
+	// issue #298 review, second round: collection values nested inside the context are
+	// frozen too — clearing such a list through the event must fail and must not
+	// touch the caller's list.
+	@Test
+	void nestedContextValuesAreFrozenInTheSnapshot() {
+		List<String> shared = new ArrayList<>(List.of("a", "b"));
+		Map<String, Object> callerContext = new HashMap<>();
+		callerContext.put("history", shared);
+		callerContext.put("flags", new HashMap<>(Map.of("k", "v")));
+		ModelRequest request = ModelRequest.builder().context(callerContext).build();
+		ModelCallInvocation invocation = new ModelCallInvocation(identity(), MODEL_TURN, request);
+
+		// The observed nested list is a frozen copy: writes are rejected...
+		@SuppressWarnings("unchecked")
+		List<String> observed = (List<String>) invocation.request().getContext().get("history");
+		assertThrows(UnsupportedOperationException.class, observed::clear);
+		assertThrows(UnsupportedOperationException.class, () -> observed.add("c"));
+		// ...and the caller's list keeps its content and independence.
+		assertEquals(List.of("a", "b"), shared);
+		shared.clear();
+		assertEquals(List.of("a", "b"), invocation.request().getContext().get("history"));
+
+		// The same freeze applies to nested maps.
+		@SuppressWarnings("unchecked")
+		Map<String, Object> observedFlags = (Map<String, Object>) invocation.request().getContext().get("flags");
+		assertThrows(UnsupportedOperationException.class, () -> observedFlags.put("k", "rewritten"));
+	}
+
+	// A collection-valued attribute is frozen the same way as a context entry.
+	@Test
+	void nestedAttributeValuesAreFrozenInTheSnapshot() {
+		List<String> shared = new ArrayList<>(List.of("x"));
+		Map<String, Object> callerAttributes = new HashMap<>();
+		callerAttributes.put("trace", shared);
+		ModelRequest request = ModelRequest.builder().attributes(callerAttributes).build();
+		ModelCallInvocation invocation = new ModelCallInvocation(identity(), MODEL_TURN, request);
+
+		@SuppressWarnings("unchecked")
+		List<String> observed = (List<String>) invocation.request().getAttributes().get("trace");
+		assertThrows(UnsupportedOperationException.class, observed::clear);
+		shared.add("y");
+		assertEquals(List.of("x"), invocation.request().getAttributes().get("trace"));
+	}
+
 	@Test
 	void mutationGuardRejectsTrustedExecutionContextSwap() {
 		TrustedExecutionContext tenantA = TrustedExecutionContext.builder()
