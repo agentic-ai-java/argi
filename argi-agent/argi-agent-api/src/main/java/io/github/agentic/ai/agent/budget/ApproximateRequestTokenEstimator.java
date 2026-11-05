@@ -36,10 +36,14 @@ import java.util.Set;
  * disclosed tool schemas and the reserved output.
  *
  * <p>
- * The tool schemas are counted for the bindings the request actually discloses. When
- * the request carries an explicit tool selection, only the selected bindings are
- * counted; the dynamic bindings of the request are always counted because they are
- * disclosed next to the selected ones.
+ * The tool schemas are counted for the bindings the request actually dispatches,
+ * matching the selection semantics of the dispatch path: the static and the dynamic
+ * registry are merged with the static binding winning a name conflict, and an
+ * explicit tool selection (including an empty one, which disables tools) filters the
+ * merged set. Schemas of bindings the dispatch will not send are not counted, so an
+ * empty selection or a large dynamic catalog cannot reject a request whose dispatch
+ * carries none of them. Tool descriptions are not counted: they feed the auxiliary
+ * selection call, never the dispatched request.
  *
  * <p>
  * When the request carries an explicit {@code maxTokens} output limit, the estimate
@@ -124,18 +128,22 @@ public final class ApproximateRequestTokenEstimator implements RequestTokenEstim
 	}
 
 	private int toolSchemaTokens(ModelRequest request) {
-		Set<String> selection = request.hasToolSelection() ? new HashSet<>(request.getTools()) : null;
-		int total = 0;
+		// Merge both registries with the static binding winning a name conflict, then
+		// apply the explicit selection — the same semantics as the dispatch path.
+		Map<String, ToolDefinition> disclosed = new java.util.LinkedHashMap<>();
 		for (ToolDefinition definition : request.getToolRegistry().definitions()) {
-			if (selection == null || selection.contains(definition.name())) {
-				total += definitionTokens(definition);
-			}
+			disclosed.putIfAbsent(definition.name(), definition);
 		}
 		for (ToolDefinition definition : request.getDynamicToolRegistry().definitions()) {
-			total += definitionTokens(definition);
+			disclosed.putIfAbsent(definition.name(), definition);
 		}
-		for (Map.Entry<String, String> description : request.getToolDescriptions().entrySet()) {
-			total += tokens(description.getKey()) + tokens(description.getValue());
+		if (request.hasToolSelection()) {
+			Set<String> selection = new HashSet<>(request.getTools());
+			disclosed.values().removeIf(definition -> !selection.contains(definition.name()));
+		}
+		int total = 0;
+		for (ToolDefinition definition : disclosed.values()) {
+			total += definitionTokens(definition);
 		}
 		return total;
 	}

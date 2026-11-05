@@ -124,6 +124,79 @@ class ContextBudgetInterceptorTest {
 		assertThat(demandedEstimate.totalTokens()).isEqualTo(demandedEstimate.inputTokens() + 2000);
 	}
 
+	// issue #137 review: the tool schemas must match what the dispatch actually sends.
+	// The empty explicit selection disables tools, so a large dynamic catalog must not
+	// count against the request.
+	@Test
+	void anEmptyToolSelectionDoesNotCountDynamicSchemas() {
+		AtomicInteger dispatches = new AtomicInteger();
+		ContextBudgetInterceptor interceptor = ContextBudgetInterceptor.builder()
+			.budget(new ContextWindowBudget(1000, 100))
+			.build();
+		ModelRequest disabled = ModelRequest.builder()
+			.systemMessage(ChatMessage.system("system instructions for the agent"))
+			.messages(List.of(ChatMessage.user("hello")))
+			.toolRegistry(new ToolRegistry(List.of()))
+			.dynamicToolRegistry(new ToolRegistry(List.of(tool("catalog", "{\"type\":\"object\",\"properties\":{"
+					+ "field1\":{\"type\":\"string\"},field2:{\"type\":\"string\"}}}"))))
+			.tools(List.of())
+			.build();
+		RequestTokenEstimate estimate = new ApproximateRequestTokenEstimator().estimate(disabled, budget());
+		assertThat(estimate.toolSchemaTokens()).isZero();
+
+		interceptor.interceptModel(disabled, r -> {
+			dispatches.incrementAndGet();
+			return response();
+		});
+		assertThat(dispatches).hasValue(1);
+	}
+
+	// An explicit selection filters the dynamic registry exactly like the dispatch does.
+	@Test
+	void anExplicitSelectionFiltersDynamicSchemas() {
+		ModelRequest selected = ModelRequest.builder()
+			.systemMessage(ChatMessage.system("system instructions for the agent"))
+			.messages(List.of(ChatMessage.user("hello")))
+			.toolRegistry(new ToolRegistry(List.of(tool("lookup", "{\"type\":\"object\"}"))))
+			.dynamicToolRegistry(new ToolRegistry(List.of(tool("catalog", "{\"type\":\"object\",\"properties\":{"
+					+ "field1\":{\"type\":\"string\"},field2:{\"type\":\"string\"}}}"))))
+			.tools(List.of("lookup"))
+			.build();
+		RequestTokenEstimate estimate = new ApproximateRequestTokenEstimator().estimate(selected, budget());
+
+		ModelRequest staticOnly = ModelRequest.builder()
+			.systemMessage(ChatMessage.system("system instructions for the agent"))
+			.messages(List.of(ChatMessage.user("hello")))
+			.toolRegistry(new ToolRegistry(List.of(tool("lookup", "{\"type\":\"object\"}"))))
+			.build();
+		RequestTokenEstimate staticEstimate = new ApproximateRequestTokenEstimator().estimate(staticOnly, budget());
+
+		assertThat(estimate.toolSchemaTokens()).isEqualTo(staticEstimate.toolSchemaTokens());
+	}
+
+	// A dynamic binding shadowed by a static name is dispatched once — the schema is
+	// counted once, not twice.
+	@Test
+	void aDynamicSchemaShadowedByAStaticNameIsCountedOnce() {
+		ModelRequest shadowed = ModelRequest.builder()
+			.systemMessage(ChatMessage.system("system instructions for the agent"))
+			.messages(List.of(ChatMessage.user("hello")))
+			.toolRegistry(new ToolRegistry(List.of(tool("lookup", "{\"type\":\"object\"}"))))
+			.dynamicToolRegistry(new ToolRegistry(List.of(tool("lookup", "{\"type\":\"object\",\"properties\":{"
+					+ "field1\":{\"type\":\"string\"},field2:{\"type\":\"string\"}}}"))))
+			.build();
+		RequestTokenEstimate estimate = new ApproximateRequestTokenEstimator().estimate(shadowed, budget());
+
+		ModelRequest staticOnly = ModelRequest.builder()
+			.systemMessage(ChatMessage.system("system instructions for the agent"))
+			.messages(List.of(ChatMessage.user("hello")))
+			.toolRegistry(new ToolRegistry(List.of(tool("lookup", "{\"type\":\"object\"}"))))
+			.build();
+		RequestTokenEstimate staticEstimate = new ApproximateRequestTokenEstimator().estimate(staticOnly, budget());
+
+		assertThat(estimate.toolSchemaTokens()).isEqualTo(staticEstimate.toolSchemaTokens());
+	}
+
 	// issue #137 review: the budget must hold after interceptor rewrites, so the
 	// budget interceptor has to sit **after** every request-rewriting interceptor
 	// in the chain (innermost). This chain-level case registers [rewriter, budget]:
