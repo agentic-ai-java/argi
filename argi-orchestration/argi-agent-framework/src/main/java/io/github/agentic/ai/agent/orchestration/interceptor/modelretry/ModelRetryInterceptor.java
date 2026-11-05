@@ -302,9 +302,11 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 
 	/**
 	 * Waits for the backoff of a streaming retry. A run that carries a guard waits in
-	 * slices, mirroring the synchronous {@link #pause(long, ModelRetryController)}: a
-	 * cancellation or an expired deadline terminates the wait instead of being noticed
-	 * when the next attempt would start. Without a guard the wait is a plain delayed
+	 * slices, mirroring the synchronous {@link #pause(long, ModelRetryController)}: the
+	 * guard is checked once up front, then at every slice boundary, so a cancellation
+	 * or an expired deadline terminates the wait instead of being noticed when the next
+	 * attempt would start. The first tick arrives after a full slice, so the total wait
+	 * covers the whole configured delay. Without a guard the wait is a plain delayed
 	 * completion, because there is no run control to observe.
 	 */
 	private Flux<ChatEvent> delay(long currentDelay, ModelRetryController controller) {
@@ -315,8 +317,11 @@ public class ModelRetryInterceptor extends ModelInterceptor {
 		if (guard == null) {
 			return Flux.<ChatEvent>empty().delaySubscription(Duration.ofMillis(currentDelay));
 		}
+		// The run may already be stopped when the backoff begins.
+		guard.assertActive();
 		long slices = (currentDelay + BACKOFF_SLICE_MILLIS - 1) / BACKOFF_SLICE_MILLIS;
-		return Flux.interval(Duration.ZERO, Duration.ofMillis(BACKOFF_SLICE_MILLIS)).take(slices)
+		return Flux.interval(Duration.ofMillis(BACKOFF_SLICE_MILLIS), Duration.ofMillis(BACKOFF_SLICE_MILLIS))
+			.take(slices)
 			.doOnNext(tick -> guard.assertActive())
 			.thenMany(Flux.empty());
 	}

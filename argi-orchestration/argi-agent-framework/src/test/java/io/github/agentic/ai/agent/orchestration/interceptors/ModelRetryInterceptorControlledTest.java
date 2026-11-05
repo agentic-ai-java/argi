@@ -201,6 +201,46 @@ class ModelRetryInterceptorControlledTest {
 	}
 
 	/**
+	 * 验证切片化退避不吞时长：首个切片在整整一个切片之后到达，配置的退避时长被完整保留
+	 * （首拍立即到达时 200ms 的退避会在 ~100ms 结束）。
+	 */
+	@Test
+	void theStreamingBackoffPreservesTheFullConfiguredDelay() throws Exception {
+		ExecutionControl control = control(NOW.plusSeconds(60));
+		ModelRetryInterceptor interceptor = ModelRetryInterceptor.builder()
+			.maxAttempts(2)
+			.initialDelay(200)
+			.clock(CLOCK)
+			.build();
+		AtomicInteger attempts = new AtomicInteger();
+		ModelCallHandler handler = request -> {
+			attempts.incrementAndGet();
+			return ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(Flux
+				.error(new RuntimeException("I/O error: connection lost"))));
+		};
+		ModelResponse response = interceptor.interceptModel(request(control), handler);
+		Flux<ChatEvent> flux = JdkFlowAdapter.flowPublisherToFlux(response.getStream());
+
+		AtomicReference<Throwable> failure = new AtomicReference<>();
+		CountDownLatch done = new CountDownLatch(1);
+		long start = System.nanoTime();
+		flux.subscribe(events -> {
+		}, error -> {
+			failure.set(error);
+			done.countDown();
+		}, done::countDown);
+		assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
+		long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+		assertThat(failure.get()).isInstanceOf(RuntimeException.class);
+		assertThat(elapsedMillis).as("the 200 ms backoff must not end after the first immediate slice (~105 ms)")
+			.isGreaterThanOrEqualTo(190);
+		// The sequence is bounded by maxAttempts: the backoff ends and the second
+		// attempt runs before the final exhaustion.
+		assertThat(attempts).hasValue(2);
+	}
+
+	/**
 	 * 验证流式重试的响应式退避按切片观察运行状态：取消运行后等待在下一个切片终止，
 	 * 而不是等满整个配置的退避时长。
 	 */
