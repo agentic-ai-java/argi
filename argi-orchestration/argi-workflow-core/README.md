@@ -21,6 +21,38 @@ Applications that need declarative independent execution depend on
 `argi-workflow-core`, publish a `WorkflowDefinition`, and construct a
 `WorkflowAgent` with their agent and tool resolvers.
 
+## Tool step outputs
+
+A successful plain text result remains a string when it contains exactly one
+`TEXT` part with a non-null text value, no MIME type or binary data, and no
+part-level or result-level metadata. This includes results from `ToolResult.text`.
+
+Other successful results use a map with `content`, `error` (false), and `metadata`.
+`content` is an ordered list of maps, each containing `type` (the `ContentPart.Type`
+name), `text`, `mimeType`, `data`, and `metadata`. Optional part fields retain null;
+binary `data` is a copy of the original byte array. Empty content is an empty list,
+so the step output itself is never null. Metadata values retain their runtime types;
+they are not converted through JSON or `toString`, and this representation does not
+add deep immutability guarantees for runtime data.
+
+The same value is available as the step output and, when configured, under the
+step's `outputKey` in state. Existing map/list paths can supply later tool arguments
+or agent inputs, for example `new WorkflowValue.StepOutput("fetch", "content.1.text")`
+or `WorkflowValue.state("fetch.metadata.receipt")`. JSON parts retain their original
+JSON text in `content.0.text`, together with type `JSON` and their MIME type; they
+are not automatically parsed into workflow values. Consumers that previously read
+the first text from a compound or metadata-bearing result should select its explicit
+`content.0.text` path instead. Binary data can be passed directly to a later agent
+input; serialization into a later tool's JSON arguments follows the configured
+`ObjectMapper` and does not establish end-to-end provider multimodal support.
+
+Preparing arguments, failed invocation stages, and `ToolResult.error` retain the
+tool step's retry policy. Projecting a successfully completed result occurs outside
+that retry boundary. A malformed null result fails with a diagnostic
+`WorkflowExecutionException` without invoking the tool again. This prevents result
+handling failures from replaying a successful tool effect; it does not promise
+exactly-once effects when a failed invocation has already performed external work.
+
 ## Definition data snapshots
 
 Starting with the `2.1.0-RC2-SNAPSHOT` fix for #272, `WorkflowValue.Literal` and
