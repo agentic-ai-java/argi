@@ -16,11 +16,16 @@
 package io.github.agentic.ai.workflow;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.networknt.schema.Error;
+import com.networknt.schema.Schema;
+import com.networknt.schema.SchemaRegistry;
+import com.networknt.schema.SpecificationVersion;
 import io.github.agentic.ai.agent.Agent;
 import io.github.agentic.ai.agent.AgentEvent;
 import io.github.agentic.ai.agent.AgentExecutionContext;
 import io.github.agentic.ai.agent.AgentOutcome;
 import io.github.agentic.ai.agent.AgentRequest;
+import io.github.agentic.ai.agent.AgentResult;
 import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ContentPart;
 import io.github.agentic.ai.api.chat.ToolCall;
@@ -44,12 +49,30 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Semaphore;
 import java.util.function.Function;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Independent workflow executor. It interprets the closed workflow DSL directly and
  * never creates or references StateGraph, CompiledGraph or Loop runtime classes.
+ *
+ * <p>
+ * When the definition declares an input schema, the request inputs are validated
+ * against it before the first step runs — before any tool or agent side effect. When
+ * it declares an output schema, the completed output snapshot is validated before the
+ * COMPLETED outcome is delivered; a violating output terminates the stream with a
+ * {@link WorkflowValidationException} instead. Inputs are validated on the fresh run
+ * only: a resume request continues from the state owned by its continuation and often
+ * carries no inputs, so re-validating them there would make suspended workflows
+ * impossible to complete. Subflows share the parent run's inputs, so a nested
+ * definition's input schema is a publish-time contract for its own callers and is not
+ * applied again at the subflow entry.
  */
 public final class WorkflowAgent implements Agent {
+
+	private static final JsonMapper JSON = JsonMapper.builder().build();
+
+	private static final SchemaRegistry SCHEMAS = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12);
 
 	private final WorkflowDefinition definition;
 
@@ -65,6 +88,10 @@ public final class WorkflowAgent implements Agent {
 
 	private final Map<String, StoredContinuation> continuations = new ConcurrentHashMap<>();
 
+	private final Schema inputSchema;
+
+	private final Schema outputSchema;
+
 	private WorkflowAgent(Builder builder) {
 		this.definition = Objects.requireNonNull(builder.definition, "definition must not be null");
 		this.definition.validate();
@@ -73,6 +100,8 @@ public final class WorkflowAgent implements Agent {
 		this.registry = Objects.requireNonNull(builder.registry, "registry must not be null");
 		this.mapper = Objects.requireNonNull(builder.mapper, "mapper must not be null");
 		this.subflowMaxDepth = builder.subflowMaxDepth;
+		this.inputSchema = compileSchema(definition.inputSchema());
+		this.outputSchema = compileSchema(definition.outputSchema());
 	}
 
 	public static Builder builder(WorkflowDefinition definition) {
@@ -88,6 +117,34 @@ public final class WorkflowAgent implements Agent {
 
 	public WorkflowDefinition definition() {
 		return definition;
+	}
+
+	private static Schema compileSchema(String schemaText) {
+		return schemaText == null ? null : SCHEMAS.getSchema(schemaText);
+	}
+
+	private static void validate(Map<String, Object> value, Schema schema, String boundary) {
+		if (schema == null) {
+			return;
+		}
+		JsonNode node;
+		try {
+			node = JSON.valueToTree(value);
+		}
+		catch (RuntimeException exception) {
+			throw new WorkflowValidationException("Workflow " + boundary + " is not representable as JSON",
+					List.of(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_SCHEMA_MALFORMED, "$",
+							"Workflow " + boundary + " is not representable as JSON: " + exception.getMessage())));
+		}
+		List<AgentResult.OutputValidationIssue> issues = new ArrayList<>();
+		for (Error error : schema.validate(node)) {
+			issues.add(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_SCHEMA_VIOLATION,
+					error.getInstanceLocation().toString(), error.getMessage()));
+		}
+		if (!issues.isEmpty()) {
+			throw new WorkflowValidationException(
+					"Workflow " + boundary + " does not match the declared " + boundary + "Schema", issues);
+		}
 	}
 
 	public static final class Builder {
@@ -204,44 +261,51 @@ public final class WorkflowAgent implements Agent {
 			}
 		}
 
-		private void runSafely() {
-			try {
-				ExecutionResult result = run();
-				if (!cancelled) {
-					if (result.suspension != null) {
-						String token = register(result.continuation);
-						AgentOutcome outcome = new AgentOutcome(AgentOutcome.Status.SUSPENDED, result.data.messages,
-								result.data.state, result.data.usage(),
-								new AgentOutcome.Suspension(token, result.suspension.prompts()));
-						emit(new AgentEvent.Finished(outcome));
-					}
-					else {
-						AgentOutcome outcome = AgentOutcome.completed(result.data.messages, result.data.state,
-								result.data.usage());
-						emit(new AgentEvent.Finished(outcome));
-					}
-					subscriber.onComplete();
+	private void runSafely() {
+		try {
+			ExecutionResult result = run();
+			if (!cancelled) {
+				if (result.suspension != null) {
+					String token = register(result.continuation);
+					AgentOutcome outcome = new AgentOutcome(AgentOutcome.Status.SUSPENDED, result.data.messages,
+							result.data.state, result.data.usage(),
+							new AgentOutcome.Suspension(token, result.suspension.prompts()));
+					emit(new AgentEvent.Finished(outcome));
 				}
-			}
-			catch (Throwable error) {
-				if (!cancelled) {
-					subscriber.onError(error);
+				else {
+					// The output boundary: a completed delivery must match the declared
+					// output schema, whatever path (fresh run or resume) produced it.
+					validate(result.data.state, outputSchema, "output");
+					AgentOutcome outcome = AgentOutcome.completed(result.data.messages, result.data.state,
+							result.data.usage());
+					emit(new AgentEvent.Finished(outcome));
 				}
+				subscriber.onComplete();
 			}
 		}
+		catch (Throwable error) {
+			if (!cancelled) {
+				subscriber.onError(error);
+			}
+		}
+	}
 
-		private ExecutionResult run() {
-			context.control().assertActive();
-			if (request.resumeToken() != null) {
-				StoredContinuation stored = continuations.remove(request.resumeToken());
-				if (stored == null || !stored.matches(context)) {
-					throw new IllegalArgumentException("Unknown or unauthorized workflow resume token");
-				}
-				return stored.continuation.resume(request, context);
+	private ExecutionResult run() {
+		context.control().assertActive();
+		if (request.resumeToken() != null) {
+			StoredContinuation stored = continuations.remove(request.resumeToken());
+			if (stored == null || !stored.matches(context)) {
+				throw new IllegalArgumentException("Unknown or unauthorized workflow resume token");
 			}
-			RunData data = new RunData(request);
-			return executeSteps(definition.steps(), 0, data, context);
+			// Inputs were validated on the fresh run that produced this continuation;
+			// a resume request carries the continuation's state forward.
+			return stored.continuation.resume(request, context);
 		}
+		RunData data = new RunData(request);
+		// The input boundary: refuse before any step, tool or agent side effect.
+		validate(data.inputs, inputSchema, "input");
+		return executeSteps(definition.steps(), 0, data, context);
+	}
 
 		private String register(Continuation continuation) {
 			String token = definition.id() + ":" + definition.version() + ":" + UUID.randomUUID();
@@ -654,7 +718,9 @@ public final class WorkflowAgent implements Agent {
 		}
 
 		private ExecutionResult continueWith(Continuation next) {
-			return new ExecutionResult(null, suspension, (request, context) -> {
+			// The wrapper keeps the suspension-point snapshot: the suspended outcome is
+			// built from this data before the continuation ever runs.
+			return new ExecutionResult(data, suspension, (request, context) -> {
 				ExecutionResult result = continuation.resume(request, context);
 				return result.suspension == null ? next.resume(request, context) : result;
 			});
