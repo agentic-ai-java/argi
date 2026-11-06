@@ -45,3 +45,14 @@ checkstyle-check: ## Checkstyle Check the code and output to target/checkstyle-r
 	@$(LOG_TARGET)
 	./mvnw -Dcheckstyle.skip=false -Dcheckstyle.output.file=checkstyle-report.xml checkstyle:check
 
+.PHONY: bom-consistency-check
+bom-consistency-check: ## Check that the root pom and the published BOM stay aligned (issue #295)
+	@$(LOG_TARGET)
+	python tools/scripts/check-bom-consistency.py
+
+.PHONY: bom-consumer-verify
+bom-consumer-verify: ## Verify the managed versions as an out-of-repo consumer importing only argi-bom (issue #295)
+	@$(LOG_TARGET)
+	./mvnw -B -pl argi-bom -am install -DskipTests=true
+	python tools/scripts/check-bom-consistency.py --verify-consumer --mvn ./mvnw
+
