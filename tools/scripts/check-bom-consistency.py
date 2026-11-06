@@ -99,21 +99,24 @@ def check_source_consistency() -> bool:
     return aligned
 
 
-def bom_version(bom_props: dict[str, str], group_id: str, artifact_id: str) -> str | None:
-    """Reads the managed version of one artifact from the BOM dependencyManagement."""
+def managed_versions(bom_props: dict[str, str]) -> dict[tuple[str, str], str]:
+    """Reads the managed group:artifact -> version map from the BOM dependencyManagement,
+    resolving property references through the BOM properties."""
     root = ET.parse(BOM_POM).getroot()
     management = root.find("m:dependencyManagement/m:dependencies", NS)
     if management is None:
-        return None
+        return {}
+    managed: dict[tuple[str, str], str] = {}
     for dependency in management.findall("m:dependency", NS):
-        if (dependency.findtext("m:groupId", namespaces=NS) == group_id
-                and dependency.findtext("m:artifactId", namespaces=NS) == artifact_id):
-            version = dependency.findtext("m:version", default="", namespaces=NS).strip()
-            match = re.fullmatch(r"\$\{([^}]+)\}", version)
-            if match:
-                return bom_props.get(match.group(1))
-            return version
-    return None
+        group_id = dependency.findtext("m:groupId", default="", namespaces=NS).strip()
+        artifact_id = dependency.findtext("m:artifactId", default="", namespaces=NS).strip()
+        version = dependency.findtext("m:version", default="", namespaces=NS).strip()
+        match = re.fullmatch(r"\$\{([^}]+)\}", version)
+        if match:
+            version = bom_props.get(match.group(1), "")
+        if group_id and artifact_id and version:
+            managed[(group_id, artifact_id)] = version
+    return managed
 
 
 CONSUMER_POM_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
@@ -184,6 +187,9 @@ def verify_consumer(mvn: str) -> bool:
             print("Consumer verification could not resolve the BOM; is argi-bom installed "
                   f"at version {bom_version_value}? Run: mvn -pl argi-bom -am install -DskipTests")
             return False
+        if not output_file.exists():
+            print(f"dependency:list did not write {output_file}")
+            return False
 
         resolved: dict[tuple[str, str], str] = {}
         for line in output_file.read_text(encoding="utf-8").splitlines():
@@ -193,9 +199,10 @@ def verify_consumer(mvn: str) -> bool:
             if match:
                 resolved[(match.group(1), match.group(2))] = match.group(4)
 
+        managed = managed_versions(bom_props)
         aligned = True
         for group_id, artifact_id in CONSUMER_ARTIFACTS:
-            expected = bom_version(bom_props, group_id, artifact_id)
+            expected = managed.get((group_id, artifact_id))
             effective = resolved.get((group_id, artifact_id))
             if expected is None:
                 print(f"UNMANAGED {group_id}:{artifact_id} is not managed by argi-bom")
