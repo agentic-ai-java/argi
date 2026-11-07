@@ -45,6 +45,8 @@ jobs:
       - uses: ./tools/github-actions/setup-deps
       - run: make tools
       - run: make checkstyle-check
+      - name: Check root pom and published BOM version alignment
+        run: make bom-consistency-check
   test:
     if: (github.repository == 'agentic-ai-java/argi')
     runs-on: ubuntu-22.04
@@ -78,6 +80,8 @@ jobs:
       - name: Build release artifacts without signing or publishing
         run: ./mvnw -B -Prelease -Dgpg.skip=true -DskipTests=true package
       - run: python3 tools/scripts/verify-release-artifacts.py --create-bundle target/central-publishing/central-bundle.zip
+      - name: Verify managed BOM versions as an out-of-repo consumer
+        run: make bom-consumer-verify
       - name: Verify packaged Studio UI
         shell: bash
         run: |
