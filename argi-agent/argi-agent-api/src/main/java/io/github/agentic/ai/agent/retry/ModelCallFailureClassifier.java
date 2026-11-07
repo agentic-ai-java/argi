@@ -13,15 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.agentic.ai.agent.orchestration.interceptor.modelretry;
+package io.github.agentic.ai.agent.retry;
 
-final class RetryDelayCalculator {
+/**
+ * Classifies a failed model call into a {@link ModelCallFailureCategory}.
+ *
+ * <p>
+ * Implementations must classify from the failure type and its cause chain. Matching
+ * on the text of an exception message is not a classification: the same message can
+ * describe a permanent rejection or a transient outage.
+ */
+@FunctionalInterface
+public interface ModelCallFailureClassifier {
 
-	private RetryDelayCalculator() {
-	}
-
-	static long nextDelay(long currentDelay, double multiplier, long maxDelay) {
-		return Math.min((long) (currentDelay * multiplier), maxDelay);
-	}
+	/**
+	 * Classifies a failure.
+	 * @param failure the failure raised by the model call
+	 * @return the classified failure, never {@code null}
+	 */
+	ModelCallFailure classify(Throwable failure);
 
 }

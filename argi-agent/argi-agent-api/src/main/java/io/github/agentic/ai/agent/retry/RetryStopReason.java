@@ -13,23 +13,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.agentic.ai.agent.orchestration.interceptor.modelretry;
+package io.github.agentic.ai.agent.retry;
 
-import org.junit.jupiter.api.Test;
+/**
+ * Why a retry sequence stopped instead of starting another attempt.
+ */
+public enum RetryStopReason {
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+	/** The configured number of attempts was used up. */
+	ATTEMPTS_EXHAUSTED,
 
-class RetryDelayCalculatorTest {
+	/** The failure is not retryable under the active policy. */
+	NON_RETRYABLE,
 
-	@Test
-	void exponentialDelayIsCappedWithoutReadingTheClock() {
-		assertEquals(150, RetryDelayCalculator.nextDelay(100, 3.0, 150));
-		assertEquals(150, RetryDelayCalculator.nextDelay(150, 3.0, 150));
-	}
+	/** The run deadline does not allow another attempt. */
+	DEADLINE_EXCEEDED,
 
-	@Test
-	void zeroDelayRemainsZero() {
-		assertEquals(0, RetryDelayCalculator.nextDelay(0, 2.0, 30_000));
-	}
+	/** The attempt was cancelled. */
+	CANCELLED,
+
+	/** The execution guard stopped the run. */
+	EXECUTION_STOPPED
 
 }

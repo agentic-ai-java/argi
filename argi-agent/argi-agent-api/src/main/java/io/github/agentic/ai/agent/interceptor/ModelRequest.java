@@ -20,6 +20,7 @@ import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
 import io.github.agentic.ai.api.chat.GenerationOptions;
 import io.github.agentic.ai.api.tool.ToolRegistry;
+import io.github.agentic.ai.runtime.execution.ExecutionGuard;
 import io.github.agentic.ai.runtime.execution.TrustedExecutionContext;
 
 import java.util.ArrayList;
@@ -62,6 +63,12 @@ public class ModelRequest {
 	// context map.
 	private final TrustedExecutionContext trustedExecutionContext;
 
+	// The guard of the run that owns this request. It carries the liveness and the
+	// deadline of the run to the interceptors, so that a retry sequence can be
+	// bounded by the run itself. It never leaves the process: the request attributes
+	// are passed to the provider and must stay free of runtime objects.
+	private final ExecutionGuard executionGuard;
+
 	public ModelRequest(ChatMessage systemMessage, List<ChatMessage> messages, GenerationOptions options,
 			ChatClient chatClient, ToolRegistry toolRegistry, List<String> tools, boolean toolSelectionSpecified,
 			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
@@ -74,6 +81,15 @@ public class ModelRequest {
 			ChatClient chatClient, ToolRegistry toolRegistry, List<String> tools, boolean toolSelectionSpecified,
 			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
 			Map<String, Object> attributes, TrustedExecutionContext trustedExecutionContext) {
+		this(systemMessage, messages, options, chatClient, toolRegistry, tools, toolSelectionSpecified,
+				dynamicToolRegistry, toolDescriptions, context, attributes, trustedExecutionContext, null);
+	}
+
+	public ModelRequest(ChatMessage systemMessage, List<ChatMessage> messages, GenerationOptions options,
+			ChatClient chatClient, ToolRegistry toolRegistry, List<String> tools, boolean toolSelectionSpecified,
+			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
+			Map<String, Object> attributes, TrustedExecutionContext trustedExecutionContext,
+			ExecutionGuard executionGuard) {
 		if (systemMessage != null && systemMessage.role() != ChatRole.SYSTEM) {
 			throw new IllegalArgumentException("systemMessage must have the SYSTEM role");
 		}
@@ -90,6 +106,7 @@ public class ModelRequest {
 		this.context = new HashMap<>(context);
 		this.attributes = Map.copyOf(attributes);
 		this.trustedExecutionContext = trustedExecutionContext;
+		this.executionGuard = executionGuard;
 	}
 
 	public static Builder builder() {
@@ -107,7 +124,8 @@ public class ModelRequest {
 			.toolDescriptions(request.toolDescriptions)
 			.context(request.context)
 			.attributes(request.attributes)
-			.trustedExecutionContext(request.trustedExecutionContext);
+			.trustedExecutionContext(request.trustedExecutionContext)
+			.executionGuard(request.executionGuard);
 		copy.toolSelectionSpecified = request.toolSelectionSpecified;
 		return copy;
 	}
@@ -167,6 +185,16 @@ public class ModelRequest {
 		return Optional.ofNullable(trustedExecutionContext);
 	}
 
+	/**
+	 * The guard of the run that issued this model call, when the run carries one. The
+	 * guard reports the liveness and the deadline of the run, so that an interceptor
+	 * that repeats the call can stop the sequence when the run is cancelled or out of
+	 * time. It is never passed to the provider.
+	 */
+	public Optional<ExecutionGuard> getExecutionGuard() {
+		return Optional.ofNullable(executionGuard);
+	}
+
 	public Map<String, String> getToolDescriptions() {
 		return toolDescriptions;
 	}
@@ -208,6 +236,8 @@ public class ModelRequest {
 		private Map<String, Object> attributes = Map.of();
 
 		private TrustedExecutionContext trustedExecutionContext;
+
+		private ExecutionGuard executionGuard;
 
 		public Builder systemMessage(ChatMessage systemMessage) {
 			this.systemMessage = systemMessage;
@@ -277,10 +307,19 @@ public class ModelRequest {
 			return this;
 		}
 
+		/**
+		 * Sets the guard of the run that owns this model call. The guard is propagated
+		 * by the engine and stays inside the process.
+		 */
+		public Builder executionGuard(ExecutionGuard executionGuard) {
+			this.executionGuard = executionGuard;
+			return this;
+		}
+
 		public ModelRequest build() {
 			return new ModelRequest(systemMessage, messages, options, chatClient, toolRegistry, tools,
 					toolSelectionSpecified, dynamicToolRegistry, toolDescriptions, context, attributes,
-					trustedExecutionContext);
+					trustedExecutionContext, executionGuard);
 		}
 
 	}
