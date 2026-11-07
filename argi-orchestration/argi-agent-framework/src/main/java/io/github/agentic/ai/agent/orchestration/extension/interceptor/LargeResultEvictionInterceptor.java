@@ -151,15 +151,19 @@ public class LargeResultEvictionInterceptor extends ToolInterceptor {
 		String sanitizedId = sanitizeToolCallId(toolCallId);
 		String filePath = LARGE_RESULTS_DIR + sanitizedId;
 
-		// Write content to filesystem via backend
-		if (backend != null) {
-			WriteResult writeResult = backend.write(filePath, content);
-			if (writeResult.getError() != null) {
-				// Log warning but continue with eviction message
-				log.warn("Failed to write large result to filesystem: {}", writeResult.getError());
-			}
-		} else {
+		// Write content to filesystem via backend. A failed write must not produce a
+		// pointer to a file which was never written.
+		if (backend == null) {
 			log.warn("Backend not configured, large result not persisted to filesystem");
+			return evictionFailed(response,
+					"The tool result was too large and could not be persisted, because no filesystem backend is "
+							+ "configured. The result is not available.");
+		}
+		WriteResult writeResult = backend.write(filePath, content);
+		if (writeResult.getError() != null) {
+			log.warn("Failed to write large result to filesystem: {}", writeResult.getError());
+			return evictionFailed(response, "The tool result was too large and could not be persisted: "
+					+ writeResult.getError() + ". The result is not available.");
 		}
 
 		// Extract first N lines as sample
@@ -175,6 +179,26 @@ public class LargeResultEvictionInterceptor extends ToolInterceptor {
 			.toolName(response.getToolName())
 			.toolCallId(response.getToolCallId())
 			.status("evicted_to_filesystem")
+			.metadata(response.getMetadata())
+			.build();
+	}
+
+	/**
+	 * Builds the response of an eviction which did not persist the result.
+	 *
+	 * <p>
+	 * The response states that the result is not available. It never points to a file
+	 * which was not written.
+	 * @param response the original tool response
+	 * @param reason the reason why the result could not be persisted
+	 * @return the failed eviction response
+	 */
+	private ToolCallResponse evictionFailed(ToolCallResponse response, String reason) {
+		return ToolCallResponse.builder()
+			.content(reason)
+			.toolName(response.getToolName())
+			.toolCallId(response.getToolCallId())
+			.status(ToolCallResponse.ERROR_STATUS)
 			.metadata(response.getMetadata())
 			.build();
 	}
