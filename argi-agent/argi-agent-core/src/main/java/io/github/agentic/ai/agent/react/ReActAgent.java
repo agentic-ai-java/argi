@@ -345,16 +345,20 @@ public final class ReActAgent implements Agent {
 				context.control().assertActive();
 				ToolRegistry availableTools = resolveTools(state);
 				AtomicReference<ToolRegistry> effectiveTools = new AtomicReference<>(availableTools);
-				ChatResponse response = modelTurn(messages, state, usage, availableTools, effectiveTools);
-				if (response.messages().isEmpty()) {
-					throw new IllegalStateException("Model response did not contain an assistant message");
+				ChatResponse response = modelTurn(messages, state, usage, availableTools, effectiveTools, turn);
+				// The turn contract guarantees exactly one assistant message: direct
+				// responses are validated by ModelResponse, and interceptor-supplied
+				// streams are validated here, so the turn's complete snapshot and its
+				// streamed deltas share exactly one invocation-local ID (issue #280).
+				if (response.messages().size() != 1 || response.messages().get(0).role() != ChatRole.ASSISTANT) {
+					throw new IllegalStateException("Model response must contain exactly one assistant message");
 				}
-				for (ChatMessage message : response.messages()) {
-					messages.add(message);
-					emit(new AgentEvent.Message("model-" + turn, message));
-				}
+				ChatMessage message = response.messages().get(0);
+				String messageId = modelMessageId(turn);
+				messages.add(message);
+				emit(new AgentEvent.Message(messageId, message));
 				if (response.toolCalls().isEmpty()) {
-					finish(messages, state, usage.value(), response.messages().get(response.messages().size() - 1));
+					finish(messages, state, usage.value(), message, messageId);
 					return;
 				}
 				for (ToolCall call : response.toolCalls()) {
@@ -366,12 +370,24 @@ public final class ReActAgent implements Agent {
 						return;
 					}
 					if (step.returnDirect()) {
-						finish(messages, state, usage.value(), messages.get(messages.size() - 1));
+						finish(messages, state, usage.value(), messages.get(messages.size() - 1),
+								toolMessageId(call));
 						return;
 					}
 				}
 			}
 			throw new IllegalStateException("ReAct agent exceeded the configured turn limit");
+		}
+
+		// Message-ID scheme for the invocation-local AgentEvent contract (issue #280):
+		// exactly one ID per logical message, shared by its streamed deltas and its
+		// complete snapshot, centralized so the two can never drift apart again.
+		private static String modelMessageId(int turn) {
+			return "model-" + turn;
+		}
+
+		private static String toolMessageId(ToolCall call) {
+			return "tool-" + call.id();
 		}
 
 		private ToolRegistry resolveTools(Map<String, Object> state) {
@@ -395,8 +411,13 @@ public final class ReActAgent implements Agent {
 
 		private ChatResponse modelTurn(List<ChatMessage> messages, Map<String, Object> state,
 				UsageAccumulator usage, ToolRegistry availableTools,
-				AtomicReference<ToolRegistry> effectiveTools) {
+				AtomicReference<ToolRegistry> effectiveTools, int turn) {
 			context.control().assertActive();
+			// Streamed deltas and the turn's complete snapshot share the invocation-local
+			// model-<turn> ID (issue #280): a consumer assembles streamed text per
+			// message ID and seals it with the same-ID snapshot, never with a fixed
+			// stream marker shared by every turn.
+			String streamMessageId = modelMessageId(turn);
 			ModelRequest request = ModelRequest.builder().messages(messages).toolRegistry(availableTools)
 				.trustedExecutionContext(context.trusted())
 				.executionGuard(context.control())
@@ -406,7 +427,8 @@ public final class ReActAgent implements Agent {
 			// The effective tool set is only known at the end of the interceptor chain,
 			// where selection semantics are resolved; execution in the same turn must use
 			// exactly the set the model was shown (issue #268: declared and executed agree).
-			ModelCallHandler handler = modelRequest -> invokeModel(modelRequest, usage, effectiveTools);
+			ModelCallHandler handler = modelRequest -> invokeModel(modelRequest, usage, effectiveTools,
+					streamMessageId);
 			for (int index = interceptors.size() - 1; index >= 0; index--) {
 				ModelInterceptor interceptor = interceptors.get(index);
 				ModelCallHandler next = handler;
@@ -414,7 +436,7 @@ public final class ReActAgent implements Agent {
 			}
 			ModelResponse response = Objects.requireNonNull(handler.call(request), "model interceptor returned no response");
 			if (response.isStreaming()) {
-				return collectModelStream(response.getStream(), usage);
+				return collectModelStream(response.getStream(), usage, streamMessageId);
 			}
 			return response.getChatResponse();
 		}
@@ -470,14 +492,14 @@ public final class ReActAgent implements Agent {
 		}
 
 		private ModelResponse invokeModel(ModelRequest request, UsageAccumulator usage,
-				AtomicReference<ToolRegistry> effectiveTools) {
+				AtomicReference<ToolRegistry> effectiveTools, String streamMessageId) {
 			ToolRegistry effective = effectiveToolSet(request);
 			effectiveTools.set(effective);
 			ChatClient selectedClient = request.getChatClient() != null ? request.getChatClient() : chatClient;
 			ChatRequest chatRequest = new ChatRequest(composeMessages(request), effective.definitions(),
 					request.getOptions(), request.getAttributes());
 			if (streamModel) {
-				return ModelResponse.of(collectModelStream(selectedClient, chatRequest, usage));
+				return ModelResponse.of(collectModelStream(selectedClient, chatRequest, usage, streamMessageId));
 			}
 			CompletableFuture<ChatResponse> future = selectedClient.call(chatRequest).toCompletableFuture();
 			toolOperation.set(future);
@@ -495,12 +517,15 @@ public final class ReActAgent implements Agent {
 			}
 		}
 
-		private ChatResponse collectModelStream(ChatClient selectedClient, ChatRequest request, UsageAccumulator usage) {
+		private ChatResponse collectModelStream(ChatClient selectedClient, ChatRequest request, UsageAccumulator usage,
+				String messageId) {
 			return collectModelStream(
-					Objects.requireNonNull(selectedClient.stream(request), "chat client returned no stream"), usage);
+					Objects.requireNonNull(selectedClient.stream(request), "chat client returned no stream"), usage,
+					messageId);
 		}
 
-		private ChatResponse collectModelStream(Flow.Publisher<ChatEvent> publisher, UsageAccumulator usage) {
+		private ChatResponse collectModelStream(Flow.Publisher<ChatEvent> publisher, UsageAccumulator usage,
+				String messageId) {
 			CompletableFuture<ChatResponse> future = new CompletableFuture<>();
 			try (AutoCloseable ignored = context.control().onLoss(() -> {
 				Flow.Subscription subscription = modelSubscription.getAndSet(null);
@@ -534,7 +559,7 @@ public final class ReActAgent implements Agent {
 					public void onNext(ChatEvent event) {
 						context.control().assertActive();
 						switch (event.type()) {
-							case TEXT_DELTA -> emit(new AgentEvent.MessageDelta("model-stream", event.text()));
+							case TEXT_DELTA -> emit(new AgentEvent.MessageDelta(messageId, event.text()));
 							case USAGE -> emit(new AgentEvent.UsageUpdate(usage.valueIncluding(event.usage())));
 							case RESPONSE -> response = event.response();
 							case TOOL_CALL -> emit(new AgentEvent.Progress("model.tool-call", Map.of("name",
@@ -632,7 +657,7 @@ public final class ReActAgent implements Agent {
 				}
 			ChatMessage message = result.toMessage(call);
 			messages.add(message);
-			emit(new AgentEvent.Message("tool-" + call.id(), message));
+			emit(new AgentEvent.Message(toolMessageId(call), message));
 		}
 
 		private void admitPatch(String toolName, ToolResult result, Map<String, Object> patch,
@@ -666,7 +691,7 @@ public final class ReActAgent implements Agent {
 		}
 
 		private void finish(List<ChatMessage> messages, Map<String, Object> state, Usage usage,
-				ChatMessage terminal) {
+				ChatMessage terminal, String terminalMessageId) {
 			Map<String, Object> outputs = new LinkedHashMap<>(state);
 			if (outputSchema != null && outputFinalizer != null) {
 				AgentResult result = outputFinalizer.finalizeOutput(terminal, outputSchema, usage, context.control());
@@ -676,11 +701,14 @@ public final class ReActAgent implements Agent {
 				// A successful repair replaces the delivered terminal: the message that
 				// actually passed validation becomes the final message while the failed
 				// original stays in history, and stream consumers see it through the
-				// complete-message event before the finished snapshot.
+				// complete-message event before the finished snapshot. The repaired
+				// message is emitted under the replaced terminal's ID (issue #280), so
+				// an ID-keyed consumer view replaces the failed message and ends the
+				// run consistent instead of accumulating a separate repair message.
 				ChatMessage delivered = result.message();
 				if (delivered != null && !Objects.equals(delivered.text(), terminal.text())) {
 					messages.add(delivered);
-					emit(new AgentEvent.Message("model-repair", delivered));
+					emit(new AgentEvent.Message(terminalMessageId, delivered));
 				}
 				if (result.data() != null) {
 					outputs.put("structuredOutput", result.data());
