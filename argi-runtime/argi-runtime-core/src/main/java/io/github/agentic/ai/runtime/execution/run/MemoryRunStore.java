@@ -17,10 +17,14 @@
 package io.github.agentic.ai.runtime.execution.run;
 
 import io.github.agentic.ai.runtime.execution.TrustedExecutionContext;
+import io.github.agentic.ai.runtime.execution.run.metrics.PersistedRunStateQuery;
+import io.github.agentic.ai.runtime.execution.run.metrics.PersistedRunStateReader;
+import io.github.agentic.ai.runtime.execution.run.metrics.PersistedRunStateSnapshot;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -37,7 +41,7 @@ import static java.util.Objects.requireNonNull;
  * It is NOT persistent, cannot support durable mode and performs no scheduling or I/O.
  * Sharing this instance is required for single-writer behavior within a JVM.
  */
-public final class MemoryRunStore implements RunStore {
+public final class MemoryRunStore implements RunStore, PersistedRunStateReader {
 
 	private static final RunStoreCapabilities CAPABILITIES = new RunStoreCapabilities(false, true, true, true, true,
 			true);
@@ -57,6 +61,24 @@ public final class MemoryRunStore implements RunStore {
 	@Override
 	public RunStoreCapabilities capabilities() {
 		return CAPABILITIES;
+	}
+
+	@Override
+	public synchronized PersistedRunStateSnapshot readCounts(PersistedRunStateQuery query) {
+		requireNonNull(query, "query cannot be null");
+		Map<String, RunSnapshot> runs = namespaces.containsKey(query.namespace())
+				? namespaces.get(query.namespace()).runs
+				: Map.of();
+		Map<RunState, Long> counts = new HashMap<>();
+		for (RunState state : query.states().isEmpty() ? EnumSet.allOf(RunState.class) : query.states()) {
+			counts.put(state, 0L);
+		}
+		for (RunSnapshot run : runs.values()) {
+			if (counts.containsKey(run.state())) {
+				counts.put(run.state(), counts.get(run.state()) + 1);
+			}
+		}
+		return PersistedRunStateSnapshot.fresh(counts, clock.instant());
 	}
 
 	@Override
