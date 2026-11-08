@@ -15,8 +15,13 @@
  */
 package io.github.agentic.ai.workflow;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 /** Structural validation performed before a definition can be published. */
 public final class WorkflowDefinitionValidator {
@@ -33,6 +38,74 @@ public final class WorkflowDefinitionValidator {
 		}
 		Set<String> ids = new HashSet<>();
 		definition.steps().forEach(step -> validateStep(step, ids));
+	}
+
+	/**
+	 * Detects cycles among the subflow references that the registry can already
+	 * resolve, so a self-referencing or mutually referencing set of definitions is
+	 * rejected at publish time instead of exhausting the JVM stack at run time
+	 * (issue #273). The resolver maps an {@code id@version} reference to an already
+	 * published definition; unresolvable references are legal forward references and
+	 * are skipped here — the run keeps its own call chain as the second line of
+	 * defense.
+	 */
+	public static void detectSubflowCycles(WorkflowDefinition definition,
+			Function<String, Optional<WorkflowDefinition>> resolver) {
+		String root = definition.id() + "@" + definition.version();
+		List<String> chain = new ArrayList<>();
+		Set<String> visited = new HashSet<>();
+		chain.add(root);
+		visit(definition, resolver, chain, visited);
+	}
+
+	private static void visit(WorkflowDefinition definition, Function<String, Optional<WorkflowDefinition>> resolver,
+			List<String> chain, Set<String> visited) {
+		Set<String> references = new LinkedHashSet<>();
+		collectSubflowReferences(definition.steps(), references);
+		for (String reference : references) {
+			int cut = chain.indexOf(reference);
+			if (cut >= 0) {
+				throw new IllegalArgumentException("workflow subflow reference closes a cycle: " + String.join(" -> ",
+						chain.subList(cut, chain.size())) + " -> " + reference);
+			}
+			if (!visited.add(reference)) {
+				continue;
+			}
+			Optional<WorkflowDefinition> resolved = resolver.apply(reference);
+			if (resolved.isEmpty()) {
+				continue;
+			}
+			chain.add(reference);
+			visit(resolved.get(), resolver, chain, visited);
+			chain.remove(chain.size() - 1);
+		}
+	}
+
+	private static void collectSubflowReferences(List<WorkflowStep> steps, Set<String> references) {
+		for (WorkflowStep step : steps) {
+			collectSubflowReferences(step, references);
+		}
+	}
+
+	private static void collectSubflowReferences(WorkflowStep step, Set<String> references) {
+		if (step instanceof WorkflowStep.Subflow subflow) {
+			references.add(subflow.workflowId() + "@" + subflow.version());
+		}
+		else if (step instanceof WorkflowStep.Sequence sequence) {
+			collectSubflowReferences(sequence.steps(), references);
+		}
+		else if (step instanceof WorkflowStep.Condition condition) {
+			collectSubflowReferences(condition.whenTrue(), references);
+			if (condition.whenFalse() != null) {
+				collectSubflowReferences(condition.whenFalse(), references);
+			}
+		}
+		else if (step instanceof WorkflowStep.Parallel parallel) {
+			parallel.branches().forEach(branch -> collectSubflowReferences(branch, references));
+		}
+		else if (step instanceof WorkflowStep.Loop loop) {
+			collectSubflowReferences(loop.body(), references);
+		}
 	}
 
 	private static void validateStep(WorkflowStep step, Set<String> ids) {
