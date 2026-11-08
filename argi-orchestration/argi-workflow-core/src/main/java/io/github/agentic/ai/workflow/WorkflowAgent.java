@@ -330,7 +330,11 @@ public final class WorkflowAgent implements Agent {
 	 * already on the chain closes a cycle, a chain at the configured depth limit is
 	 * refused before recursing, and both fail with a domain error locating the
 	 * reference chain instead of exhausting the JVM stack. The chain lives on the run
-	 * data, so it survives suspensions and is copied per parallel branch.
+	 * data, so it survives suspensions and is copied per parallel branch. A
+	 * suspension removes the entry from the chain on the way out: the resumed work
+	 * continues inside the subflow, and re-entering the same subflow from the resumed
+	 * steps is sequential reuse, not a cycle — the chain check still bounds whatever
+	 * the resumed segment does.
 	 */
 	private ExecutionResult executeSubflow(WorkflowStep.Subflow subflow, RunData data, AgentExecutionContext context) {
 		String node = subflow.workflowId() + "@" + subflow.version();

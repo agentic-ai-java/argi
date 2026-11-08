@@ -15,6 +15,7 @@
  */
 package io.github.agentic.ai.workflow;
 
+import io.github.agentic.ai.agent.Agent;
 import io.github.agentic.ai.agent.AgentExecutionContext;
 import io.github.agentic.ai.agent.AgentOutcome;
 import io.github.agentic.ai.agent.AgentRequest;
@@ -32,6 +33,7 @@ import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Flow;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -201,26 +203,30 @@ class WorkflowSubflowBoundaryTest {
 	void cancellationInsideASubflowTerminatesNormally() throws Exception {
 		WorkflowRegistry registry = new WorkflowRegistry();
 		WorkflowDefinition shared = new WorkflowDefinition("shared", "1",
-				List.of(new WorkflowStep.Tool("hang", "hang", Map.of())));
+				List.of(new WorkflowStep.Agent("stop", "ref")));
 		registry.publish(shared);
 		WorkflowDefinition caller = new WorkflowDefinition("caller", "1",
 				List.of(new WorkflowStep.Subflow("call", "shared", "1")));
 		registry.publish(caller);
-		Tool hanging = new Tool() {
-			public io.github.agentic.ai.api.chat.ToolDefinition definition() {
-				return new io.github.agentic.ai.api.chat.ToolDefinition("hang", "hang", "{}");
-			}
+		// The fake agent cancels its own run from inside the subflow: the failure must
+		// propagate out of the nested executeSteps instead of being swallowed.
+		Agent cancellingAgent = (request, agentContext) -> subscriber -> {
+			agentContext.control().cancel();
+			subscriber.onSubscribe(new Flow.Subscription() {
+				public void request(long demand) {
+					if (demand > 0) {
+						subscriber.onError(new IllegalStateException("cancelled inside the subflow"));
+						subscriber.onComplete();
+					}
+				}
 
-			public CompletionStage<ToolResult> execute(io.github.agentic.ai.api.chat.ToolCall call,
-					ToolContext toolContext) {
-				toolContext.attributes().put("cancel", true);
-				return CompletableFuture.completedFuture(ToolResult.text("never observed"));
-			}
+				public void cancel() {
+				}
+			});
 		};
 		WorkflowAgent workflow = WorkflowAgent.builder(caller).registry(registry)
-				.tools(new ToolRegistry(List.of(hanging))).build();
+				.agents(Map.of("ref", cancellingAgent)).build();
 		try (AgentExecutionContext context = context()) {
-			context.control().cancel();
 			assertThrows(Exception.class, () -> workflow
 					.invoke(new AgentRequest(List.of(ChatMessage.user("hello")), Map.of(), null), context)
 					.get(3, TimeUnit.SECONDS));
