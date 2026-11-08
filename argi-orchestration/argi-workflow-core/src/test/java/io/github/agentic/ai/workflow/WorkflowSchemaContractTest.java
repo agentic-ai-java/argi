@@ -163,7 +163,8 @@ class WorkflowSchemaContractTest {
 
 	@Test
 	void resumeSkipsInputRevalidationButStillAcceptsValidOutputs() throws Exception {
-		WorkflowAgent workflow = suspendingWorkflow("done");
+		AtomicInteger resumedInvocations = new AtomicInteger();
+		WorkflowAgent workflow = suspendingWorkflow("done", resumedInvocations);
 		try (AgentExecutionContext first = context()) {
 			AgentOutcome suspended = workflow
 					.invoke(new AgentRequest(List.of(ChatMessage.user("hello")), Map.of("question", "why"), null),
@@ -178,13 +179,16 @@ class WorkflowSchemaContractTest {
 				// The resume request carries no inputs at all: the schema was enforced
 				// on the fresh run, the continuation owns the state afterwards.
 				assertEquals(AgentOutcome.Status.COMPLETED, outcome.status());
+				// The continuation must resume the agent exactly once: a second
+				// invocation with the same token would be rejected by a real agent.
+				assertEquals(1, resumedInvocations.get());
 			}
 		}
 	}
 
 	@Test
 	void resumeOutputViolationStillFails() throws Exception {
-		WorkflowAgent workflow = suspendingWorkflow(42);
+		WorkflowAgent workflow = suspendingWorkflow(42, new AtomicInteger());
 		try (AgentExecutionContext first = context()) {
 			AgentOutcome suspended = workflow
 					.invoke(new AgentRequest(List.of(ChatMessage.user("hello")), Map.of("question", "why"), null),
@@ -227,9 +231,12 @@ class WorkflowSchemaContractTest {
 		}
 	}
 
-	private WorkflowAgent suspendingWorkflow(Object resumedValue) {
+	private WorkflowAgent suspendingWorkflow(Object resumedValue, AtomicInteger resumedInvocations) {
 		AtomicReference<Object> secondCallValue = new AtomicReference<>(resumedValue);
 		Agent agent = agent(request -> {
+			if (request.resumeToken() != null) {
+				resumedInvocations.incrementAndGet();
+			}
 			if (request.resumeToken() == null) {
 				return new AgentOutcome(AgentOutcome.Status.SUSPENDED, List.of(ChatMessage.assistant("need input")),
 						Map.of(), new Usage(1L, 1L, 2L), new AgentOutcome.Suspension("agent-token",

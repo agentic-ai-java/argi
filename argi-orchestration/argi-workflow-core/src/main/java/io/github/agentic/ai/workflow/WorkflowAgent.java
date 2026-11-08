@@ -261,51 +261,51 @@ public final class WorkflowAgent implements Agent {
 			}
 		}
 
-	private void runSafely() {
-		try {
-			ExecutionResult result = run();
-			if (!cancelled) {
-				if (result.suspension != null) {
-					String token = register(result.continuation);
-					AgentOutcome outcome = new AgentOutcome(AgentOutcome.Status.SUSPENDED, result.data.messages,
-							result.data.state, result.data.usage(),
-							new AgentOutcome.Suspension(token, result.suspension.prompts()));
-					emit(new AgentEvent.Finished(outcome));
+		private void runSafely() {
+			try {
+				ExecutionResult result = run();
+				if (!cancelled) {
+					if (result.suspension != null) {
+						String token = register(result.continuation);
+						AgentOutcome outcome = new AgentOutcome(AgentOutcome.Status.SUSPENDED, result.data.messages,
+								result.data.state, result.data.usage(),
+								new AgentOutcome.Suspension(token, result.suspension.prompts()));
+						emit(new AgentEvent.Finished(outcome));
+					}
+					else {
+						// The output boundary: a completed delivery must match the declared
+						// output schema, whatever path (fresh run or resume) produced it.
+						validate(result.data.state, outputSchema, "output");
+						AgentOutcome outcome = AgentOutcome.completed(result.data.messages, result.data.state,
+								result.data.usage());
+						emit(new AgentEvent.Finished(outcome));
+					}
+					subscriber.onComplete();
 				}
-				else {
-					// The output boundary: a completed delivery must match the declared
-					// output schema, whatever path (fresh run or resume) produced it.
-					validate(result.data.state, outputSchema, "output");
-					AgentOutcome outcome = AgentOutcome.completed(result.data.messages, result.data.state,
-							result.data.usage());
-					emit(new AgentEvent.Finished(outcome));
+			}
+			catch (Throwable error) {
+				if (!cancelled) {
+					subscriber.onError(error);
 				}
-				subscriber.onComplete();
 			}
 		}
-		catch (Throwable error) {
-			if (!cancelled) {
-				subscriber.onError(error);
-			}
-		}
-	}
 
-	private ExecutionResult run() {
-		context.control().assertActive();
-		if (request.resumeToken() != null) {
-			StoredContinuation stored = continuations.remove(request.resumeToken());
-			if (stored == null || !stored.matches(context)) {
-				throw new IllegalArgumentException("Unknown or unauthorized workflow resume token");
+		private ExecutionResult run() {
+			context.control().assertActive();
+			if (request.resumeToken() != null) {
+				StoredContinuation stored = continuations.remove(request.resumeToken());
+				if (stored == null || !stored.matches(context)) {
+					throw new IllegalArgumentException("Unknown or unauthorized workflow resume token");
+				}
+				// Inputs were validated on the fresh run that produced this continuation;
+				// a resume request carries the continuation's state forward.
+				return stored.continuation.resume(request, context);
 			}
-			// Inputs were validated on the fresh run that produced this continuation;
-			// a resume request carries the continuation's state forward.
-			return stored.continuation.resume(request, context);
+			RunData data = new RunData(request);
+			// The input boundary: refuse before any step, tool or agent side effect.
+			validate(data.inputs, inputSchema, "input");
+			return executeSteps(definition.steps(), 0, data, context);
 		}
-		RunData data = new RunData(request);
-		// The input boundary: refuse before any step, tool or agent side effect.
-		validate(data.inputs, inputSchema, "input");
-		return executeSteps(definition.steps(), 0, data, context);
-	}
 
 		private String register(Continuation continuation) {
 			String token = definition.id() + ":" + definition.version() + ":" + UUID.randomUUID();
@@ -330,10 +330,8 @@ public final class WorkflowAgent implements Agent {
 		if (result.suspension == null) {
 			return executeSteps(steps, index + 1, data, context);
 		}
-		return result.continueWith((request, resumeContext) -> {
-			ExecutionResult resumed = result.continuation.resume(request, resumeContext);
-			return resumed.suspension == null ? executeSteps(steps, index + 1, data, resumeContext) : resumed;
-		});
+		return result.continueWith((resumed, request, resumeContext) ->
+			resumed.suspension == null ? executeSteps(steps, index + 1, data, resumeContext) : resumed);
 	}
 
 	private ExecutionResult executeStep(WorkflowStep step, RunData data, AgentExecutionContext context) {
@@ -363,8 +361,7 @@ public final class WorkflowAgent implements Agent {
 				ExecutionResult result = executeStep(loop.body(), data, context);
 				if (result.suspension != null) {
 					int nextIteration = iteration + 1;
-					return result.continueWith((request, resumeContext) -> {
-						ExecutionResult resumed = result.continuation.resume(request, resumeContext);
+					return result.continueWith((resumed, request, resumeContext) -> {
 						if (resumed.suspension != null) {
 							return resumed;
 						}
@@ -705,6 +702,12 @@ public final class WorkflowAgent implements Agent {
 		ExecutionResult resume(AgentRequest request, AgentExecutionContext context);
 	}
 
+	/** The work that continues after the wrapped continuation has resumed exactly once. */
+	@FunctionalInterface
+	private interface ContinuedStep {
+		ExecutionResult after(ExecutionResult resumed, AgentRequest request, AgentExecutionContext context);
+	}
+
 	private record SuspensionData(Map<String, Object> prompts) {
 	}
 
@@ -717,12 +720,13 @@ public final class WorkflowAgent implements Agent {
 			return new ExecutionResult(data, new SuspensionData(Map.copyOf(prompts)), continuation);
 		}
 
-		private ExecutionResult continueWith(Continuation next) {
+		private ExecutionResult continueWith(ContinuedStep next) {
 			// The wrapper keeps the suspension-point snapshot: the suspended outcome is
-			// built from this data before the continuation ever runs.
+			// built from this data before the continuation ever runs. The continuation
+			// itself runs exactly once; the step after the resume receives its result.
 			return new ExecutionResult(data, suspension, (request, context) -> {
-				ExecutionResult result = continuation.resume(request, context);
-				return result.suspension == null ? next.resume(request, context) : result;
+				ExecutionResult resumed = continuation.resume(request, context);
+				return next.after(resumed, request, context);
 			});
 		}
 	}
