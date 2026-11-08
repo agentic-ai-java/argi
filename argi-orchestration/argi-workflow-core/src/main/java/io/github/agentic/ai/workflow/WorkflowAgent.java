@@ -61,6 +61,8 @@ public final class WorkflowAgent implements Agent {
 
 	private final ObjectMapper mapper;
 
+	private final int subflowMaxDepth;
+
 	private final Map<String, StoredContinuation> continuations = new ConcurrentHashMap<>();
 
 	private WorkflowAgent(Builder builder) {
@@ -70,6 +72,7 @@ public final class WorkflowAgent implements Agent {
 		this.tools = Objects.requireNonNull(builder.tools, "tools must not be null");
 		this.registry = Objects.requireNonNull(builder.registry, "registry must not be null");
 		this.mapper = Objects.requireNonNull(builder.mapper, "mapper must not be null");
+		this.subflowMaxDepth = builder.subflowMaxDepth;
 	}
 
 	public static Builder builder(WorkflowDefinition definition) {
@@ -100,6 +103,8 @@ public final class WorkflowAgent implements Agent {
 		private WorkflowRegistry registry = new WorkflowRegistry();
 
 		private ObjectMapper mapper = new ObjectMapper();
+
+		private int subflowMaxDepth = 16;
 
 		private Builder(WorkflowDefinition definition) {
 			this.definition = Objects.requireNonNull(definition, "definition must not be null");
@@ -133,6 +138,14 @@ public final class WorkflowAgent implements Agent {
 
 		public Builder objectMapper(ObjectMapper mapper) {
 			this.mapper = Objects.requireNonNull(mapper, "mapper must not be null");
+			return this;
+		}
+
+		public Builder subflowMaxDepth(int subflowMaxDepth) {
+			if (subflowMaxDepth < 1) {
+				throw new IllegalArgumentException("subflowMaxDepth must be greater than or equal to 1");
+			}
+			this.subflowMaxDepth = subflowMaxDepth;
 			return this;
 		}
 
@@ -307,10 +320,50 @@ public final class WorkflowAgent implements Agent {
 			throw new WorkflowExecutionException("Workflow loop exceeded maxIterations: " + loop.id());
 		}
 		if (step instanceof WorkflowStep.Subflow subflow) {
-			WorkflowDefinition nested = registry.get(subflow.workflowId(), subflow.version());
-			return executeSteps(nested.steps(), 0, data, context);
+			return executeSubflow(subflow, data, context);
 		}
 		throw new WorkflowExecutionException("Unsupported workflow step: " + step.id());
+	}
+
+	/**
+	 * Enters a subflow through the run's call chain (issue #273): a reference that is
+	 * already on the chain closes a cycle, a chain at the configured depth limit is
+	 * refused before recursing, and both fail with a domain error locating the
+	 * reference chain instead of exhausting the JVM stack. The chain lives on the run
+	 * data, so it survives suspensions and is copied per parallel branch. A
+	 * suspension removes the entry from the chain on the way out: the resumed work
+	 * continues inside the subflow, and re-entering the same subflow from the resumed
+	 * steps is sequential reuse, not a cycle — the chain check still bounds whatever
+	 * the resumed segment does.
+	 */
+	private ExecutionResult executeSubflow(WorkflowStep.Subflow subflow, RunData data, AgentExecutionContext context) {
+		String node = subflow.workflowId() + "@" + subflow.version();
+		if (data.subflowChain.contains(node)) {
+			List<String> cycle = new ArrayList<>(data.subflowChain.subList(data.subflowChain.indexOf(node),
+					data.subflowChain.size()));
+			cycle.add(node);
+			throw new WorkflowSubflowRecursionException(
+					"Workflow subflow reference closes a cycle on the call chain: " + String.join(" -> ", cycle),
+					cycle);
+		}
+		if (data.subflowChain.size() >= subflowMaxDepth) {
+			// The reported chain starts at the executing definition, so the diagnosis
+			// shows the whole path from the root of the run.
+			List<String> extended = new ArrayList<>();
+			extended.add(definition.id() + "@" + definition.version());
+			extended.addAll(data.subflowChain);
+			extended.add(node);
+			throw new WorkflowSubflowRecursionException("Workflow subflow call chain exceeded the configured depth "
+					+ "limit " + subflowMaxDepth + ": " + String.join(" -> ", extended), extended);
+		}
+		WorkflowDefinition nested = registry.get(subflow.workflowId(), subflow.version());
+		data.subflowChain.add(node);
+		try {
+			return executeSteps(nested.steps(), 0, data, context);
+		}
+		finally {
+			data.subflowChain.remove(data.subflowChain.size() - 1);
+		}
 	}
 
 	private ExecutionResult executeAgent(WorkflowStep.Agent step, RunData data, AgentExecutionContext context) {
@@ -618,6 +671,10 @@ public final class WorkflowAgent implements Agent {
 
 		private final List<ChatMessage> messages;
 
+		// The subflow call chain (id@version, caller first) of this run; survives
+		// suspensions through the continuation closures and is copied per branch.
+		private final List<String> subflowChain;
+
 		private Long inputTokens = 0L;
 
 		private Long outputTokens = 0L;
@@ -629,6 +686,7 @@ public final class WorkflowAgent implements Agent {
 			this.state = new LinkedHashMap<>(request.inputs());
 			this.stepOutputs = new LinkedHashMap<>();
 			this.messages = new ArrayList<>(request.messages());
+			this.subflowChain = new ArrayList<>();
 		}
 
 		private RunData(RunData source) {
@@ -636,6 +694,7 @@ public final class WorkflowAgent implements Agent {
 			this.state = new LinkedHashMap<>(source.state);
 			this.stepOutputs = new LinkedHashMap<>(source.stepOutputs);
 			this.messages = new ArrayList<>(source.messages);
+			this.subflowChain = new ArrayList<>(source.subflowChain);
 			this.inputTokens = source.inputTokens;
 			this.outputTokens = source.outputTokens;
 			this.totalTokens = source.totalTokens;

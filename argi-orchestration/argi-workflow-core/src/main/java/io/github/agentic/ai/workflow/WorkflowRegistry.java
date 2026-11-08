@@ -17,10 +17,20 @@ package io.github.agentic.ai.workflow;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** In-memory immutable-version registry; replacing a published version is rejected. */
+/**
+ * In-memory immutable-version registry; replacing a published version is rejected.
+ *
+ * <p>
+ * Publishing resolves the subflow reference graph of the definition against the
+ * already published definitions and rejects cycles (issue #273). A reference to a
+ * definition that is not published yet is a legal forward reference: it does not
+ * block the publish, and an unresolved reference surfaces at run time as the usual
+ * "workflow version is not published" failure.
+ */
 public final class WorkflowRegistry {
 
 	private final Map<String, Map<String, WorkflowDefinition>> definitions = new ConcurrentHashMap<>();
@@ -28,6 +38,12 @@ public final class WorkflowRegistry {
 	public WorkflowDefinition publish(WorkflowDefinition definition) {
 		Objects.requireNonNull(definition, "definition must not be null");
 		definition.validate();
+		WorkflowDefinitionValidator.detectSubflowCycles(definition, reference -> {
+			int separator = reference.indexOf('@');
+			Map<String, WorkflowDefinition> versions = definitions.get(reference.substring(0, separator));
+			return versions == null ? Optional.empty()
+					: Optional.ofNullable(versions.get(reference.substring(separator + 1)));
+		});
 		Map<String, WorkflowDefinition> versions = definitions.computeIfAbsent(definition.id(), ignored ->
 				new ConcurrentHashMap<>());
 		WorkflowDefinition existing = versions.putIfAbsent(definition.version(), definition);
