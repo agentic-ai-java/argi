@@ -146,7 +146,7 @@
         <maven-failsafe-plugin.version>3.1.2</maven-failsafe-plugin.version>
         <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
-        <springdoc-openapi-maven-plugin.version>1.5</springdoc-openapi-maven-plugin.version>
+        <springdoc-openapi-maven-plugin.version>1.6</springdoc-openapi-maven-plugin.version>
         <spring-javaformat-maven-plugin.version>0.0.48</spring-javaformat-maven-plugin.version>
         <sorter-maven-plugin.version>1.0.1</sorter-maven-plugin.version>
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
