@@ -84,7 +84,7 @@ class ReActAgentStreamMessageIdTest {
 	@Test
 	void multiFragmentDeltasSealUnderTheSnapshotId() throws Exception {
 		ScriptedStreamClient client = ScriptedStreamClient.of(List.of(
-				TurnScript.of(List.of(ChatEvent.textDelta("Hel"), ChatEvent.textDelta("lo")),
+				TurnScript.of(List.of(ChatEvent.textDelta("He"), ChatEvent.textDelta("llo")),
 						response(ChatMessage.assistant("Hello"), List.of(), 1))));
 		MessageView view = runSingleTurn(client);
 
