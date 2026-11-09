@@ -15,6 +15,10 @@
  */
 package io.github.agentic.ai.workflow;
 
+import com.networknt.schema.Error;
+import com.networknt.schema.InputFormat;
+import com.networknt.schema.Schema;
+import com.networknt.schema.SchemaLocation;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SpecificationVersion;
 
@@ -38,6 +42,9 @@ import java.util.function.Function;
 public final class WorkflowDefinitionValidator {
 
 	private static final SchemaRegistry SCHEMAS = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12);
+
+	private static final Schema META_SCHEMA = SCHEMAS
+		.getSchema(SchemaLocation.of(SpecificationVersion.DRAFT_2020_12.getDialectId()));
 
 	private WorkflowDefinitionValidator() {
 	}
@@ -123,6 +130,19 @@ public final class WorkflowDefinitionValidator {
 		}
 		if (schema.isBlank()) {
 			throw new IllegalArgumentException(field + " must not be blank");
+		}
+		// Compiling the document is not enough: a non-object document or an invalid
+		// keyword value would be accepted here and silently ignored at run time.
+		List<Error> errors;
+		try {
+			errors = META_SCHEMA.validate(schema, InputFormat.JSON);
+		}
+		catch (RuntimeException exception) {
+			throw new IllegalArgumentException(field + " is not valid JSON: " + exception.getMessage(), exception);
+		}
+		if (!errors.isEmpty()) {
+			throw new IllegalArgumentException(
+					field + " is not a valid JSON Schema (draft 2020-12): " + errors.get(0).getMessage());
 		}
 		try {
 			SCHEMAS.getSchema(schema);

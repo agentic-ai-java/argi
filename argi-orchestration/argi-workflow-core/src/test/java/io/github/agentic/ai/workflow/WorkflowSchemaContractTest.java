@@ -43,6 +43,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -58,7 +60,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class WorkflowSchemaContractTest {
 
-	private static final String MALFORMED_SCHEMA = "{\"type\":\"objec";
+	private static final String MALFORMED_SCHEMA = "{\"type\":\"object\"";
 
 	private static final String INPUT_SCHEMA =
 			"{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"}},\"required\":[\"question\"]}";
@@ -79,6 +81,24 @@ class WorkflowSchemaContractTest {
 		IllegalArgumentException output = assertThrows(IllegalArgumentException.class,
 				() -> registry.publish(definition(null, MALFORMED_SCHEMA)));
 		assertTrue(output.getMessage().contains("outputSchema"));
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = { "{\"required\":\"question\"}", "[]", "123", "\"schema\"", "null" })
+	void publishRejectsDocumentsThatAreNotJsonSchemas(String schema) {
+		WorkflowRegistry registry = new WorkflowRegistry();
+		IllegalArgumentException input = assertThrows(IllegalArgumentException.class,
+				() -> registry.publish(definition(schema, null)));
+		assertTrue(input.getMessage().contains("inputSchema"));
+		IllegalArgumentException output = assertThrows(IllegalArgumentException.class,
+				() -> registry.publish(definition(null, schema)));
+		assertTrue(output.getMessage().contains("outputSchema"));
+	}
+
+	@Test
+	void publishAcceptsObjectAndBooleanSchemas() {
+		new WorkflowRegistry().publish(definition("{\"type\":\"object\"}", "true"));
+		new WorkflowRegistry().publish(definition("false", "{}"));
 	}
 
 	@Test
