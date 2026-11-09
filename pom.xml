@@ -101,7 +101,7 @@
 
         <!-- Adapter versions -->
         <langchain4j.version>1.23.0</langchain4j.version>
-        <google-adk.version>1.13.0</google-adk.version>
+        <google-adk.version>1.14.0</google-adk.version>
 
         <!-- Keep security patch families aligned with the published ARGI BOM. -->
         <jackson-2-bom.version>2.22.4</jackson-2-bom.version>
