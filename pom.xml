@@ -107,7 +107,7 @@
         <jackson-2-bom.version>2.22.4</jackson-2-bom.version>
         <jackson-bom.version>3.2.4</jackson-bom.version>
         <bouncycastle.version>1.86</bouncycastle.version>
-        <jsoup.version>1.23.2</jsoup.version>
+        <jsoup.version>1.24.1</jsoup.version>
         <tomcat.version>11.0.27</tomcat.version>
 
         <!-- Redis -->
