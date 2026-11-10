@@ -182,20 +182,28 @@ class ReActAgentStructuredDeliveryTest {
 			assertEquals(REPAIRED, outcome.outputs().get("structuredOutput").toString());
 		}
 		// The repaired message reaches stream consumers before the finished snapshot,
-		// through the existing complete-message event contract.
+		// through the existing complete-message event contract — under the same
+		// message ID as the failed terminal it replaces (issue #280), so an
+		// ID-keyed consumer view ends the run consistent.
+		int failedIndex = -1;
 		int repairIndex = -1;
 		int finishIndex = -1;
 		for (int index = 0; index < events.size(); index++) {
 			AgentEvent event = events.get(index);
-			if (event instanceof AgentEvent.Message message && "model-repair".equals(message.messageId())) {
-				repairIndex = index;
-				assertEquals(REPAIRED, message.message().text());
+			if (event instanceof AgentEvent.Message message && "model-0".equals(message.messageId())) {
+				if (REPAIRED.equals(message.message().text())) {
+					repairIndex = index;
+				}
+				else if (failedIndex < 0) {
+					failedIndex = index;
+				}
 			}
 			if (event instanceof AgentEvent.Finished) {
 				finishIndex = index;
 			}
 		}
-		assertTrue(repairIndex >= 0, "stream consumers must see the repaired final message");
+		assertTrue(failedIndex >= 0, "the failed terminal must have been displayed first");
+		assertTrue(repairIndex >= 0, "stream consumers must see the repaired final message under the replaced ID");
 		assertTrue(finishIndex > repairIndex, "the repaired message must precede the finished event");
 	}
 
