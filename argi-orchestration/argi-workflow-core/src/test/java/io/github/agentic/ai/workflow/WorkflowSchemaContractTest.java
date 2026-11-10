@@ -207,6 +207,101 @@ class WorkflowSchemaContractTest {
 	}
 
 	@Test
+	void aTwiceSuspendedChildStillRunsTheFollowingSteps() throws Exception {
+		AtomicInteger invocations = new AtomicInteger();
+		AtomicInteger resumedInvocations = new AtomicInteger();
+		Agent twice = agent(request -> {
+			int call = invocations.incrementAndGet();
+			if (request.resumeToken() != null) {
+				resumedInvocations.incrementAndGet();
+			}
+			if (call <= 2) {
+				return new AgentOutcome(AgentOutcome.Status.SUSPENDED, List.of(ChatMessage.assistant("need more")),
+						Map.of(), new Usage(1L, 1L, 2L), new AgentOutcome.Suspension("agent-token-" + call,
+								Map.of("prompt", "provide confirmation " + call)));
+			}
+			return AgentOutcome.completed(List.of(ChatMessage.assistant("done")),
+					Map.of("value", "finally done"), new Usage(1L, 1L, 2L));
+		});
+		AtomicInteger toolExecutions = new AtomicInteger();
+		WorkflowDefinition definition = new WorkflowDefinition("twice", "1",
+				List.of(new WorkflowStep.Agent("answer", "ref"),
+						new WorkflowStep.Tool("mark", "mark", Map.of(), "marked", null)));
+		WorkflowAgent workflow = WorkflowAgent.builder(definition).agents(Map.of("ref", twice))
+				.tools(new ToolRegistry(List.of(countingTool(toolExecutions)))).build();
+
+		try (AgentExecutionContext first = context()) {
+			AgentOutcome suspendedOnce = workflow
+					.invoke(new AgentRequest(List.of(ChatMessage.user("go")), Map.of("question", "why"), null), first)
+					.get(3, TimeUnit.SECONDS);
+			assertEquals(AgentOutcome.Status.SUSPENDED, suspendedOnce.status());
+			String firstToken = suspendedOnce.suspension().resumeToken();
+			try (AgentExecutionContext second = context()) {
+				AgentOutcome suspendedTwice = workflow
+						.invoke(new AgentRequest(List.of(), Map.of(), firstToken), second)
+						.get(3, TimeUnit.SECONDS);
+				assertEquals(AgentOutcome.Status.SUSPENDED, suspendedTwice.status());
+				String secondToken = suspendedTwice.suspension().resumeToken();
+				try (AgentExecutionContext third = context()) {
+					AgentOutcome outcome = workflow
+							.invoke(new AgentRequest(List.of(), Map.of(), secondToken), third)
+							.get(3, TimeUnit.SECONDS);
+					assertEquals(AgentOutcome.Status.COMPLETED, outcome.status());
+					// The step after the twice-suspended child must still run.
+					assertEquals(1, toolExecutions.get());
+					assertEquals(2, resumedInvocations.get());
+				}
+			}
+		}
+	}
+
+	@Test
+	void aLoopBodySuspendingTwiceStillCompletesTheRemainingIterations() throws Exception {
+		AtomicInteger invocations = new AtomicInteger();
+		Agent twice = agent(request -> {
+			int call = invocations.incrementAndGet();
+			if (call <= 2) {
+				return new AgentOutcome(AgentOutcome.Status.SUSPENDED, List.of(ChatMessage.assistant("need more")),
+						Map.of(), new Usage(1L, 1L, 2L), new AgentOutcome.Suspension("agent-token-" + call,
+								Map.of("prompt", "provide confirmation " + call)));
+			}
+			// Every later invocation completes with a falsy value so the loop leaves
+			// through its condition once the twice-suspended first iteration is done.
+			return AgentOutcome.completed(List.of(ChatMessage.assistant("done")),
+					Map.of("value", false), new Usage(1L, 1L, 2L));
+		});
+		WorkflowDefinition definition = new WorkflowDefinition("looped", "1",
+				List.of(new WorkflowStep.Loop("looped", WorkflowValue.state("keep"),
+						new WorkflowStep.Agent("body", "ref"), 3)));
+		WorkflowAgent workflow = WorkflowAgent.builder(definition).agents(Map.of("ref", twice)).build();
+		try (AgentExecutionContext first = context()) {
+			AgentOutcome suspendedOnce = workflow
+					.invoke(new AgentRequest(List.of(ChatMessage.user("go")), Map.of("keep", true), null), first)
+					.get(5, TimeUnit.SECONDS);
+			assertEquals(AgentOutcome.Status.SUSPENDED, suspendedOnce.status());
+			String firstToken = suspendedOnce.suspension().resumeToken();
+			try (AgentExecutionContext second = context()) {
+				AgentOutcome suspendedTwice = workflow
+						.invoke(new AgentRequest(List.of(), Map.of(), firstToken), second)
+						.get(5, TimeUnit.SECONDS);
+				assertEquals(AgentOutcome.Status.SUSPENDED, suspendedTwice.status());
+				String secondToken = suspendedTwice.suspension().resumeToken();
+				try (AgentExecutionContext third = context()) {
+					AgentOutcome outcome = workflow
+							.invoke(new AgentRequest(List.of(), Map.of(), secondToken), third)
+							.get(5, TimeUnit.SECONDS);
+					assertEquals(AgentOutcome.Status.COMPLETED, outcome.status());
+					// Iteration 0 suspends twice (invocations 1-2) and completes on
+					// its third resume; iterations 1 and 2 still run (invocations 4-5)
+					// before the loop leaves through maxIterations. With the dropped-
+					// continuation bug this run ended after invocation 3.
+					assertEquals(5, invocations.get());
+				}
+			}
+		}
+	}
+
+	@Test
 	void resumeOutputViolationStillFails() throws Exception {
 		WorkflowAgent workflow = suspendingWorkflow(42, new AtomicInteger());
 		try (AgentExecutionContext first = context()) {
@@ -296,6 +391,20 @@ class WorkflowSchemaContractTest {
 		ExecutionException failure = assertThrows(ExecutionException.class,
 				() -> invocation.get().get(3, TimeUnit.SECONDS));
 		return assertInstanceOf(WorkflowValidationException.class, failure.getCause());
+	}
+
+	private static Tool countingTool(AtomicInteger executions) {
+		return new Tool() {
+			public io.github.agentic.ai.api.chat.ToolDefinition definition() {
+				return new io.github.agentic.ai.api.chat.ToolDefinition("mark", "mark", "{}");
+			}
+
+			public CompletionStage<ToolResult> execute(io.github.agentic.ai.api.chat.ToolCall call,
+					ToolContext toolContext) {
+				executions.incrementAndGet();
+				return CompletableFuture.completedFuture(ToolResult.text("marked"));
+			}
+		};
 	}
 
 	private static Agent agent(java.util.function.Function<AgentRequest, AgentOutcome> function) {

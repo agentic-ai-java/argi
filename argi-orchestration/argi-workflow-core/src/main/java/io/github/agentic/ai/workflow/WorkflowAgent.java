@@ -330,8 +330,19 @@ public final class WorkflowAgent implements Agent {
 		if (result.suspension == null) {
 			return executeSteps(steps, index + 1, data, context);
 		}
-		return result.continueWith((resumed, request, resumeContext) ->
-			resumed.suspension == null ? executeSteps(steps, index + 1, data, resumeContext) : resumed);
+		return continueAfter(result, steps, index, data);
+	}
+
+	/**
+	 * Wraps a suspension so the remaining steps survive any number of further
+	 * suspensions: every time the wrapped continuation suspends again, the
+	 * continue-after step is composed onto the new suspension (issue #274 review).
+	 */
+	private ExecutionResult continueAfter(ExecutionResult suspended, List<WorkflowStep> steps, int index,
+			RunData data) {
+		return suspended.continueWith((resumed, request, resumeContext) ->
+			resumed.suspension == null ? executeSteps(steps, index + 1, data, resumeContext)
+					: continueAfter(resumed, steps, index, data));
 	}
 
 	private ExecutionResult executeStep(WorkflowStep step, RunData data, AgentExecutionContext context) {
@@ -361,21 +372,7 @@ public final class WorkflowAgent implements Agent {
 				ExecutionResult result = executeStep(loop.body(), data, context);
 				if (result.suspension != null) {
 					int nextIteration = iteration + 1;
-					return result.continueWith((resumed, request, resumeContext) -> {
-						if (resumed.suspension != null) {
-							return resumed;
-						}
-						for (int next = nextIteration; next < loop.maxIterations(); next++) {
-							if (!truthy(resolve(loop.condition(), data))) {
-								return ExecutionResult.completed(data);
-							}
-							ExecutionResult nested = executeStep(loop.body(), data, resumeContext);
-							if (nested.suspension != null) {
-								return nested;
-							}
-						}
-						return ExecutionResult.completed(data);
-					});
+					return continueLoopAfter(result, loop, nextIteration, data);
 				}
 			}
 			throw new WorkflowExecutionException("Workflow loop exceeded maxIterations: " + loop.id());
@@ -425,6 +422,30 @@ public final class WorkflowAgent implements Agent {
 		finally {
 			data.subflowChain.remove(data.subflowChain.size() - 1);
 		}
+	}
+
+	/**
+	 * The loop counterpart of {@link #continueAfter}: the remaining iterations survive
+	 * any number of further suspensions, both of the wrapped continuation and of the
+	 * body invocations inside the remaining iterations.
+	 */
+	private ExecutionResult continueLoopAfter(ExecutionResult suspended, WorkflowStep.Loop loop, int nextIteration,
+			RunData data) {
+		return suspended.continueWith((resumed, request, resumeContext) -> {
+			if (resumed.suspension != null) {
+				return continueLoopAfter(resumed, loop, nextIteration, data);
+			}
+			for (int next = nextIteration; next < loop.maxIterations(); next++) {
+				if (!truthy(resolve(loop.condition(), data))) {
+					return ExecutionResult.completed(data);
+				}
+				ExecutionResult nested = executeStep(loop.body(), data, resumeContext);
+				if (nested.suspension != null) {
+					return continueLoopAfter(nested, loop, next + 1, data);
+				}
+			}
+			return ExecutionResult.completed(data);
+		});
 	}
 
 	private ExecutionResult executeAgent(WorkflowStep.Agent step, RunData data, AgentExecutionContext context) {
