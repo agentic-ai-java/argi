@@ -33,6 +33,8 @@ import io.github.agentic.ai.workflow.graph.checkpoint.lease.LeaseLostException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -201,11 +203,23 @@ class AgentToolNodeExecutionLeaseTest {
 		assertEquals(0, delegateCalls.get(), "queued delegate must not start after guard loss");
 	}
 
-	@Test
-	void activeCancellableToolGetsCancellationOnLeaseLossAndLateOutputIsNotMerged() throws Exception {
+	@ParameterizedTest
+	@ValueSource(booleans = { false, true })
+	void activeCancellableToolGetsCancellationOnLeaseLossAndLateOutputIsNotMerged(boolean delayStageReturn)
+			throws Exception {
 		ManualGuard guard = new ManualGuard();
 		CountDownLatch toolStarted = new CountDownLatch(1);
+		CountDownLatch toolCancelled = new CountDownLatch(1);
+		CompletableFuture<Void> releaseStage = new CompletableFuture<>();
+		if (!delayStageReturn) {
+			releaseStage.complete(null);
+		}
 		CompletableFuture<ToolResult> original = new CompletableFuture<>();
+		original.whenComplete((value, failure) -> {
+			if (original.isCancelled()) {
+				toolCancelled.countDown();
+			}
+		});
 		Tool tool = new Tool() {
 			@Override
 			public ToolDefinition definition() {
@@ -215,6 +229,8 @@ class AgentToolNodeExecutionLeaseTest {
 			@Override
 			public CompletionStage<ToolResult> execute(ToolCall call, ToolContext context) {
 				toolStarted.countDown();
+				// Model a tool that has started but has not handed its stage to the node.
+				releaseStage.join();
 				return original;
 			}
 		};
@@ -229,14 +245,23 @@ class AgentToolNodeExecutionLeaseTest {
 				throw new CompletionException(ex);
 			}
 		}, invocationExecutor);
-		assertTrue(toolStarted.await(5, TimeUnit.SECONDS), "tool must start before ownership is lost");
-		guard.lose("active async tool lost ownership");
+		try {
+			assertTrue(toolStarted.await(5, TimeUnit.SECONDS), "tool must start before ownership is lost");
+			guard.lose("active async tool lost ownership");
 
-		ExecutionException error = assertThrows(ExecutionException.class, () -> result.get(5, TimeUnit.SECONDS));
-		LeaseLostException loss = assertRootLeaseLoss(error);
-		assertEquals("active async tool lost ownership", loss.getReason());
-		assertTrue(original.isCancelled(), "lease loss must request original stage cancellation");
-		assertTrue(!original.complete(ToolResult.text("late")), "late output must not be published");
+			ExecutionException error = assertThrows(ExecutionException.class, () -> result.get(5, TimeUnit.SECONDS));
+			LeaseLostException loss = assertRootLeaseLoss(error);
+			assertEquals("active async tool lost ownership", loss.getReason());
+			// Lease loss can end the node before the tool returns its stage. Once the
+			// stage is available, wait for cancellation propagation before inspecting it.
+			releaseStage.complete(null);
+			assertTrue(toolCancelled.await(5, TimeUnit.SECONDS), "original stage must receive cancellation");
+			assertTrue(original.isCancelled(), "lease loss must request original stage cancellation");
+			assertTrue(!original.complete(ToolResult.text("late")), "late output must not be published");
+		}
+		finally {
+			releaseStage.complete(null);
+		}
 	}
 
 	private static AgentToolNode.Builder builder() {
