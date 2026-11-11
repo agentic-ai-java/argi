@@ -37,8 +37,18 @@ import io.github.agentic.ai.api.chat.Usage;
  * assistant message exists (for example after an interruption), the status is
  * {@link Status#INTERRUPTED} and {@link #message()} is {@code null}.
  * </p>
+ *
+ * <p>
+ * {@link #usage()} is the total usage of the whole delivery: the accumulated model
+ * turns plus any bounded structured-output repair re-ask, per-field, with a field
+ * unknown on either side staying unknown instead of being summed as zero. When a
+ * repair re-ask was issued, {@link #repairUsage()} carries the usage that single call
+ * reported, so main-call and repair consumption stay distinguishable; an issued
+ * repair whose consumption is unknown carries an all-unknown segment rather than a
+ * fabricated zero.
+ * </p>
  */
-public record AgentResult(ChatMessage message, Status status, Usage usage, Object data,
+public record AgentResult(ChatMessage message, Status status, Usage usage, Usage repairUsage, Object data,
 		List<OutputValidationIssue> issues) {
 
 	/** Error code for terminal output that is not valid JSON at all. */
@@ -96,20 +106,40 @@ public record AgentResult(ChatMessage message, Status status, Usage usage, Objec
 		issues = issues == null ? List.of() : List.copyOf(issues);
 	}
 
+	/**
+	 * Compatibility shape without the repair usage segment, equivalent to a delivery
+	 * where no repair re-ask was issued.
+	 */
+	public AgentResult(ChatMessage message, Status status, Usage usage, Object data,
+			List<OutputValidationIssue> issues) {
+		this(message, status, usage, null, data, issues);
+	}
+
 	public static AgentResult completed(ChatMessage message, Usage usage, Object data) {
-		return new AgentResult(message, Status.COMPLETED, usage, data, List.of());
+		return new AgentResult(message, Status.COMPLETED, usage, null, data, List.of());
+	}
+
+	/** Completion whose total includes an issued repair re-ask, with its reported segment. */
+	public static AgentResult completed(ChatMessage message, Usage usage, Usage repairUsage, Object data) {
+		return new AgentResult(message, Status.COMPLETED, usage, repairUsage, data, List.of());
 	}
 
 	public static AgentResult validationFailed(ChatMessage message, Usage usage, List<OutputValidationIssue> issues) {
-		return new AgentResult(message, Status.VALIDATION_FAILED, usage, null, issues);
+		return new AgentResult(message, Status.VALIDATION_FAILED, usage, null, null, issues);
+	}
+
+	/** Validation failure whose total includes an issued repair re-ask, with its reported segment. */
+	public static AgentResult validationFailed(ChatMessage message, Usage usage, Usage repairUsage,
+			List<OutputValidationIssue> issues) {
+		return new AgentResult(message, Status.VALIDATION_FAILED, usage, repairUsage, null, issues);
 	}
 
 	public static AgentResult interrupted(Usage usage) {
-		return new AgentResult(null, Status.INTERRUPTED, usage, null, List.of());
+		return new AgentResult(null, Status.INTERRUPTED, usage, null, null, List.of());
 	}
 
 	public static AgentResult error(ChatMessage message, Usage usage, List<OutputValidationIssue> issues) {
-		return new AgentResult(message, Status.ERROR, usage, null, issues);
+		return new AgentResult(message, Status.ERROR, usage, null, null, issues);
 	}
 
 }

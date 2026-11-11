@@ -21,4 +21,26 @@ public record Usage(Long inputTokens, Long outputTokens, Long totalTokens) {
 	public static Usage unknown() {
 		return new Usage(null, null, null);
 	}
+
+	/**
+	 * Returns the per-field sum of this usage and the given one: a field is the sum of
+	 * the two known values, and a field that is unknown ({@code null}) on either side
+	 * stays unknown instead of being treated as zero, so an unreported component can
+	 * never turn into a fabricated exact total. A {@code null} other usage adds nothing
+	 * known and returns this usage unchanged.
+	 * @param other the usage to add, for example the segment reported by another call
+	 * of the same delivery; may be {@code null}
+	 */
+	public Usage plus(Usage other) {
+		if (other == null) {
+			return this;
+		}
+		return new Usage(sum(inputTokens, other.inputTokens), sum(outputTokens, other.outputTokens),
+				sum(totalTokens, other.totalTokens));
+	}
+
+	private static Long sum(Long left, Long right) {
+		return left == null || right == null ? null : left + right;
+	}
+
 }

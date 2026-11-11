@@ -102,6 +102,9 @@ class ReactAgentStreamResultTest {
 		AgentResult delivery = results.get(results.size() - 1);
 		assertThat(delivery.status()).isEqualTo(AgentResult.Status.COMPLETED);
 		assertThat(delivery.message().text()).isEqualTo("{\"status\":\"ok\"}");
+		// The repair re-ask is part of the delivery: main (2,3,5) + repair (1,1,2) = (3,4,7).
+		assertThat(delivery.usage()).isEqualTo(new Usage(3L, 4L, 7L));
+		assertThat(delivery.repairUsage()).isEqualTo(new Usage(1L, 1L, 2L));
 		assertThat(client.repairCalls.get()).isEqualTo(1);
 	}
 

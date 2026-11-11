@@ -20,6 +20,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatClientCapabilities;
@@ -182,6 +184,117 @@ class ReactAgentCallResultTest {
 		ChatMessage message = agent.call("give me the status");
 
 		assertThat(message.text()).isEqualTo("{\"status\":\"ok\"}");
+	}
+
+	@Test
+	@DisplayName("a successful repair folds the repair call usage into the delivered total")
+	void repairFoldsUsageIntoCallResultTotal() {
+		TwoPhaseClient client = new TwoPhaseClient();
+		ReactAgent agent = agent(client, SCHEMA);
+
+		AgentResult result = agent.callResult("give me the status");
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(result.message().text()).isEqualTo("{\"status\":\"ok\"}");
+		// Main call (1,2,3) + repair re-ask (10,20,30) = (11,22,33).
+		assertThat(result.usage()).isEqualTo(new Usage(11L, 22L, 33L));
+		assertThat(result.repairUsage()).isEqualTo(new Usage(10L, 20L, 30L));
+	}
+
+	@Test
+	@DisplayName("callResult and streamResult agree on the repaired delivery usage")
+	void callResultAndStreamResultAgreeOnRepairedUsage() {
+		AgentResult viaCall = agent(new TwoPhaseClient(), SCHEMA).callResult("give me the status");
+		AgentResult viaStream = agent(new TwoPhaseStreamingClient(), SCHEMA)
+			.streamResult("give me the status")
+			.blockLast();
+
+		assertThat(viaStream).isNotNull();
+		assertThat(viaCall.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(viaStream.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(viaCall.usage()).isEqualTo(new Usage(11L, 22L, 33L));
+		assertThat(viaStream.usage()).isEqualTo(viaCall.usage());
+	}
+
+	/** Answers the main call with invalid JSON (1,2,3) and the repair re-ask with valid JSON (10,20,30). */
+	private static final class TwoPhaseClient implements ChatClient {
+
+		private final AtomicInteger calls = new AtomicInteger();
+
+		private ChatResponse response() {
+			return calls.get() == 1
+					? new ChatResponse("main-id", "test-model", List.of(ChatMessage.assistant("not json")), List.of(),
+							null, new Usage(1L, 2L, 3L), Map.of())
+					: new ChatResponse("repair-id", "test-model", List.of(ChatMessage.assistant("{\"status\":\"ok\"}")),
+							List.of(), null, new Usage(10L, 20L, 30L), Map.of());
+		}
+
+		@Override
+		public CompletionStage<ChatResponse> call(ChatRequest request) {
+			this.calls.incrementAndGet();
+			return CompletableFuture.completedFuture(response());
+		}
+
+		@Override
+		public Flow.Publisher<ChatEvent> stream(ChatRequest request) {
+			throw new UnsupportedOperationException("Streaming is unavailable");
+		}
+
+		@Override
+		public ChatClientCapabilities capabilities() {
+			return ChatClientCapabilities.basic();
+		}
+
+	}
+
+	/** Streams the same invalid main output, then answers the repair re-ask through {@code call}. */
+	private static final class TwoPhaseStreamingClient implements ChatClient {
+
+		private final AtomicInteger repairCalls = new AtomicInteger();
+
+		@Override
+		public CompletionStage<ChatResponse> call(ChatRequest request) {
+			this.repairCalls.incrementAndGet();
+			return CompletableFuture.completedFuture(new ChatResponse("repair-id", "test-model",
+					List.of(ChatMessage.assistant("{\"status\":\"ok\"}")), List.of(), null, new Usage(10L, 20L, 30L),
+					Map.of()));
+		}
+
+		@Override
+		public Flow.Publisher<ChatEvent> stream(ChatRequest request) {
+			return subscriber -> subscriber.onSubscribe(new Flow.Subscription() {
+				private final AtomicBoolean requested = new AtomicBoolean();
+
+				private volatile boolean cancelled;
+
+				@Override
+				public void request(long demand) {
+					if (demand <= 0 || !requested.compareAndSet(false, true) || cancelled) {
+						return;
+					}
+					subscriber.onNext(ChatEvent.textDelta("not json"));
+					if (!cancelled) {
+						subscriber.onNext(ChatEvent.response(new ChatResponse("main-id", "test-model",
+								List.of(ChatMessage.assistant("not json")), List.of(), null, new Usage(1L, 2L, 3L),
+								Map.of())));
+					}
+					if (!cancelled) {
+						subscriber.onComplete();
+					}
+				}
+
+				@Override
+				public void cancel() {
+					cancelled = true;
+				}
+			});
+		}
+
+		@Override
+		public ChatClientCapabilities capabilities() {
+			return new ChatClientCapabilities(true, true, false, false, true, true);
+		}
+
 	}
 
 	private static ReactAgent agent(ChatClient client, String outputSchema) {
