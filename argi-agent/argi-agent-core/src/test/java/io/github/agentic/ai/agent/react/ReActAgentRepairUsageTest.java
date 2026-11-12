@@ -51,6 +51,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -119,7 +120,7 @@ class ReActAgentRepairUsageTest {
 		final RepairClient repair = RepairClient.replying("still not json", REPAIR);
 		final UsageView view = runExpectingFailure(streamModel, repair);
 
-		final AgentExecutionException failure = (AgentExecutionException) view.error;
+		final AgentExecutionException failure = assertInstanceOf(AgentExecutionException.class, view.error);
 		assertAll(() -> assertEquals(TOTAL, view.visibleUsage,
 				"The merged usage must be published before the failure propagates"),
 				() -> assertEquals(TOTAL, failure.result().usage(), "The thrown result carries the merged total"),
