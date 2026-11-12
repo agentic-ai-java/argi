@@ -184,9 +184,10 @@ public final class StructuredOutputFinalizer {
 		if (repair == null) {
 			// The repair re-ask could not be performed at all: keep the original failure
 			// and mark the distinction from a repair that ran but stayed invalid. The
-			// call was issued yet nothing about its consumption is known, so the segment
-			// is present but unknown and the main usage stays as reported.
-			return AgentResult.validationFailed(first.message(), usage, Usage.unknown(),
+			// call was issued yet no response proves what it consumed, so neither the
+			// segment nor the delivery total may claim it spent nothing: both stay
+			// unknown instead of the pre-repair usage standing in as an exact total.
+			return AgentResult.validationFailed(first.message(), Usage.unknown(), Usage.unknown(),
 					repairCallFailedIssues(first.issues()));
 		}
 		// The repair re-ask is part of the delivery: its reported usage folds into the

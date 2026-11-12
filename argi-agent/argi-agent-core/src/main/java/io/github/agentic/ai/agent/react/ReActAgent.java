@@ -694,9 +694,15 @@ public final class ReActAgent implements Agent {
 				ChatMessage terminal, String terminalMessageId) {
 			Map<String, Object> outputs = new LinkedHashMap<>(state);
 			Usage deliveredUsage = usage;
-			Usage repairUsage = null;
 			if (outputSchema != null && outputFinalizer != null) {
 				AgentResult result = outputFinalizer.finalizeOutput(terminal, outputSchema, usage, context.control());
+				if (result.repairUsage() != null) {
+					// A repair re-ask happened after the last per-turn update: publish
+					// the delivery-inclusive cumulative usage before anything consumes
+					// or propagates the result, so UsageUpdate consumers and the result
+					// — delivered or thrown — always agree on the same totals.
+					emit(new AgentEvent.UsageUpdate(result.usage()));
+				}
 				if (result.status() != AgentResult.Status.COMPLETED) {
 					throw new AgentExecutionException(result);
 				}
@@ -704,7 +710,6 @@ public final class ReActAgent implements Agent {
 				// tokens after the last model turn, and the finished snapshot must carry
 				// the same total the result reports instead of the pre-repair one.
 				deliveredUsage = result.usage();
-				repairUsage = result.repairUsage();
 				// A successful repair replaces the delivered terminal: the message that
 				// actually passed validation becomes the final message while the failed
 				// original stays in history, and stream consumers see it through the
@@ -720,12 +725,6 @@ public final class ReActAgent implements Agent {
 				if (result.data() != null) {
 					outputs.put("structuredOutput", result.data());
 				}
-			}
-			if (repairUsage != null) {
-				// A repair re-ask happened after the last per-turn update: publish the
-				// delivery-inclusive cumulative usage so a UsageUpdate consumer sees the
-				// repair spend before the finished snapshot agrees with it.
-				emit(new AgentEvent.UsageUpdate(deliveredUsage));
 			}
 			emit(new AgentEvent.Finished(AgentOutcome.completed(messages, outputs, deliveredUsage)));
 		}

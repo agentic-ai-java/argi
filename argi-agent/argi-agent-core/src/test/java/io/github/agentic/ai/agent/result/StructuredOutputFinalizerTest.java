@@ -216,17 +216,18 @@ class StructuredOutputFinalizerTest {
 	}
 
 	@Test
-	@DisplayName("a repair client that fails before any response keeps only the known usage")
-	void repairClientFailureBeforeResponseKeepsKnownUsageOnly() {
+	@DisplayName("a repair client that fails before any response keeps the delivery total unknown")
+	void repairClientFailureBeforeResponseKeepsTotalUnknown() {
 		ScriptedRepairClient client = ScriptedRepairClient.failing(new IllegalStateException("repair backend down"));
 		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
 
 		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, new Usage(1L, 2L, 3L));
 
 		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
-		assertThat(result.usage()).isEqualTo(new Usage(1L, 2L, 3L));
-		// The re-ask was issued but nothing about its consumption is known: the segment
-		// is present and unknown rather than fabricated as zero or absent.
+		// No response proves what the issued repair consumed, so neither the segment
+		// nor the total may claim it spent zero: both stay unknown instead of
+		// fabricating the pre-repair (1,2,3) as an exact delivery total.
+		assertThat(result.usage()).isEqualTo(Usage.unknown());
 		assertThat(result.repairUsage()).isEqualTo(Usage.unknown());
 	}
 

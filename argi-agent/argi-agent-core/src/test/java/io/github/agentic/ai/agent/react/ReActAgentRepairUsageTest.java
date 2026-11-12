@@ -19,6 +19,7 @@ import io.github.agentic.ai.agent.AgentEvent;
 import io.github.agentic.ai.agent.AgentExecutionContext;
 import io.github.agentic.ai.agent.AgentOutcome;
 import io.github.agentic.ai.agent.AgentRequest;
+import io.github.agentic.ai.agent.AgentResult;
 import io.github.agentic.ai.agent.result.StructuredOutputFinalizer;
 import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatClientCapabilities;
@@ -94,22 +95,36 @@ class ReActAgentRepairUsageTest {
 	}
 
 	/**
-	 * 验证修复客户端在响应前失败时，只保留主调用已报告的用量，不猜测修复消耗。
+	 * 验证修复客户端在响应前失败时，交付总量保持未知：没有响应不能证明修复消耗为零，
+	 * 事件视图与异常携带的结果都不得退回修复前的 (1,2,3)。
 	 */
 	@ParameterizedTest(name = "streamModel={0}")
 	@ValueSource(booleans = { false, true })
-	void failedRepairKeepsOnlyReportedUsage(boolean streamModel) throws Exception {
+	void failedRepairKeepsDeliveryTotalUnknown(boolean streamModel) throws Exception {
 		final RepairClient repair = RepairClient.failing(new IllegalStateException("repair backend down"));
-		final UsageView view = new UsageView();
-		final ReActAgent agent = agent(new InvalidJsonClient(streamModel), repair, streamModel);
-		try (AgentExecutionContext context = context("failed-repair")) {
-			agent.stream(AgentRequest.messages(List.of(ChatMessage.user("give me the status"))), context)
-				.subscribe(view);
-			assertThrows(ExecutionException.class, () -> view.completed.get(5, TimeUnit.SECONDS));
-		}
+		final UsageView view = runExpectingFailure(streamModel, repair);
 
 		assertAll(() -> assertNull(view.outcome, "A failed repair must not publish a successful outcome"),
-				() -> assertEquals(MAIN, view.visibleUsage, "Only the main call's reported usage stays visible"));
+				() -> assertEquals(Usage.unknown(), view.visibleUsage,
+						"No response proves the repair consumption, so the visible total stays unknown"));
+	}
+
+	/**
+	 * 验证修复响应带用量但输出仍不合法时，合并用量先于失败传播：事件消费者的最后一个
+	 * UsageUpdate 与异常携带的 result.usage 一致（11/22/33），不停在修复前的 (1,2,3)。
+	 */
+	@ParameterizedTest(name = "streamModel={0}")
+	@ValueSource(booleans = { false, true })
+	void repairedButInvalidRunPublishesMergedUsageBeforeFailing(boolean streamModel) throws Exception {
+		final RepairClient repair = RepairClient.replying("still not json", REPAIR);
+		final UsageView view = runExpectingFailure(streamModel, repair);
+
+		final AgentExecutionException failure = (AgentExecutionException) view.error;
+		assertAll(() -> assertEquals(TOTAL, view.visibleUsage,
+				"The merged usage must be published before the failure propagates"),
+				() -> assertEquals(TOTAL, failure.result().usage(), "The thrown result carries the merged total"),
+				() -> assertEquals(REPAIR, failure.result().repairUsage()),
+				() -> assertEquals(AgentResult.Status.VALIDATION_FAILED, failure.result().status()));
 	}
 
 	/** 运行单轮无效输出 + 一次修复的完整调用，直到事件流完成。 */
@@ -120,6 +135,18 @@ class ReActAgentRepairUsageTest {
 			agent.stream(AgentRequest.messages(List.of(ChatMessage.user("give me the status"))), context)
 				.subscribe(view);
 			view.completed.get(5, TimeUnit.SECONDS);
+		}
+		return view;
+	}
+
+	/** 运行到以失败终结的事件流，返回已记录失败原因的视图。 */
+	private UsageView runExpectingFailure(boolean streamModel, RepairClient repair) throws Exception {
+		final UsageView view = new UsageView();
+		final ReActAgent agent = agent(new InvalidJsonClient(streamModel), repair, streamModel);
+		try (AgentExecutionContext context = context("repair-usage-test")) {
+			agent.stream(AgentRequest.messages(List.of(ChatMessage.user("give me the status"))), context)
+				.subscribe(view);
+			assertThrows(ExecutionException.class, () -> view.completed.get(5, TimeUnit.SECONDS));
 		}
 		return view;
 	}
@@ -251,7 +278,7 @@ class ReActAgentRepairUsageTest {
 
 	}
 
-	/** 按事件契约维护可见用量与最终 outcome 的消费者视图。 */
+	/** 按事件契约维护可见用量与最终 outcome 的消费者视图，失败时记录原因。 */
 	private static final class UsageView implements Flow.Subscriber<AgentEvent> {
 
 		private final CompletableFuture<Void> completed = new CompletableFuture<>();
@@ -261,6 +288,8 @@ class ReActAgentRepairUsageTest {
 		private AgentOutcome outcome;
 
 		private String deliveredText;
+
+		private Throwable error;
 
 		@Override
 		public void onSubscribe(Flow.Subscription subscription) {
@@ -282,8 +311,9 @@ class ReActAgentRepairUsageTest {
 		}
 
 		@Override
-		public void onError(Throwable error) {
-			completed.completeExceptionally(error);
+		public void onError(Throwable failure) {
+			this.error = failure;
+			completed.completeExceptionally(failure);
 		}
 
 		@Override
