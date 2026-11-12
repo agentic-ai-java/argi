@@ -15,6 +15,13 @@
  */
 package io.github.agentic.ai.workflow;
 
+import com.networknt.schema.Error;
+import com.networknt.schema.InputFormat;
+import com.networknt.schema.Schema;
+import com.networknt.schema.SchemaLocation;
+import com.networknt.schema.SchemaRegistry;
+import com.networknt.schema.SpecificationVersion;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -23,19 +30,28 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
-/** Structural validation performed before a definition can be published. */
+/**
+ * Structural validation performed before a definition can be published.
+ *
+ * <p>
+ * Declared input and output schemas are checked for syntax against the supported
+ * JSON Schema dialect (draft 2020-12, the same validator the agent layer uses for
+ * structured outputs). A definition that declares no schema is unaffected; a blank
+ * schema is still rejected.
+ */
 public final class WorkflowDefinitionValidator {
+
+	private static final SchemaRegistry SCHEMAS = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12);
+
+	private static final Schema META_SCHEMA = SCHEMAS
+		.getSchema(SchemaLocation.of(SpecificationVersion.DRAFT_2020_12.getDialectId()));
 
 	private WorkflowDefinitionValidator() {
 	}
 
 	public static void validate(WorkflowDefinition definition) {
-		if (definition.inputSchema() != null && definition.inputSchema().isBlank()) {
-			throw new IllegalArgumentException("inputSchema must not be blank");
-		}
-		if (definition.outputSchema() != null && definition.outputSchema().isBlank()) {
-			throw new IllegalArgumentException("outputSchema must not be blank");
-		}
+		validateSchema("inputSchema", definition.inputSchema());
+		validateSchema("outputSchema", definition.outputSchema());
 		Set<String> ids = new HashSet<>();
 		definition.steps().forEach(step -> validateStep(step, ids));
 	}
@@ -105,6 +121,35 @@ public final class WorkflowDefinitionValidator {
 		}
 		else if (step instanceof WorkflowStep.Loop loop) {
 			collectSubflowReferences(loop.body(), references);
+		}
+	}
+
+	private static void validateSchema(String field, String schema) {
+		if (schema == null) {
+			return;
+		}
+		if (schema.isBlank()) {
+			throw new IllegalArgumentException(field + " must not be blank");
+		}
+		// Compiling the document is not enough: a non-object document or an invalid
+		// keyword value would be accepted here and silently ignored at run time.
+		List<Error> errors;
+		try {
+			errors = META_SCHEMA.validate(schema, InputFormat.JSON);
+		}
+		catch (RuntimeException exception) {
+			throw new IllegalArgumentException(field + " is not valid JSON: " + exception.getMessage(), exception);
+		}
+		if (!errors.isEmpty()) {
+			throw new IllegalArgumentException(
+					field + " is not a valid JSON Schema (draft 2020-12): " + errors.get(0).getMessage());
+		}
+		try {
+			SCHEMAS.getSchema(schema);
+		}
+		catch (RuntimeException exception) {
+			throw new IllegalArgumentException(
+					field + " is not a valid JSON Schema (draft 2020-12): " + exception.getMessage(), exception);
 		}
 	}
 
