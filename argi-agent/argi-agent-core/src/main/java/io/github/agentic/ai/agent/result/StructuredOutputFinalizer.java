@@ -171,7 +171,7 @@ public final class StructuredOutputFinalizer {
 							ROOT_PATH, "Configured output schema is not a valid JSON Schema")));
 		}
 
-		AgentResult first = validateAgainst(terminal, schema, usage);
+		AgentResult first = validateAgainst(terminal, schema, usage, null);
 		if (first.status() != AgentResult.Status.VALIDATION_FAILED || this.repairClient == null) {
 			return first;
 		}
@@ -180,22 +180,33 @@ public final class StructuredOutputFinalizer {
 			// exceeded and ownership lost all propagate as execution stops.
 			control.assertActive();
 		}
-		ChatMessage repaired = attemptRepair(terminal, outputSchema, first.issues(), control);
-		if (repaired == null) {
-			// The repair re-ask could not be performed: keep the original failure and
-			// mark the distinction from a repair that ran but stayed invalid.
-			List<AgentResult.OutputValidationIssue> marked = new ArrayList<>();
-			marked.add(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_REPAIR_CALL_FAILED, ROOT_PATH,
-					"The bounded repair re-ask could not be performed or returned no assistant message"));
-			marked.addAll(first.issues());
-			return AgentResult.validationFailed(first.message(), first.usage(), List.copyOf(marked));
+		RepairAttempt repair = attemptRepair(terminal, outputSchema, first.issues(), control);
+		if (repair == null) {
+			// The repair re-ask could not be performed at all: keep the original failure
+			// and mark the distinction from a repair that ran but stayed invalid. The
+			// call was issued yet no response proves what it consumed, so neither the
+			// segment nor the delivery total may claim it spent nothing: both stay
+			// unknown instead of the pre-repair usage standing in as an exact total.
+			return AgentResult.validationFailed(first.message(), Usage.unknown(), Usage.unknown(),
+					repairCallFailedIssues(first.issues()));
+		}
+		// The repair re-ask is part of the delivery: its reported usage folds into the
+		// delivered total per field, and an unknown field on either side stays unknown
+		// instead of being summed as zero — including a main usage that was never
+		// reported at all.
+		Usage deliveryUsage = (usage == null ? Usage.unknown() : usage).plus(repair.reportedUsage());
+		if (repair.message() == null) {
+			// A response arrived without an assistant message: the call happened and its
+			// reported usage counts, but there is nothing to re-validate.
+			return AgentResult.validationFailed(first.message(), deliveryUsage, repair.reportedUsage(),
+					repairCallFailedIssues(first.issues()));
 		}
 		if (control != null) {
 			// Deadline checks are synchronous: a deadline that expired during the
 			// re-ask stops the delivery here instead of publishing a late output.
 			control.assertActive();
 		}
-		AgentResult second = validateAgainst(repaired, schema, usage);
+		AgentResult second = validateAgainst(repair.message(), schema, deliveryUsage, repair.reportedUsage());
 		if (second.status() != AgentResult.Status.VALIDATION_FAILED) {
 			return second;
 		}
@@ -203,16 +214,17 @@ public final class StructuredOutputFinalizer {
 		marked.add(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_REPAIRED_STILL_INVALID, ROOT_PATH,
 				"One bounded repair attempt did not produce a schema-valid output"));
 		marked.addAll(second.issues());
-		return AgentResult.validationFailed(repaired, usage, List.copyOf(marked));
+		return AgentResult.validationFailed(repair.message(), deliveryUsage, repair.reportedUsage(),
+				List.copyOf(marked));
 	}
 
-	private AgentResult validateAgainst(ChatMessage terminal, Schema schema, Usage usage) {
+	private AgentResult validateAgainst(ChatMessage terminal, Schema schema, Usage usage, Usage repairUsage) {
 		JsonNode root;
 		try {
 			root = MAPPER.readTree(terminal.text());
 		}
 		catch (RuntimeException ex) {
-			return AgentResult.validationFailed(terminal, usage,
+			return AgentResult.validationFailed(terminal, usage, repairUsage,
 					List.of(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_INVALID_JSON, ROOT_PATH,
 							"Terminal output is not valid JSON")));
 		}
@@ -224,17 +236,20 @@ public final class StructuredOutputFinalizer {
 				issues.add(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_SCHEMA_VIOLATION,
 						error.getInstanceLocation().toString(), error.getMessage()));
 			}
-			return AgentResult.validationFailed(terminal, usage, List.copyOf(issues));
+			return AgentResult.validationFailed(terminal, usage, repairUsage, List.copyOf(issues));
 		}
 
-		return AgentResult.completed(terminal, usage, root);
+		return AgentResult.completed(terminal, usage, repairUsage, root);
 	}
 
 	/**
-	 * One bounded repair re-ask: single-turn, no tools, no graph. Returns the repaired
-	 * assistant message, or {@code null} when the repair client itself failed.
+	 * One bounded repair re-ask: single-turn, no tools, no graph. Returns what the re-ask
+	 * produced — the repaired assistant message (or {@code null} when the response carried
+	 * none) together with the usage that response reported, or {@code null} when no
+	 * response was received at all and therefore nothing about the call's consumption
+	 * is known.
 	 */
-	private ChatMessage attemptRepair(ChatMessage terminal, String outputSchema,
+	private RepairAttempt attemptRepair(ChatMessage terminal, String outputSchema,
 			List<AgentResult.OutputValidationIssue> issues, ExecutionGuard control) {
 		try {
 			String issueSummary = issues.stream()
@@ -251,10 +266,12 @@ public final class StructuredOutputFinalizer {
 					GenerationOptions.builder().toolChoice(ToolChoice.none()).build(), Map.of());
 			ChatResponse response = control == null ? this.repairClient.callBlocking(request)
 					: callUnderControl(request, control);
-			return response.messages().stream()
+			ChatMessage repaired = response.messages().stream()
 				.filter(message -> message.role() == ChatRole.ASSISTANT)
 				.findFirst()
 				.orElse(null);
+			Usage reportedUsage = response.usage() == null ? Usage.unknown() : response.usage();
+			return new RepairAttempt(repaired, reportedUsage);
 		}
 		catch (CancellationException cancelled) {
 			if (control == null) {
@@ -276,6 +293,25 @@ public final class StructuredOutputFinalizer {
 			}
 			return null;
 		}
+	}
+
+	/** The outcome of a repair re-ask that received a response. */
+	private record RepairAttempt(ChatMessage message, Usage reportedUsage) {
+
+	}
+
+	/**
+	 * Marks a repair re-ask that produced no re-validatable message — either no response
+	 * at all or a response without an assistant message — in front of the original
+	 * validation failure.
+	 */
+	private static List<AgentResult.OutputValidationIssue> repairCallFailedIssues(
+			List<AgentResult.OutputValidationIssue> original) {
+		List<AgentResult.OutputValidationIssue> marked = new ArrayList<>();
+		marked.add(new AgentResult.OutputValidationIssue(AgentResult.ERROR_CODE_REPAIR_CALL_FAILED, ROOT_PATH,
+				"The bounded repair re-ask could not be performed or returned no assistant message"));
+		marked.addAll(original);
+		return List.copyOf(marked);
 	}
 
 	/**

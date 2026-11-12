@@ -173,6 +173,156 @@ class StructuredOutputFinalizerTest {
 		assertThat(client.calls.get()).isEqualTo(1);
 	}
 
+	@Test
+	@DisplayName("a successful repair folds the repair call usage into the delivered total")
+	void successfulRepairFoldsRepairUsageIntoTotal() {
+		ScriptedRepairClient client = ScriptedRepairClient.replying("{\"status\":\"ok\"}", new Usage(10L, 20L, 30L));
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, new Usage(1L, 2L, 3L));
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(result.usage()).isEqualTo(new Usage(11L, 22L, 33L));
+		assertThat(result.repairUsage()).isEqualTo(new Usage(10L, 20L, 30L));
+		assertThat(client.calls.get()).isEqualTo(1);
+	}
+
+	@Test
+	@DisplayName("a repair that stays invalid still counts the repair call usage")
+	void repairStillInvalidCountsRepairUsage() {
+		ScriptedRepairClient client = ScriptedRepairClient.replying("still not json", new Usage(10L, 20L, 30L));
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, new Usage(1L, 2L, 3L));
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
+		assertThat(result.issues().get(0).errorCode()).isEqualTo(AgentResult.ERROR_CODE_REPAIRED_STILL_INVALID);
+		assertThat(result.usage()).isEqualTo(new Usage(11L, 22L, 33L));
+		assertThat(result.repairUsage()).isEqualTo(new Usage(10L, 20L, 30L));
+	}
+
+	@Test
+	@DisplayName("a repair response without an assistant message still counts its usage")
+	void repairResponseWithoutAssistantMessageCountsUsage() {
+		ScriptedRepairClient client = ScriptedRepairClient.withoutAssistantMessage(new Usage(10L, 20L, 30L));
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, new Usage(1L, 2L, 3L));
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
+		assertThat(result.issues().get(0).errorCode()).isEqualTo(AgentResult.ERROR_CODE_REPAIR_CALL_FAILED);
+		assertThat(result.usage()).isEqualTo(new Usage(11L, 22L, 33L));
+		assertThat(result.repairUsage()).isEqualTo(new Usage(10L, 20L, 30L));
+	}
+
+	@Test
+	@DisplayName("a repair client that fails before any response keeps the delivery total unknown")
+	void repairClientFailureBeforeResponseKeepsTotalUnknown() {
+		ScriptedRepairClient client = ScriptedRepairClient.failing(new IllegalStateException("repair backend down"));
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, new Usage(1L, 2L, 3L));
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.VALIDATION_FAILED);
+		// No response proves what the issued repair consumed, so neither the segment
+		// nor the total may claim it spent zero: both stay unknown instead of
+		// fabricating the pre-repair (1,2,3) as an exact delivery total.
+		assertThat(result.usage()).isEqualTo(Usage.unknown());
+		assertThat(result.repairUsage()).isEqualTo(Usage.unknown());
+	}
+
+	@Test
+	@DisplayName("unknown repair usage fields stay unknown instead of fabricating totals")
+	void unknownRepairUsageFieldsStayUnknown() {
+		ScriptedRepairClient client = ScriptedRepairClient.replying("{\"status\":\"ok\"}", new Usage(null, 20L, null));
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, new Usage(1L, 2L, 3L));
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		assertThat(result.usage()).isEqualTo(new Usage(null, 22L, null));
+		assertThat(result.repairUsage()).isEqualTo(new Usage(null, 20L, null));
+	}
+
+	@Test
+	@DisplayName("a delivery without a repair call carries no repair usage segment")
+	void noRepairCarriesNoSegment() {
+		AgentResult direct = finalizer.finalizeOutput(ChatMessage.assistant("{\"status\":\"ok\"}"), SCHEMA,
+				new Usage(1L, 2L, 3L));
+		ScriptedRepairClient unused = ScriptedRepairClient.replying("{\"status\":\"ok\"}", new Usage(10L, 20L, 30L));
+		AgentResult stillValid = new StructuredOutputFinalizer(unused)
+			.finalizeOutput(ChatMessage.assistant("{\"status\":\"ok\"}"), SCHEMA, new Usage(1L, 2L, 3L));
+
+		assertThat(direct.repairUsage()).isNull();
+		assertThat(stillValid.repairUsage()).isNull();
+	}
+
+	@Test
+	@DisplayName("a null main usage with a repair response stays unknown instead of failing")
+	void nullMainUsageWithRepairStaysUnknown() {
+		ScriptedRepairClient client = ScriptedRepairClient.replying("{\"status\":\"ok\"}", new Usage(10L, 20L, 30L));
+		StructuredOutputFinalizer repairing = new StructuredOutputFinalizer(client);
+
+		AgentResult result = repairing.finalizeOutput(ChatMessage.assistant("not json"), SCHEMA, null);
+
+		assertThat(result.status()).isEqualTo(AgentResult.Status.COMPLETED);
+		// The main call reported nothing, so the delivery total stays unknown even
+		// though the repair reported values: unknown is never summed as zero.
+		assertThat(result.usage()).isEqualTo(Usage.unknown());
+		assertThat(result.repairUsage()).isEqualTo(new Usage(10L, 20L, 30L));
+	}
+
+	/** A repair client whose reply payload and usage are fully scripted. */
+	private static final class ScriptedRepairClient implements ChatClient {
+
+		private final AtomicInteger calls = new AtomicInteger();
+
+		private final java.util.List<ChatMessage> messages;
+
+		private final Usage usage;
+
+		private final RuntimeException failure;
+
+		private ScriptedRepairClient(java.util.List<ChatMessage> messages, Usage usage, RuntimeException failure) {
+			this.messages = messages;
+			this.usage = usage;
+			this.failure = failure;
+		}
+
+		static ScriptedRepairClient replying(String text, Usage usage) {
+			return new ScriptedRepairClient(java.util.List.of(ChatMessage.assistant(text)), usage, null);
+		}
+
+		static ScriptedRepairClient withoutAssistantMessage(Usage usage) {
+			return new ScriptedRepairClient(java.util.List.of(), usage, null);
+		}
+
+		static ScriptedRepairClient failing(RuntimeException failure) {
+			return new ScriptedRepairClient(java.util.List.of(), null, failure);
+		}
+
+		@Override
+		public java.util.concurrent.CompletionStage<ChatResponse> call(ChatRequest request) {
+			this.calls.incrementAndGet();
+			if (this.failure != null) {
+				throw this.failure;
+			}
+			return CompletableFuture.completedFuture(new ChatResponse("repair-id", "test-model", this.messages,
+					java.util.List.of(), null, this.usage, java.util.Map.of()));
+		}
+
+		@Override
+		public Flow.Publisher<ChatEvent> stream(ChatRequest request) {
+			throw new UnsupportedOperationException("Streaming is unavailable");
+		}
+
+		@Override
+		public ChatClientCapabilities capabilities() {
+			return ChatClientCapabilities.basic();
+		}
+
+	}
+
 	private static final class RepairStub implements ChatClient {
 
 		private final AtomicInteger calls = new AtomicInteger();
