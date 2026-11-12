@@ -256,6 +256,66 @@ class WorkflowSchemaContractTest {
 	}
 
 	@Test
+	void aThriceSuspendedChildKeepsItsResumeTokenUntilCompletion() throws Exception {
+		AtomicInteger invocations = new AtomicInteger();
+		AtomicInteger resumedInvocations = new AtomicInteger();
+		Agent thrice = agent(request -> {
+			int call = invocations.incrementAndGet();
+			if (request.resumeToken() != null) {
+				resumedInvocations.incrementAndGet();
+			}
+			if (call <= 3) {
+				return new AgentOutcome(AgentOutcome.Status.SUSPENDED, List.of(ChatMessage.assistant("need more")),
+						Map.of(), new Usage(1L, 1L, 2L), new AgentOutcome.Suspension("agent-token-" + call,
+								Map.of("prompt", "provide confirmation " + call)));
+			}
+			return AgentOutcome.completed(List.of(ChatMessage.assistant("done")),
+					Map.of("value", "finally done"), new Usage(1L, 1L, 2L));
+		});
+		AtomicInteger toolExecutions = new AtomicInteger();
+		WorkflowDefinition definition = new WorkflowDefinition("thrice", "1",
+				List.of(new WorkflowStep.Agent("answer", "ref"),
+						new WorkflowStep.Tool("mark", "mark", Map.of(), "marked", null)));
+		WorkflowAgent workflow = WorkflowAgent.builder(definition).agents(Map.of("ref", thrice))
+				.tools(new ToolRegistry(List.of(countingTool(toolExecutions)))).build();
+
+		try (AgentExecutionContext first = context()) {
+			AgentOutcome suspendedOnce = workflow
+					.invoke(new AgentRequest(List.of(ChatMessage.user("go")), Map.of("question", "why"), null), first)
+					.get(3, TimeUnit.SECONDS);
+			assertEquals(AgentOutcome.Status.SUSPENDED, suspendedOnce.status());
+			String firstToken = suspendedOnce.suspension().resumeToken();
+			try (AgentExecutionContext second = context()) {
+				AgentOutcome suspendedTwice = workflow
+						.invoke(new AgentRequest(List.of(), Map.of(), firstToken), second)
+						.get(3, TimeUnit.SECONDS);
+				assertEquals(AgentOutcome.Status.SUSPENDED, suspendedTwice.status());
+				String secondToken = suspendedTwice.suspension().resumeToken();
+				try (AgentExecutionContext third = context()) {
+					AgentOutcome suspendedThrice = workflow
+							.invoke(new AgentRequest(List.of(), Map.of(), secondToken), third)
+							.get(3, TimeUnit.SECONDS);
+					assertEquals(AgentOutcome.Status.SUSPENDED, suspendedThrice.status());
+					String thirdToken = suspendedThrice.suspension().resumeToken();
+					try (AgentExecutionContext fourth = context()) {
+						AgentOutcome outcome = workflow
+								.invoke(new AgentRequest(List.of(), Map.of(), thirdToken), fourth)
+								.get(3, TimeUnit.SECONDS);
+						assertEquals(AgentOutcome.Status.COMPLETED, outcome.status());
+						// The third suspension keeps its token: the fourth invocation
+						// completes the child and its outputs reach the workflow state.
+						assertEquals(4, invocations.get());
+						assertEquals(3, resumedInvocations.get());
+						assertEquals(Map.of("value", "finally done"), outcome.outputs().get("answer"));
+						// The step after the thrice-suspended child still runs.
+						assertEquals(1, toolExecutions.get());
+					}
+				}
+			}
+		}
+	}
+
+	@Test
 	void aLoopBodySuspendingTwiceStillCompletesTheRemainingIterations() throws Exception {
 		AtomicInteger invocations = new AtomicInteger();
 		Agent twice = agent(request -> {

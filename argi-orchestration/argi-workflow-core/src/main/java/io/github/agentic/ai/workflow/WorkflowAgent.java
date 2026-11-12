@@ -453,29 +453,27 @@ public final class WorkflowAgent implements Agent {
 				"agent resolver returned no agent for " + step.agentRef());
 		Map<String, Object> inputs = resolveMap(step.inputs(), data);
 		AgentOutcome outcome = await(agent.invoke(new AgentRequest(data.messages, inputs, null), context));
+		return resumeUntilCompleted(step, agent, data, outcome);
+	}
+
+	/**
+	 * Applies a completed child outcome, or suspends on the child's own resume token
+	 * and re-enters this same path on resume, so any number of child suspensions is
+	 * resumed until the child actually completes.
+	 */
+	private ExecutionResult resumeUntilCompleted(WorkflowStep.Agent step, Agent agent, RunData data,
+			AgentOutcome outcome) {
 		data.messages.addAll(outcome.messages());
 		data.addUsage(outcome.usage());
-		if (outcome.status() == AgentOutcome.Status.SUSPENDED) {
-			return ExecutionResult.suspended(data, outcome.suspension().prompts(), (request, resumeContext) -> {
-				AgentOutcome resumed = await(agent.invoke(new AgentRequest(request.messages(), request.inputs(),
-						outcome.suspension().resumeToken()), resumeContext));
-				data.messages.addAll(resumed.messages());
-				data.addUsage(resumed.usage());
-				if (resumed.status() == AgentOutcome.Status.SUSPENDED) {
-					return ExecutionResult.suspended(data, resumed.suspension().prompts(), (next, nextContext) -> {
-						AgentOutcome finalOutcome = await(agent.invoke(new AgentRequest(next.messages(), next.inputs(),
-								resumed.suspension().resumeToken()), nextContext));
-						data.messages.addAll(finalOutcome.messages());
-						data.addUsage(finalOutcome.usage());
-						return finalOutcome.status() == AgentOutcome.Status.SUSPENDED
-								? ExecutionResult.suspended(data, finalOutcome.suspension().prompts(), (again, againContext) ->
-										ExecutionResult.completed(data)) : applyAgentOutput(step, finalOutcome, data);
-					});
-				}
-				return applyAgentOutput(step, resumed, data);
-			});
+		if (outcome.status() != AgentOutcome.Status.SUSPENDED) {
+			return applyAgentOutput(step, outcome, data);
 		}
-		return applyAgentOutput(step, outcome, data);
+		AgentOutcome.Suspension suspension = outcome.suspension();
+		return ExecutionResult.suspended(data, suspension.prompts(), (request, resumeContext) -> {
+			AgentOutcome resumed = await(agent.invoke(
+					new AgentRequest(request.messages(), request.inputs(), suspension.resumeToken()), resumeContext));
+			return resumeUntilCompleted(step, agent, data, resumed);
+		});
 	}
 
 	private ExecutionResult applyAgentOutput(WorkflowStep.Agent step, AgentOutcome outcome, RunData data) {
