@@ -165,7 +165,7 @@ class ModelFallbackNeutralClientTest {
 		assertThatThrownBy(() -> interceptor.interceptModel(ModelRequest.builder().build(), request -> {
 			attempts.add(request.getChatClient());
 			throw request.getChatClient() == second ? last : new IllegalStateException("Unavailable");
-		})).hasMessage("All clients failed after 3 attempts").hasCause(last);
+		})).hasMessage("All clients failed after 3 attempts (primary, fallback-1, fallback-2)").hasCause(last);
 		assertThat(attempts).containsExactly(null, first, second);
 		assertThatThrownBy(() -> ModelFallbackInterceptor.builder().build())
 			.isInstanceOf(IllegalArgumentException.class);
