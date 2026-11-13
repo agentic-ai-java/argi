@@ -51,19 +51,28 @@ class ModelFallbackInterceptorStreamingTest {
 		ModelResponse result = interceptor(fallback).interceptModel(ModelRequest.builder().messages(List.of()).build(),
 				request -> primary);
 
-		assertSame(primary, result);
+		// The response is wrapped by the switch boundary, but its events are delivered
+		// unchanged and the fallback client is never invoked.
+		assertEquals(true, result.isStreaming());
+		Flux<ChatEvent> stream = JdkFlowAdapter.flowPublisherToFlux(result.getStream());
+		assertEquals("primary", stream.blockLast(Duration.ofSeconds(2)).response().text());
 		assertEquals(0, fallback.calls);
 	}
 
 	@Test
-	void publisherErrorsRemainStreamingErrors() {
+	void publisherErrorsExhaustingAllCandidatesFailWithAggregate() {
 		CountingModel fallback = new CountingModel("fallback");
 		RuntimeException failure = new RuntimeException("stream failed");
 		ModelResponse result = interceptor(fallback).interceptModel(ModelRequest.builder().messages(List.of()).build(),
 				request -> ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(Flux.error(failure))));
 
 		Flux<ChatEvent> stream = JdkFlowAdapter.flowPublisherToFlux(result.getStream());
-		assertSame(failure, assertThrows(RuntimeException.class, () -> stream.blockLast(Duration.ofSeconds(2))));
+		// The handler fails for every candidate before any event is emitted, so the
+		// switch boundary walks the whole sequence and reports the aggregate.
+		RuntimeException aggregate = assertThrows(RuntimeException.class,
+				() -> stream.blockLast(Duration.ofSeconds(2)));
+		assertEquals("All clients failed after 2 attempts (primary, fallback-1)", aggregate.getMessage());
+		assertSame(failure, aggregate.getCause());
 		assertEquals(0, fallback.calls);
 	}
 
