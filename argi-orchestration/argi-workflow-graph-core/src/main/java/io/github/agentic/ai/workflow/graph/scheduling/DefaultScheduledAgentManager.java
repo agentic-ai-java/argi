@@ -50,8 +50,16 @@ public class DefaultScheduledAgentManager implements ScheduledAgentManager {
 	private volatile boolean shutdown = false;
 
 	private DefaultScheduledAgentManager() {
-		this.taskScheduler = createTaskScheduler();
+		this(createTaskScheduler());
 		log.info("Default Scheduled Agent Manager initialized with shared task scheduler");
+	}
+
+	/**
+	 * Test seam: the eager singleton cannot be resurrected and its real scheduler cannot
+	 * drive deterministic interleaving tests, so tests inject their own scheduler.
+	 */
+	DefaultScheduledAgentManager(TaskScheduler taskScheduler) {
+		this.taskScheduler = taskScheduler;
 	}
 
 	/**
@@ -82,6 +90,12 @@ public class DefaultScheduledAgentManager implements ScheduledAgentManager {
 		String taskId = String.format("agent-task-%s-%d", task.getName(), taskIdGenerator.getAndIncrement());
 		lock.writeLock().lock();
 		try {
+			// shutdown() sets the flag under the same write lock, so re-checking here
+			// makes the check-and-register atomic with shutdown: a registration that
+			// passed the fast-fail check cannot be interleaved into a shut-down manager.
+			if (shutdown) {
+				throw new IllegalStateException("Default Scheduled Agent Manager is shut down");
+			}
 			activeTasks.put(taskId, task);
 			log.debug("Registered scheduled agent task: {}", taskId);
 			return taskId;
@@ -204,7 +218,7 @@ public class DefaultScheduledAgentManager implements ScheduledAgentManager {
 		return shutdown;
 	}
 
-	private TaskScheduler createTaskScheduler() {
+	private static TaskScheduler createTaskScheduler() {
 		ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
 		scheduler.setPoolSize(3);
 		scheduler.setThreadNamePrefix("agent-scheduler-");
