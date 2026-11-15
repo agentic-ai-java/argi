@@ -34,6 +34,9 @@ public interface ScheduledAgentManager {
 	 * Register a scheduled agent task
 	 * @param task the task to register
 	 * @return the unique task ID assigned to this task
+	 * @throws IllegalStateException if the manager is shut down; the rejection is decided
+	 * atomically against shutdown, so a registration racing with an in-progress shutdown
+	 * must also be rejected instead of leaving a stranded task
 	 */
 	String registerTask(ScheduledAgentTask task);
 
