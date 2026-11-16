@@ -406,7 +406,9 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	}
 
 	/**
-	 * Handle one assembled SSE data event.
+	 * Handle one assembled SSE data event. A terminal frame may itself carry the task's
+	 * final output — for example a completed Task whose artifacts hold the whole answer —
+	 * so that output is extracted and delivered before the event terminates the stream.
 	 * @return whether the event terminates the remote task: the {@code [DONE]} sentinel or
 	 * a completed status-update
 	 */
@@ -431,23 +433,22 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		if (remoteFailure != null) {
 			throw remoteFailure;
 		}
-		if (isCompletedStatus(result)) {
-			return true;
-		}
+		final boolean completed = isCompletedStatus(result);
 		final String text;
 		try {
 			text = extractResponseText(result);
 		}
 		catch (Exception ex) {
 			// a recognizable frame without extractable text is skipped, mirroring the
-			// historical behavior for events this client does not consume
-			return false;
+			// historical behavior for events this client does not consume; a terminal
+			// frame carrying no output still terminates the stream
+			return completed;
 		}
 		if (text != null && !text.isEmpty()) {
 			accumulated.append(text);
 			emit(sink, buildStreamingOutput(text, state));
 		}
-		return false;
+		return completed;
 	}
 
 	/**

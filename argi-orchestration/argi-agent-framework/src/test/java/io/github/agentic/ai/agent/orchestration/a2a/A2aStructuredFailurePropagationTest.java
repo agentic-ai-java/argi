@@ -274,6 +274,29 @@ class A2aStructuredFailurePropagationTest {
 	}
 
 	@Test
+	void completedTaskFrameInSseStreamDeliversItsArtifactsBeforeTerminating() throws Exception {
+		// The terminal frame may itself carry the task's final artifacts; its output must
+		// be extracted before terminating, otherwise only done is emitted and the final
+		// result is an empty reply.
+		HttpServer server = startServer(200, "text/event-stream",
+				("data: %s\n\n").formatted("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"task\","
+						+ "\"status\":{\"state\":\"completed\"},"
+						+ "\"artifacts\":[{\"parts\":[{\"text\":\"answer\"}]}]}}"));
+		try {
+			StepVerifier.create(streamingFlux(server))
+				.assertNext(response -> assertThat(streamingText(response)).isEqualTo("answer"))
+				.assertNext(response -> {
+					assertThat(response.isDone()).isTrue();
+					assertThat(((Map<?, ?>) response.resultValue().orElseThrow()).get("reply")).isEqualTo("answer");
+				})
+				.verifyComplete();
+		}
+		finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
 	void sseCommentsUnknownFieldsAndUnknownEventsAreIgnored() throws Exception {
 		HttpServer server = startServer(200, "text/event-stream", ": keep-alive comment\n\n"
 				+ "event: status\nid: 42\n"
