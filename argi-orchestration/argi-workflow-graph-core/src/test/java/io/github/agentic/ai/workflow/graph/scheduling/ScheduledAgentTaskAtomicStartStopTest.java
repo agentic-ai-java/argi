@@ -179,6 +179,20 @@ class ScheduledAgentTaskAtomicStartStopTest {
 				() -> assertTrue(task.isStopped()));
 	}
 
+	/** 复现 #370 review：从未 start 的任务 stop 后不得自称 started。 */
+	@Test
+	void aNeverStartedTaskDoesNotReportItselfAsStartedAfterStop() throws Exception {
+		factory.registerProvider(() -> manager);
+		final ScheduledAgentTask task = new ScheduledAgentTask(graphFailingFirstAttempts(new AtomicInteger(), 0),
+				ScheduleConfig.builder().initialDelay(0).build());
+		assertFalse(task.isStarted(), "A NEW task is not started");
+
+		task.stop();
+
+		assertAll(() -> assertTrue(task.isStopped(), "The task ends stopped"),
+				() -> assertFalse(task.isStarted(), "Stopping a never-started task must not report started"));
+	}
+
 	private Thread startInBackground(ScheduledAgentTask task, AtomicReference<Throwable> failure, String name) {
 		Thread worker = new Thread(() -> {
 			try {

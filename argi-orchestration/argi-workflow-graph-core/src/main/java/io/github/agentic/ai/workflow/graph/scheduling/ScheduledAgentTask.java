@@ -82,6 +82,14 @@ public class ScheduledAgentTask {
 
 	private final AtomicReference<ScheduleState> state = new AtomicReference<>(ScheduleState.NEW);
 
+	/**
+	 * Monotonic observation projection, not a lifecycle transition: set once when a
+	 * start reaches RUNNING and never reset, so {@link #isStarted()} reports whether a
+	 * start actually succeeded rather than which non-terminal state the task is in.
+	 * The state machine above stays the single source of transitions (#370 review).
+	 */
+	private volatile boolean startSucceeded;
+
 	private final AtomicBoolean unregistered = new AtomicBoolean(false);
 
 	private final String taskId;
@@ -144,6 +152,7 @@ public class ScheduledAgentTask {
 			cancelPublishedFuture();
 			throw new IllegalStateException("Schedule stopped while starting");
 		}
+		startSucceeded = true;
 
 		notifyListeners(ScheduleLifecycleListener.ScheduleEvent.STARTED);
 		return this;
@@ -293,7 +302,7 @@ public class ScheduledAgentTask {
 
 	// Getters for monitoring
 	public boolean isStarted() {
-		return state.get() != ScheduleState.NEW && state.get() != ScheduleState.FAILED;
+		return startSucceeded;
 	}
 
 	public boolean isStopped() {
