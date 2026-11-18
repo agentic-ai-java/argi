@@ -364,9 +364,9 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * Consume an A2A {@code text/event-stream} response. Events follow the SSE wire format:
 	 * comment lines and fields other than {@code data} are ignorable extensions, the
 	 * {@code data} lines of one event are joined with newlines, and a blank line dispatches
-	 * the accumulated event. Reading stops at the {@code [DONE]} sentinel or a completed
-	 * status-update; an event stream that ends without any terminal state is a protocol
-	 * failure (issue #213).
+	 * the accumulated event. Reading stops at the {@code [DONE]} sentinel, a completed
+	 * status-update or any event marked {@code final}; an event stream that ends without
+	 * any terminal state is a protocol failure (issue #213).
 	 */
 	private void consumeEventStream(InputStream content, OverAllState state,
 			FluxSink<GraphResponse<NodeOutput>> sink, StringBuilder accumulated) throws IOException {
@@ -409,8 +409,10 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * Handle one assembled SSE data event. A terminal frame may itself carry the task's
 	 * final output — for example a completed Task whose artifacts hold the whole answer —
 	 * so that output is extracted and delivered before the event terminates the stream.
-	 * @return whether the event terminates the remote task: the {@code [DONE]} sentinel or
-	 * a completed status-update
+	 * Remote task failures are classified first: a failed status-update terminates the
+	 * stream with a structured error even when it also carries the {@code final} flag.
+	 * @return whether the event terminates the remote task: the {@code [DONE]} sentinel,
+	 * a completed status-update, or any event marked {@code final}
 	 */
 	private boolean dispatchSseEvent(String data, OverAllState state, FluxSink<GraphResponse<NodeOutput>> sink,
 			StringBuilder accumulated) {
@@ -433,7 +435,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		if (remoteFailure != null) {
 			throw remoteFailure;
 		}
-		final boolean completed = isCompletedStatus(result);
+		final boolean terminal = isCompletedStatus(result) || isFinalEvent(result);
 		final String text;
 		try {
 			text = extractResponseText(result);
@@ -442,13 +444,13 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 			// a recognizable frame without extractable text is skipped, mirroring the
 			// historical behavior for events this client does not consume; a terminal
 			// frame carrying no output still terminates the stream
-			return completed;
+			return terminal;
 		}
 		if (text != null && !text.isEmpty()) {
 			accumulated.append(text);
 			emit(sink, buildStreamingOutput(text, state));
 		}
-		return completed;
+		return terminal;
 	}
 
 	/**
@@ -590,6 +592,16 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 */
 	private static boolean isCompletedStatus(Map<String, Object> result) {
 		return "completed".equals(remoteTaskState(result));
+	}
+
+	/**
+	 * Whether the event is explicitly marked as the stream's last one. A successful A2A
+	 * event stream may end on a final status-update whose state is not completed — for
+	 * example {@code input-required}, a normal interaction boundary — so the flag, not
+	 * the state alone, terminates the stream.
+	 */
+	private static boolean isFinalEvent(Map<String, Object> result) {
+		return result.get("final") instanceof Boolean flag && flag;
 	}
 
 	/**

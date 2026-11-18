@@ -297,6 +297,39 @@ class A2aStructuredFailurePropagationTest {
 	}
 
 	@Test
+	void finalStatusUpdateTerminatesTheStreamWithoutProtocolError() throws Exception {
+		// input-required with the final flag is a normal interaction boundary: the stream
+		// must terminate successfully instead of failing with a missing-terminal-state
+		// error at EOF.
+		HttpServer server = startServer(200, "text/event-stream",
+				("data: %s\n\n").formatted(finalStatusFrame("input-required")));
+		try {
+			StepVerifier.create(streamingFlux(server))
+				.assertNext(response -> assertThat(streamingText(response)).isEqualTo("Agent State: input-required"))
+				.assertNext(response -> assertThat(response.isDone()).isTrue())
+				.verifyComplete();
+		}
+		finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void finalFlagDoesNotMaskARemoteTaskFailure() throws Exception {
+		HttpServer server = startServer(200, "text/event-stream",
+				("data: %s\n\n").formatted(finalStatusFrame("failed")));
+		try {
+			StepVerifier.create(streamingFlux(server))
+				.expectErrorSatisfies(
+						error -> assertThat(((A2aRemoteTaskException) error).taskState()).isEqualTo("failed"))
+				.verify(TIMEOUT);
+		}
+		finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
 	void sseCommentsUnknownFieldsAndUnknownEventsAreIgnored() throws Exception {
 		HttpServer server = startServer(200, "text/event-stream", ": keep-alive comment\n\n"
 				+ "event: status\nid: 42\n"
@@ -505,6 +538,12 @@ class A2aStructuredFailurePropagationTest {
 				: ",\"message\":{\"parts\":[{\"text\":\"" + messageText + "\"}]}";
 		return "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"status-update\",\"status\":"
 				+ "{\"state\":\"" + state + "\"" + message + "}}}";
+	}
+
+	/** A status-update event carrying the {@code final} flag that ends the stream. */
+	private static String finalStatusFrame(String state) {
+		return "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"status-update\",\"final\":true,"
+				+ "\"status\":{\"state\":\"" + state + "\"}}}";
 	}
 
 	/** A JSON-RPC envelope whose result is the Task object a single-body response returns. */
