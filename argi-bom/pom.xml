@@ -71,7 +71,7 @@
         <!-- Security patch families shared with the root build. -->
         <jackson-2-bom.version>2.23.0</jackson-2-bom.version>
         <jackson-bom.version>3.3.0</jackson-bom.version>
-        <bouncycastle.version>1.86</bouncycastle.version>
+        <bouncycastle.version>1.87</bouncycastle.version>
         <jsoup.version>1.24.1</jsoup.version>
         <tomcat.version>11.0.27</tomcat.version>
 
