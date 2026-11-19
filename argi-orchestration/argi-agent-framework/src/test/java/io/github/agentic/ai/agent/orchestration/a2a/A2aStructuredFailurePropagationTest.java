@@ -330,6 +330,44 @@ class A2aStructuredFailurePropagationTest {
 	}
 
 	@Test
+	void rejectedStatusWithFinalFlagFailsTheStreamWithRemoteTaskError() throws Exception {
+		// A rejected task is a terminal failure like failed/canceled; the final flag must
+		// not let it complete successfully with placeholder text.
+		HttpServer server = startServer(200, "text/event-stream",
+				("data: %s\n\n").formatted(finalStatusFrame("rejected")));
+		try {
+			StepVerifier.create(streamingFlux(server))
+				.expectErrorSatisfies(
+						error -> assertThat(((A2aRemoteTaskException) error).taskState()).isEqualTo("rejected"))
+				.verify(TIMEOUT);
+		}
+		finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void standaloneMessageResultTerminatesTheStreamWithoutProtocolError() throws Exception {
+		// An agent may answer with a bare Message instead of a tracked Task; the Message
+		// by itself completes the interaction, without a final flag or the [DONE] sentinel.
+		HttpServer server = startServer(200, "text/event-stream",
+				("data: %s\n\n").formatted(messageResultFrame("direct answer")));
+		try {
+			StepVerifier.create(streamingFlux(server))
+				.assertNext(response -> assertThat(streamingText(response)).isEqualTo("direct answer"))
+				.assertNext(response -> {
+					assertThat(response.isDone()).isTrue();
+					assertThat(((Map<?, ?>) response.resultValue().orElseThrow()).get("reply"))
+						.isEqualTo("direct answer");
+				})
+				.verifyComplete();
+		}
+		finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
 	void sseCommentsUnknownFieldsAndUnknownEventsAreIgnored() throws Exception {
 		HttpServer server = startServer(200, "text/event-stream", ": keep-alive comment\n\n"
 				+ "event: status\nid: 42\n"
@@ -544,6 +582,12 @@ class A2aStructuredFailurePropagationTest {
 	private static String finalStatusFrame(String state) {
 		return "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"status-update\",\"final\":true,"
 				+ "\"status\":{\"state\":\"" + state + "\"}}}";
+	}
+
+	/** A JSON-RPC result that is a standalone A2A Message answering the request directly. */
+	private static String messageResultFrame(String text) {
+		return "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"message\",\"messageId\":\"m-1\","
+				+ "\"role\":\"agent\",\"parts\":[{\"kind\":\"text\",\"text\":\"" + text + "\"}]}}";
 	}
 
 	/** A JSON-RPC envelope whose result is the Task object a single-body response returns. */

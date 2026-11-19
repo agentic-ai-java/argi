@@ -365,8 +365,9 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * comment lines and fields other than {@code data} are ignorable extensions, the
 	 * {@code data} lines of one event are joined with newlines, and a blank line dispatches
 	 * the accumulated event. Reading stops at the {@code [DONE]} sentinel, a completed
-	 * status-update or any event marked {@code final}; an event stream that ends without
-	 * any terminal state is a protocol failure (issue #213).
+	 * status-update, an event marked {@code final} or a standalone Message result; an
+	 * event stream that ends without any terminal state is a protocol failure
+	 * (issue #213).
 	 */
 	private void consumeEventStream(InputStream content, OverAllState state,
 			FluxSink<GraphResponse<NodeOutput>> sink, StringBuilder accumulated) throws IOException {
@@ -409,10 +410,12 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * Handle one assembled SSE data event. A terminal frame may itself carry the task's
 	 * final output — for example a completed Task whose artifacts hold the whole answer —
 	 * so that output is extracted and delivered before the event terminates the stream.
-	 * Remote task failures are classified first: a failed status-update terminates the
-	 * stream with a structured error even when it also carries the {@code final} flag.
+	 * Remote task failures are classified first: a failed, canceled or rejected
+	 * status-update terminates the stream with a structured error even when it also
+	 * carries the {@code final} flag.
 	 * @return whether the event terminates the remote task: the {@code [DONE]} sentinel,
-	 * a completed status-update, or any event marked {@code final}
+	 * a completed status-update, an event marked {@code final}, or a standalone Message
+	 * result
 	 */
 	private boolean dispatchSseEvent(String data, OverAllState state, FluxSink<GraphResponse<NodeOutput>> sink,
 			StringBuilder accumulated) {
@@ -435,7 +438,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		if (remoteFailure != null) {
 			throw remoteFailure;
 		}
-		final boolean terminal = isCompletedStatus(result) || isFinalEvent(result);
+		final boolean terminal = isTerminalEvent(result);
 		final String text;
 		try {
 			text = extractResponseText(result);
@@ -547,12 +550,13 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * Detect a remote task termination that must surface as a structured failure instead of
 	 * a normal completion (issue #213). Both shapes carry the outcome in a
 	 * {@code status.state} field: status-update events on a stream and the Task object a
-	 * single-body response returns. The optional status message carries the remote reason.
+	 * single-body response returns. Failed, canceled and rejected tasks are failures in
+	 * either shape. The optional status message carries the remote reason.
 	 * @return the failure to propagate, or null when the payload is not a task failure
 	 */
 	private static A2aRemoteTaskException remoteTaskFailure(Map<String, Object> result) {
 		final String state = remoteTaskState(result);
-		if (!"failed".equals(state) && !"canceled".equals(state)) {
+		if (!"failed".equals(state) && !"canceled".equals(state) && !"rejected".equals(state)) {
 			return null;
 		}
 		final String reason = result.get("status") instanceof Map<?, ?> status ? statusMessageText(status) : "";
@@ -602,6 +606,25 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 */
 	private static boolean isFinalEvent(Map<String, Object> result) {
 		return result.get("final") instanceof Boolean flag && flag;
+	}
+
+	/**
+	 * Whether the payload is a standalone A2A Message. An agent may answer a request with
+	 * a bare Message instead of a tracked Task; the Message by itself completes the
+	 * interaction, without a final flag or the {@code [DONE]} sentinel.
+	 */
+	private static boolean isStandaloneMessage(Map<String, Object> result) {
+		return "message".equals(result.get("kind"));
+	}
+
+	/**
+	 * Whether the event ends the remote interaction successfully: a completed task
+	 * status, an event explicitly marked {@code final}, or a standalone Message that
+	 * answers the request directly. Remote failures are classified before this runs, so
+	 * a terminal event carrying a failed, canceled or rejected state never reaches here.
+	 */
+	private static boolean isTerminalEvent(Map<String, Object> result) {
+		return isCompletedStatus(result) || isFinalEvent(result) || isStandaloneMessage(result);
 	}
 
 	/**
