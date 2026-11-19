@@ -32,6 +32,7 @@ import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpEntity;
+import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 
@@ -44,8 +45,10 @@ import org.springframework.util.StringUtils;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -173,9 +176,25 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 			String requestPayload = buildSendMessageRequest(state, subGraphRunnableConfig, context);
 			String resultText = sendRequest(requestPayload, context);
 			try (AgentTraceSpan receiveSpan = startSpan(AgentTraceOperation.A2A_RECEIVE, context).role("consumer")) {
-				Map<String, Object> resultMap = autoDetectAndParseResponse(resultText);
-				Map<String, Object> result = (Map<String, Object>) resultMap.get("result");
-				String responseText = extractResponseText(result);
+				final String responseText;
+				try {
+					Map<String, Object> resultMap = autoDetectAndParseResponse(resultText);
+					final Map<String, Object> result = resultPayload(resultMap);
+					final A2aRemoteTaskException remoteFailure = result != null ? remoteTaskFailure(result) : null;
+					if (remoteFailure != null) {
+						throw remoteFailure;
+					}
+					responseText = extractResponseText(result);
+				}
+				catch (A2aException ex) {
+					receiveSpan.error(ex);
+					throw ex;
+				}
+				catch (IllegalArgumentException | IllegalStateException ex) {
+					A2aProtocolException protocol = new A2aProtocolException("A2A response cannot be parsed", ex);
+					receiveSpan.error(protocol);
+					throw protocol;
+				}
 				receiveSpan.success();
 				return buildFinalResult(this.outputKeyToParent, responseText);
 			}
@@ -233,9 +252,11 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	/**
 	 * Stream the remote agent response. The HTTP exchange starts on subscription and runs
 	 * on a bounded elastic worker. Each non-empty text chunk is emitted as a
-	 * {@link StreamingOutput}; transport and protocol failures are emitted as error text
-	 * chunks. The stream always ends with a done response carrying the accumulated text
-	 * for the parent state, unless the subscriber cancels first.
+	 * {@link StreamingOutput}; transport, protocol and remote task failures propagate as
+	 * {@link A2aException} terminal errors (issue #213), so a failed remote call is never
+	 * mistaken for a normal completion. On success the stream ends with a done response
+	 * carrying the accumulated text for the parent state, unless the subscriber cancels
+	 * first.
 	 */
 	private Flux<GraphResponse<NodeOutput>> createStreamingFlux(OverAllState state, RunnableConfig config,
 			AgentTraceContext context) throws Exception {
@@ -246,11 +267,11 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 			final StringBuilder accumulated = new StringBuilder();
 			String baseUrl = resolveAgentBaseUrl(this.agentCard);
 			if (baseUrl == null || baseUrl.isBlank()) {
-				emit(sink, buildStreamingOutput("Error: AgentCard.url is empty", state));
-				complete(sink, outputKey, accumulated);
+				fail(sink, new A2aTransportException("AgentCard.url is empty"));
 				return;
 			}
 
+			A2aException failure = null;
 			try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
 				HttpPost post = new HttpPost(baseUrl);
 				post.setHeader("Content-Type", "application/json");
@@ -273,17 +294,12 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 					httpClient.execute(post, response -> {
 						int statusCode = response.getCode();
 						if (statusCode != 200) {
-							StreamingOutput errorOutput = buildStreamingOutput("HTTP request failed, status: "
-									+ statusCode, state);
-							emit(sink, errorOutput);
-							return null;
+							throw new A2aTransportException("HTTP request failed, status: " + statusCode);
 						}
 
 						HttpEntity entity = response.getEntity();
 						if (entity == null) {
-							StreamingOutput errorOutput = buildStreamingOutput("Empty HTTP entity", state);
-							emit(sink, errorOutput);
-							return null;
+							throw new A2aTransportException("Empty HTTP entity");
 						}
 
 						String contentType = entity.getContentType() != null ? entity.getContentType() : "";
@@ -293,52 +309,10 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 							.role("consumer");
 						try {
 							if (isEventStream) {
-								try (BufferedReader reader = new BufferedReader(
-										new InputStreamReader(entity.getContent(), StandardCharsets.UTF_8))) {
-									String line;
-									while (!sink.isCancelled() && (line = reader.readLine()) != null) {
-										String trimmed = line.trim();
-										if (!trimmed.startsWith("data:")) {
-											continue;
-										}
-										String jsonContent = trimmed.substring(5).trim();
-										if ("[DONE]".equals(jsonContent)) {
-											break;
-										}
-										try {
-											Map<String, Object> parsed = parseJsonMap(jsonContent);
-											Map<String, Object> result = (Map<String, Object>) parsed.get("result");
-											if (result != null) {
-												String text = extractResponseText(result);
-												if (text != null && !text.isEmpty()) {
-													accumulated.append(text);
-													emit(sink, buildStreamingOutput(text, state));
-												}
-											}
-										}
-										catch (Exception ignore) {
-										}
-									}
-								}
+								consumeEventStream(entity.getContent(), state, sink, accumulated);
 							}
 							else {
-								// Non-SSE: read the full body and emit a single output
-								String body = EntityUtils.toString(entity, "UTF-8");
-								try {
-									Map<String, Object> resultMap = parseJsonMap(body);
-									Map<String, Object> result = (Map<String, Object>) resultMap.get("result");
-									String text = extractResponseText(result);
-									if (text != null && !text.isEmpty()) {
-										accumulated.append(text);
-										emit(sink, buildStreamingOutput(text, state));
-									}
-								}
-								catch (Exception ex) {
-									if (!sink.isCancelled()) {
-										receiveSpan.error(ex);
-									}
-									emit(sink, buildStreamingOutput("Error: " + ex.getMessage(), state));
-								}
+								consumeSingleBodyResponse(entity, state, sink, accumulated);
 							}
 							if (!sink.isCancelled()) {
 								receiveSpan.success();
@@ -369,13 +343,295 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 					sendSpan.close();
 				}
 			}
+			catch (A2aException e) {
+				failure = e;
+			}
 			catch (Exception e) {
-				emit(sink, buildStreamingOutput("Error: " + e.getMessage(), state));
+				failure = asA2aFailure(e);
 			}
-			finally {
-				complete(sink, outputKey, accumulated);
+
+			if (failure != null) {
+				// The failure is the single terminal state: text chunks already delivered
+				// keep their identity and no done response follows an error.
+				fail(sink, failure);
+				return;
 			}
+			complete(sink, outputKey, accumulated);
 		}).subscribeOn(Schedulers.boundedElastic());
+	}
+
+	/**
+	 * Consume an A2A {@code text/event-stream} response. Events follow the SSE wire format:
+	 * comment lines and fields other than {@code data} are ignorable extensions, the
+	 * {@code data} lines of one event are joined with newlines, and a blank line dispatches
+	 * the accumulated event. Reading stops at the {@code [DONE]} sentinel, a completed
+	 * status-update, an event marked {@code final} or a standalone Message result; an
+	 * event stream that ends without any terminal state is a protocol failure
+	 * (issue #213).
+	 */
+	private void consumeEventStream(InputStream content, OverAllState state,
+			FluxSink<GraphResponse<NodeOutput>> sink, StringBuilder accumulated) throws IOException {
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(content, StandardCharsets.UTF_8))) {
+			final List<String> dataLines = new ArrayList<>(2);
+			String line;
+			while (!sink.isCancelled() && (line = reader.readLine()) != null) {
+				if (line.isEmpty()) {
+					// a blank line dispatches the accumulated event per the SSE wire format
+					if (!dataLines.isEmpty() && dispatchSseEvent(String.join("\n", dataLines), state, sink,
+							accumulated)) {
+						return;
+					}
+					dataLines.clear();
+					continue;
+				}
+				if (line.startsWith(":")) {
+					// comments and keep-alive lines carry no data
+					continue;
+				}
+				if (line.startsWith("data:")) {
+					dataLines.add(line.substring(5).trim());
+				}
+				// other field names (event:, id:, retry:) are ignorable extensions
+			}
+			if (!sink.isCancelled() && !dataLines.isEmpty()) {
+				// the peer may close without a trailing blank line; the pending event
+				// still counts
+				if (dispatchSseEvent(String.join("\n", dataLines), state, sink, accumulated)) {
+					return;
+				}
+			}
+			if (!sink.isCancelled()) {
+				throw new A2aProtocolException("A2A event stream ended without a terminal state");
+			}
+		}
+	}
+
+	/**
+	 * Handle one assembled SSE data event. A terminal frame may itself carry the task's
+	 * final output — for example a completed Task whose artifacts hold the whole answer —
+	 * so that output is extracted and delivered before the event terminates the stream.
+	 * Remote task failures are classified first: a failed, canceled or rejected
+	 * status-update terminates the stream with a structured error even when it also
+	 * carries the {@code final} flag.
+	 * @return whether the event terminates the remote task: the {@code [DONE]} sentinel,
+	 * a completed status-update, an event marked {@code final}, or a standalone Message
+	 * result
+	 */
+	private boolean dispatchSseEvent(String data, OverAllState state, FluxSink<GraphResponse<NodeOutput>> sink,
+			StringBuilder accumulated) {
+		if ("[DONE]".equals(data)) {
+			return true;
+		}
+		final Map<String, Object> parsed;
+		try {
+			parsed = parseJsonMap(data);
+		}
+		catch (IllegalArgumentException ex) {
+			throw new A2aProtocolException("Corrupt A2A SSE frame, not valid JSON: " + abbreviate(data), ex);
+		}
+		final Map<String, Object> result = resultPayload(parsed);
+		if (result == null) {
+			// valid JSON carrying no result object: an ignorable extension event
+			return false;
+		}
+		final A2aRemoteTaskException remoteFailure = remoteTaskFailure(result);
+		if (remoteFailure != null) {
+			throw remoteFailure;
+		}
+		final boolean terminal = isTerminalEvent(result);
+		final String text;
+		try {
+			text = extractResponseText(result);
+		}
+		catch (Exception ex) {
+			// a recognizable frame without extractable text is skipped, mirroring the
+			// historical behavior for events this client does not consume; a terminal
+			// frame carrying no output still terminates the stream
+			return terminal;
+		}
+		if (text != null && !text.isEmpty()) {
+			accumulated.append(text);
+			emit(sink, buildStreamingOutput(text, state));
+		}
+		return terminal;
+	}
+
+	/**
+	 * The result object carried by one parsed JSON-RPC payload, or null when the payload has
+	 * none. A JSON-RPC error object translates to a protocol failure here, so both payload
+	 * shapes (SSE frames and single bodies) classify errors identically.
+	 */
+	private Map<String, Object> resultPayload(Map<String, Object> parsed) {
+		if (parsed.containsKey("error")) {
+			throw jsonRpcFailure(parsed.get("error"));
+		}
+		return parsed.get("result") instanceof Map<?, ?> rawResult ? (Map<String, Object>) rawResult : null;
+	}
+
+	/**
+	 * Consume a non-SSE response body: one JSON-RPC payload carrying the whole remote
+	 * result. Parse failures, JSON-RPC errors and remote task failures propagate as
+	 * structured errors; a single body is by itself the terminal state (issue #213).
+	 */
+	private void consumeSingleBodyResponse(HttpEntity entity, OverAllState state,
+			FluxSink<GraphResponse<NodeOutput>> sink, StringBuilder accumulated) throws IOException, ParseException {
+		final String body = EntityUtils.toString(entity, "UTF-8");
+		final Map<String, Object> parsed;
+		try {
+			parsed = parseJsonMap(body);
+		}
+		catch (IllegalArgumentException ex) {
+			throw new A2aProtocolException("A2A response body is not valid JSON", ex);
+		}
+		final Map<String, Object> result = resultPayload(parsed);
+		if (result == null) {
+			throw new A2aProtocolException("A2A response without a result object");
+		}
+		final A2aRemoteTaskException remoteFailure = remoteTaskFailure(result);
+		if (remoteFailure != null) {
+			throw remoteFailure;
+		}
+		final String text;
+		try {
+			text = extractResponseText(result);
+		}
+		catch (Exception ex) {
+			throw new A2aProtocolException("A2A response without usable content", ex);
+		}
+		if (text != null && !text.isEmpty()) {
+			accumulated.append(text);
+			emit(sink, buildStreamingOutput(text, state));
+		}
+	}
+
+	/**
+	 * Deliver the structured failure as the stream's single terminal state. Text chunks
+	 * already emitted keep their identity; a cancelled subscription gets neither the error
+	 * nor a done response.
+	 */
+	private static void fail(FluxSink<GraphResponse<NodeOutput>> sink, A2aException failure) {
+		if (!sink.isCancelled()) {
+			sink.error(failure);
+		}
+	}
+
+	/**
+	 * Map an exception thrown by the streaming exchange to the structured A2A failure. The
+	 * Apache client may wrap handler exceptions, so an A2A failure is recovered from the
+	 * cause chain; anything else is a transport failure.
+	 */
+	private static A2aException asA2aFailure(Throwable error) {
+		Throwable current = error;
+		for (int depth = 0; current != null && depth < 8; depth++) {
+			if (current instanceof A2aException a2a) {
+				return a2a;
+			}
+			current = current.getCause();
+		}
+		return new A2aTransportException("A2A streaming call failed: " + error.getMessage(), error);
+	}
+
+	/**
+	 * Translate a JSON-RPC error object into a protocol failure carrying the remote code
+	 * and message.
+	 */
+	private static A2aProtocolException jsonRpcFailure(Object errorValue) {
+		final String detail;
+		if (errorValue instanceof Map<?, ?> error && error.get("message") != null) {
+			detail = "code=" + error.get("code") + ", message=" + error.get("message");
+		}
+		else {
+			detail = String.valueOf(errorValue);
+		}
+		return new A2aProtocolException("A2A remote protocol error: " + detail);
+	}
+
+	/**
+	 * Detect a remote task termination that must surface as a structured failure instead of
+	 * a normal completion (issue #213). Both shapes carry the outcome in a
+	 * {@code status.state} field: status-update events on a stream and the Task object a
+	 * single-body response returns. Failed, canceled and rejected tasks are failures in
+	 * either shape. The optional status message carries the remote reason.
+	 * @return the failure to propagate, or null when the payload is not a task failure
+	 */
+	private static A2aRemoteTaskException remoteTaskFailure(Map<String, Object> result) {
+		final String state = remoteTaskState(result);
+		if (!"failed".equals(state) && !"canceled".equals(state) && !"rejected".equals(state)) {
+			return null;
+		}
+		final String reason = result.get("status") instanceof Map<?, ?> status ? statusMessageText(status) : "";
+		return new A2aRemoteTaskException(state,
+				"Remote A2A task " + state + (reason.isBlank() ? "" : ": " + reason));
+	}
+
+	/**
+	 * Best-effort text of an A2A status message: the concatenated text parts, if any.
+	 */
+	private static String statusMessageText(Map<?, ?> status) {
+		if (!(status.get("message") instanceof Map<?, ?> message)
+				|| !(message.get("parts") instanceof List<?> parts)) {
+			return "";
+		}
+		final StringBuilder text = new StringBuilder();
+		for (Object part : parts) {
+			if (part instanceof Map<?, ?> partMap && partMap.get("text") instanceof String partText) {
+				text.append(partText);
+			}
+		}
+		return text.toString();
+	}
+
+	/**
+	 * The remote task state reported by a status-update event or a Task object, or null for
+	 * payloads carrying no task status.
+	 */
+	private static String remoteTaskState(Map<String, Object> result) {
+		return result.get("status") instanceof Map<?, ?> status && status.get("state") instanceof String state
+				? state : null;
+	}
+
+	/**
+	 * Whether the payload reports the final completed state that terminates a successful
+	 * remote task.
+	 */
+	private static boolean isCompletedStatus(Map<String, Object> result) {
+		return "completed".equals(remoteTaskState(result));
+	}
+
+	/**
+	 * Whether the event is explicitly marked as the stream's last one. A successful A2A
+	 * event stream may end on a final status-update whose state is not completed — for
+	 * example {@code input-required}, a normal interaction boundary — so the flag, not
+	 * the state alone, terminates the stream.
+	 */
+	private static boolean isFinalEvent(Map<String, Object> result) {
+		return result.get("final") instanceof Boolean flag && flag;
+	}
+
+	/**
+	 * Whether the payload is a standalone A2A Message. An agent may answer a request with
+	 * a bare Message instead of a tracked Task; the Message by itself completes the
+	 * interaction, without a final flag or the {@code [DONE]} sentinel.
+	 */
+	private static boolean isStandaloneMessage(Map<String, Object> result) {
+		return "message".equals(result.get("kind"));
+	}
+
+	/**
+	 * Whether the event ends the remote interaction successfully: a completed task
+	 * status, an event explicitly marked {@code final}, or a standalone Message that
+	 * answers the request directly. Remote failures are classified before this runs, so
+	 * a terminal event carrying a failed, canceled or rejected state never reaches here.
+	 */
+	private static boolean isTerminalEvent(Map<String, Object> result) {
+		return isCompletedStatus(result) || isFinalEvent(result) || isStandaloneMessage(result);
+	}
+
+	/**
+	 * Shorten an offending SSE frame for an error message.
+	 */
+	private static String abbreviate(String data) {
+		return data.length() <= 120 ? data : data.substring(0, 120) + "...";
 	}
 
 	private static void emit(FluxSink<GraphResponse<NodeOutput>> sink, NodeOutput output) {
@@ -762,7 +1018,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	private String sendMessageToServer(AgentCardWrapper agentCard, String requestPayload) throws Exception {
 		String baseUrl = resolveAgentBaseUrl(agentCard);
 		if (baseUrl == null || baseUrl.isBlank()) {
-			throw new IllegalStateException("AgentCard.url is empty");
+			throw new A2aTransportException("AgentCard.url is empty");
 		}
 
 		try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
@@ -773,11 +1029,11 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 			return httpClient.execute(post, response -> {
 				int statusCode = response.getCode();
 				if (statusCode != 200) {
-					throw new IllegalStateException("HTTP request failed, status: " + statusCode);
+					throw new A2aTransportException("HTTP request failed, status: " + statusCode);
 				}
 				HttpEntity entity = response.getEntity();
 				if (entity == null) {
-					throw new IllegalStateException("Empty HTTP entity");
+					throw new A2aTransportException("Empty HTTP entity");
 				}
 				return EntityUtils.toString(entity, "UTF-8");
 			});

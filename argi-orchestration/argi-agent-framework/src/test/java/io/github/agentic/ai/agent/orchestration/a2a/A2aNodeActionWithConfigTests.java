@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import reactor.core.publisher.Flux;
+import reactor.test.StepVerifier;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -87,15 +88,15 @@ class A2aNodeActionWithConfigTests {
 	}
 
 	@Test
-	void streamingReportsHttpFailureAndStillCompletes() throws Exception {
+	void streamingHttpFailureFailsWithStructuredTransportError() throws Exception {
 		HttpServer server = startServer(500, "application/json", "{}");
 		try {
-			List<GraphResponse<NodeOutput>> responses = stream(baseUrl(server));
-
-			assertEquals(2, responses.size());
-			assertEquals("HTTP request failed, status: 500", streamingText(responses.get(0)));
-			assertTrue(responses.get(1).isDone());
-			assertEquals("", ((Map<?, ?>) responses.get(1).resultValue().orElseThrow()).get("reply"));
+			StepVerifier.create(streamingFlux(baseUrl(server)))
+				.expectErrorSatisfies(error -> {
+					assertInstanceOf(A2aTransportException.class, error);
+					assertEquals("HTTP request failed, status: 500", error.getMessage());
+				})
+				.verify(Duration.ofSeconds(5));
 		}
 		finally {
 			server.stop(0);
@@ -103,12 +104,11 @@ class A2aNodeActionWithConfigTests {
 	}
 
 	@Test
-	void streamingWithoutAgentUrlCompletesInsteadOfWaitingForever() throws Exception {
-		List<GraphResponse<NodeOutput>> responses = stream(null);
-
-		assertEquals(2, responses.size());
-		assertEquals("Error: AgentCard.url is empty", streamingText(responses.get(0)));
-		assertTrue(responses.get(1).isDone());
+	void streamingWithoutAgentUrlFailsWithStructuredTransportError() throws Exception {
+		StepVerifier.create(streamingFlux(null))
+			.expectErrorSatisfies(
+					error -> assertInstanceOf(A2aTransportException.class, error))
+			.verify(Duration.ofSeconds(5));
 	}
 
 	@Test
@@ -171,14 +171,18 @@ class A2aNodeActionWithConfigTests {
 
 	@SuppressWarnings("unchecked")
 	private static List<GraphResponse<NodeOutput>> stream(String baseUrl) throws Exception {
+		List<GraphResponse<NodeOutput>> responses = streamingFlux(baseUrl).collectList().block(Duration.ofSeconds(5));
+		assertNotNull(responses);
+		return responses;
+	}
+
+	@SuppressWarnings("unchecked")
+	private static Flux<GraphResponse<NodeOutput>> streamingFlux(String baseUrl) throws Exception {
 		A2aNodeActionWithConfig node = new A2aNodeActionWithConfig(createAgentCardWrapper(baseUrl), "remote-agent",
 				false, "reply", "instruction", true);
 		Map<String, Object> result = node.apply(new OverAllState(),
 				RunnableConfig.builder().threadId("stream-test").build());
-		Flux<GraphResponse<NodeOutput>> flux = (Flux<GraphResponse<NodeOutput>>) result.get("reply");
-		List<GraphResponse<NodeOutput>> responses = flux.collectList().block(Duration.ofSeconds(5));
-		assertNotNull(responses);
-		return responses;
+		return (Flux<GraphResponse<NodeOutput>>) result.get("reply");
 	}
 
 	private static String streamingText(GraphResponse<NodeOutput> response) {
