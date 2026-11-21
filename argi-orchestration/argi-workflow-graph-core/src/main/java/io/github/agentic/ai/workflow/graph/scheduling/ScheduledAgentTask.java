@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.github.agentic.ai.workflow.graph.CompiledGraph;
 import io.github.agentic.ai.workflow.graph.OverAllState;
@@ -51,9 +52,43 @@ public class ScheduledAgentTask {
 
 	private volatile ScheduledFuture<?> scheduledFuture;
 
-	private volatile boolean started = false;
+	/**
+	 * Atomic lifecycle state (issue #215): NEW → STARTING → RUNNING → STOPPING →
+	 * STOPPED, with FAILED as the start-failure terminal. A single CAS-able state
+	 * replaces the previous independent started/stopped flags, so concurrent start
+	 * and stop transitions cannot interleave.
+	 */
+	enum ScheduleState {
 
-	private volatile boolean stopped = false;
+		/** Created and registered, not yet scheduled. */
+		NEW,
+
+		/** A start is publishing the schedule; stop may still win the race. */
+		STARTING,
+
+		/** The schedule is live. */
+		RUNNING,
+
+		/** stop() is cancelling and unregistering. */
+		STOPPING,
+
+		/** Terminal after a successful stop; start is rejected. */
+		STOPPED,
+
+		/** Terminal after a failed start; registration has been released. */
+		FAILED
+
+	}
+
+	private final AtomicReference<ScheduleState> state = new AtomicReference<>(ScheduleState.NEW);
+
+	/**
+	 * Monotonic observation projection, not a lifecycle transition: set once when a
+	 * start reaches RUNNING and never reset, so {@link #isStarted()} reports whether a
+	 * start actually succeeded rather than which non-terminal state the task is in.
+	 * The state machine above stays the single source of transitions (#370 review).
+	 */
+	private volatile boolean startSucceeded;
 
 	private final AtomicBoolean unregistered = new AtomicBoolean(false);
 
@@ -73,35 +108,52 @@ public class ScheduledAgentTask {
 	 * Start the scheduled execution
 	 */
 	public ScheduledAgentTask start() {
-		if (started) {
-			throw new IllegalStateException("Schedule already started");
+		if (!state.compareAndSet(ScheduleState.NEW, ScheduleState.STARTING)) {
+			throw new IllegalStateException("Schedule already started or stopped: " + state.get());
 		}
 
-		switch (config.getMode()) {
-			case CRON:
-				scheduledFuture = taskScheduler.schedule(this::executeGraph,
-						new CronTrigger(config.getCronExpression()));
-				break;
-			case FIXED_DELAY:
-				scheduledFuture = taskScheduler.scheduleWithFixedDelay(this::executeGraph,
-						Instant.now().plusMillis(config.getInitialDelay()), Duration.ofMillis(config.getFixedDelay()));
-				break;
-			case FIXED_RATE:
-				scheduledFuture = taskScheduler.scheduleAtFixedRate(this::executeGraph,
-						Instant.now().plusMillis(config.getInitialDelay()), Duration.ofMillis(config.getFixedRate()));
-				break;
-			case ONE_TIME:
-				scheduledFuture = taskScheduler.schedule(this::executeGraph,
-						Instant.now().plusMillis(config.getInitialDelay()));
-				break;
-			case TRIGGER:
-				scheduledFuture = taskScheduler.schedule(this::executeGraph, config.getTrigger());
-				break;
-			default:
-				throw new IllegalStateException("Unexpected value: " + config.getMode());
+		try {
+			switch (config.getMode()) {
+				case CRON:
+					scheduledFuture = taskScheduler.schedule(this::executeGraph,
+							new CronTrigger(config.getCronExpression()));
+					break;
+				case FIXED_DELAY:
+					scheduledFuture = taskScheduler.scheduleWithFixedDelay(this::executeGraph,
+							Instant.now().plusMillis(config.getInitialDelay()), Duration.ofMillis(config.getFixedDelay()));
+					break;
+				case FIXED_RATE:
+					scheduledFuture = taskScheduler.scheduleAtFixedRate(this::executeGraph,
+							Instant.now().plusMillis(config.getInitialDelay()), Duration.ofMillis(config.getFixedRate()));
+					break;
+				case ONE_TIME:
+					scheduledFuture = taskScheduler.schedule(this::executeGraph,
+							Instant.now().plusMillis(config.getInitialDelay()));
+					break;
+				case TRIGGER:
+					scheduledFuture = taskScheduler.schedule(this::executeGraph, config.getTrigger());
+					break;
+				default:
+					throw new IllegalStateException("Unexpected value: " + config.getMode());
+			}
+		}
+		catch (RuntimeException e) {
+			// A failed start must not leave the task registered or scheduled (#215).
+			// CAS, not set: if stop() already won the STARTING window it owns the
+			// terminal state, and FAILED must not clobber its STOPPED.
+			state.compareAndSet(ScheduleState.STARTING, ScheduleState.FAILED);
+			unregisterTask();
+			throw e;
 		}
 
-		started = true;
+		if (!state.compareAndSet(ScheduleState.STARTING, ScheduleState.RUNNING)) {
+			// stop() won the race while the future was being published: cancel the late
+			// publication so it cannot trigger new executions, and finish stopped.
+			cancelPublishedFuture();
+			throw new IllegalStateException("Schedule stopped while starting");
+		}
+		startSucceeded = true;
+
 		notifyListeners(ScheduleLifecycleListener.ScheduleEvent.STARTED);
 		return this;
 	}
@@ -110,16 +162,55 @@ public class ScheduledAgentTask {
 	 * Stop the scheduled execution
 	 */
 	public void stop() {
-		if (scheduledFuture != null && !scheduledFuture.isCancelled()) {
-			scheduledFuture.cancel(false);
+		// One winner per stop: concurrent and repeated stops return idempotently.
+		if (!transitionToStopping()) {
+			return;
 		}
-		stopped = true;
+		cancelPublishedFuture();
 
 		// Unregister from the manager that owns this task.
 		unregisterTask();
 		log.debug("Stopped and unregistered ScheduledAgentTask with ID: {}", taskId);
 
 		notifyListeners(ScheduleLifecycleListener.ScheduleEvent.STOPPED);
+		state.set(ScheduleState.STOPPED);
+	}
+
+	/**
+	 * Moves a non-terminal state to STOPPING under one CAS winner, so a concurrent or
+	 * repeated stop is a no-op.
+	 * @return true if this caller won the transition and must perform the stop work
+	 */
+	private boolean transitionToStopping() {
+		while (true) {
+			ScheduleState current = state.get();
+			if (current == ScheduleState.STOPPING || current == ScheduleState.STOPPED
+					|| current == ScheduleState.FAILED) {
+				return false;
+			}
+			if (state.compareAndSet(current, ScheduleState.STOPPING)) {
+				return true;
+			}
+		}
+	}
+
+	/** Cancels the published future if present; safe against a late publication race. */
+	private void cancelPublishedFuture() {
+		ScheduledFuture<?> active = scheduledFuture;
+		if (active != null && !active.isCancelled()) {
+			active.cancel(false);
+		}
+	}
+
+	/**
+	 * Scheduled execution is permitted only while start is in flight (STARTING: a
+	 * one-time task may legitimately run before start() returns) or the schedule is
+	 * live (RUNNING); every stopped or failed state gates execution out.
+	 * @return true if the published execution may run
+	 */
+	private boolean isExecutionPermitted() {
+		ScheduleState current = state.get();
+		return current == ScheduleState.STARTING || current == ScheduleState.RUNNING;
 	}
 
 	/**
@@ -141,6 +232,13 @@ public class ScheduledAgentTask {
 	 * Execute the graph with retry logic
 	 */
 	private void executeGraph() {
+		if (!isExecutionPermitted()) {
+			// A publication that lands after stop() or a failed start must not run the
+			// graph; cancelling the late future alone is too late when the scheduler
+			// already handed the task to a worker (#215 review).
+			log.debug("Skipped scheduled execution of {} in state {}", taskId, state.get());
+			return;
+		}
 		try {
 			int attempt = 0;
 			while (attempt <= config.getMaxRetries()) {
@@ -222,11 +320,16 @@ public class ScheduledAgentTask {
 
 	// Getters for monitoring
 	public boolean isStarted() {
-		return started;
+		return startSucceeded;
 	}
 
 	public boolean isStopped() {
-		return stopped;
+		return state.get() == ScheduleState.STOPPING || state.get() == ScheduleState.STOPPED;
+	}
+
+	/** Test observation point for the lifecycle state machine. */
+	ScheduleState state() {
+		return state.get();
 	}
 
 	/**
