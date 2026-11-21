@@ -137,6 +137,7 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 					result.append("\nCause: ").append(bgTask.getError().getCause().getMessage());
 				}
 				span.error(bgTask.getError()).outcome("failed");
+				releaseCorrelation(request.taskId());
 				return result.toString();
 			}
 			else if (!bgTask.isCompleted()) {
@@ -146,7 +147,20 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 			}
 
 			span.outcome(outcome != null ? outcome : "completed").success();
+			releaseCorrelation(request.taskId());
 			return result.toString();
+		}
+	}
+
+	/**
+	 * Release the correlation once a terminal result has been delivered: the receive span
+	 * was already linked above, so a later poll no longer needs the link facts. Non
+	 * terminal outcomes (still-running, timeout, interrupted) keep the entry so a
+	 * subsequent poll can still link.
+	 */
+	private void releaseCorrelation(String taskId) {
+		if (this.traceCorrelation != null) {
+			this.traceCorrelation.forget(taskId);
 		}
 	}
 

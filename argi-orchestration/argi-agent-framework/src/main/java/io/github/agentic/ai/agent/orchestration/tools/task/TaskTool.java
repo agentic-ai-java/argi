@@ -134,7 +134,16 @@ public class TaskTool implements BiFunction<TaskTool.Request, ToolContext, Strin
 			if (this.traceCorrelation != null && taskContext != null) {
 				this.traceCorrelation.record(taskId, taskContext);
 			}
-			this.taskRepository.putTask(taskId, () -> executeSubAgent(subAgent, prompt, parentConfig, taskContext));
+			try {
+				this.taskRepository.putTask(taskId, () -> executeSubAgent(subAgent, prompt, parentConfig, taskContext));
+			}
+			catch (RuntimeException e) {
+				// A rejected submission must not leave a stranded correlation record.
+				if (this.traceCorrelation != null) {
+					this.traceCorrelation.forget(taskId);
+				}
+				throw e;
+			}
 			return String.format(
 					"task_id: %s%n%nBackground task started. Use TaskOutput tool with task_id='%s' to retrieve results.",
 					taskId, taskId);

@@ -16,11 +16,15 @@
 
 package io.github.agentic.ai.agent.orchestration.tools.task;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.agentic.ai.workflow.graph.observation.trace.AgentTraceContext;
+
+import org.springframework.util.Assert;
 
 /**
  * Shared, in-memory correlation store between the {@link TaskTool} delegation site and the
@@ -31,10 +35,38 @@ import io.github.agentic.ai.workflow.graph.observation.trace.AgentTraceContext;
  * cannot be its child. Both sides instead reference the same {@link AgentTraceContext},
  * whose delegation identifier becomes the span link key of the consumer. Entries are only
  * recorded when an {@link AgentTracer} is enabled.
+ * <p>
+ * Entries have a three-layer lifecycle (issue #228): a rejected submission rolls the record
+ * back at the delegation site, a terminal polled result releases it at the receive site once
+ * the receive span has been linked, and the retention window below sweeps whatever survives
+ * (tasks nobody polls for, repository clear or shutdown). The retention is deliberately long
+ * relative to a polling window and independent of the repository type, so the default, the
+ * bounded and any injected repository all converge without the store needing repository
+ * lifecycle hooks; a live entry is never dropped early just to reclaim space.
  */
 public final class TaskTraceCorrelation {
 
-	private final Map<String, AgentTraceContext> contextsByTaskId = new ConcurrentHashMap<>();
+	private final Map<String, StampedContext> contextsByTaskId = new ConcurrentHashMap<>();
+
+	private final Clock clock;
+
+	private final Duration retention;
+
+	public TaskTraceCorrelation() {
+		this(Clock.systemUTC(), Duration.ofMinutes(30));
+	}
+
+	/**
+	 * @param clock the time source driving retention
+	 * @param retention how long a recorded correlation may live without being consumed
+	 */
+	public TaskTraceCorrelation(Clock clock, Duration retention) {
+		Assert.notNull(clock, "clock must not be null");
+		Assert.notNull(retention, "retention must not be null");
+		Assert.isTrue(!retention.isNegative(), "retention must not be negative");
+		this.clock = clock;
+		this.retention = retention;
+	}
 
 	/** @return an empty correlation store */
 	public static TaskTraceCorrelation empty() {
@@ -42,22 +74,36 @@ public final class TaskTraceCorrelation {
 	}
 
 	/**
-	 * Record the correlation facts of a background delegation.
+	 * Record the correlation facts of a background delegation. Expired entries are swept
+	 * along the way so a store without consumers still converges to its live entries.
 	 * @param taskId the background task id
 	 * @param context the correlation facts captured at the delegation site
 	 */
 	public void record(String taskId, AgentTraceContext context) {
 		if (taskId != null && context != null) {
-			this.contextsByTaskId.put(taskId, context);
+			sweepExpired();
+			this.contextsByTaskId.put(taskId, new StampedContext(context, deadline()));
 		}
 	}
 
 	/**
 	 * @param taskId the background task id
-	 * @return the correlation facts recorded at the delegation site, if any
+	 * @return the correlation facts recorded at the delegation site, if any; an expired
+	 * entry is removed and never served
 	 */
 	public Optional<AgentTraceContext> correlation(String taskId) {
-		return taskId == null ? Optional.empty() : Optional.ofNullable(this.contextsByTaskId.get(taskId));
+		if (taskId == null) {
+			return Optional.empty();
+		}
+		StampedContext stamped = this.contextsByTaskId.get(taskId);
+		if (stamped == null) {
+			return Optional.empty();
+		}
+		if (isExpired(stamped)) {
+			this.contextsByTaskId.remove(taskId, stamped);
+			return Optional.empty();
+		}
+		return Optional.of(stamped.context());
 	}
 
 	/**
@@ -68,6 +114,31 @@ public final class TaskTraceCorrelation {
 		if (taskId != null) {
 			this.contextsByTaskId.remove(taskId);
 		}
+	}
+
+	/** Test observation point for the retention assertions. */
+	int retainedCount() {
+		return this.contextsByTaskId.size();
+	}
+
+	private void sweepExpired() {
+		this.contextsByTaskId.forEach((taskId, stamped) -> {
+			if (isExpired(stamped)) {
+				this.contextsByTaskId.remove(taskId, stamped);
+			}
+		});
+	}
+
+	private boolean isExpired(StampedContext stamped) {
+		return this.clock.instant().isAfter(stamped.expiresAt());
+	}
+
+	private java.time.Instant deadline() {
+		return this.clock.instant().plus(this.retention);
+	}
+
+	private record StampedContext(AgentTraceContext context, java.time.Instant expiresAt) {
+
 	}
 
 }
