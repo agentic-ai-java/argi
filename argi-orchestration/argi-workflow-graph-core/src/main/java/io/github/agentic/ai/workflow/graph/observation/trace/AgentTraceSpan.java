@@ -160,6 +160,31 @@ public final class AgentTraceSpan implements AutoCloseable {
 	}
 
 	/**
+	 * Attach the workflow step identifier of this span (issue #322).
+	 * @param stepId the workflow step identifier
+	 * @return this span
+	 */
+	/**
+	 * Mark the span as failed without a throwable. Lifecycle events carry only a reason
+	 * string, so observers that translate them into spans use this instead of
+	 * {@link #error(Throwable)}; the error type key stays unset.
+	 * @return this span
+	 */
+	public AgentTraceSpan failure() {
+		if (this.observation != null) {
+			this.observation.lowCardinalityKeyValue(AgentTraceKeys.SUCCESS, "false");
+		}
+		return this;
+	}
+
+	public AgentTraceSpan stepId(String stepId) {
+		if (this.observation != null && stepId != null) {
+			this.observation.highCardinalityKeyValue(AgentTraceKeys.STEP_ID, stepId);
+		}
+		return this;
+	}
+
+	/**
 	 * Record a failure. The exception type is kept as a low-cardinality attribute, its
 	 * message is redacted and truncated before it is attached, and only a sanitized wrapper
 	 * exception is handed to the observation so no sensitive content can leak into exporters.

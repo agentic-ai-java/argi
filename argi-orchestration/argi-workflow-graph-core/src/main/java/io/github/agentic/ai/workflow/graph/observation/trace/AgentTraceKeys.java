@@ -59,6 +59,9 @@ public final class AgentTraceKeys {
 	/** High-cardinality key carrying the delegation identifier of this span. */
 	public static final String DELEGATION_ID = "argi.agent.delegation.id";
 
+	/** High-cardinality key carrying the workflow step identifier. */
+	public static final String STEP_ID = "argi.agent.step.id";
+
 	/**
 	 * High-cardinality key carrying the delegation identifier of a linked producer span.
 	 * Producers and consumers run on different threads (or processes) and are rarely in a

@@ -37,6 +37,9 @@ public enum AgentTraceOperation {
 	/** A consumer span that receives or waits for a background task result. */
 	TASK_RECEIVE("argi.agent.task.receive"),
 
+	/** A workflow engine step (Agent, Tool, Condition, Loop, Parallel branch, Subflow). */
+	WORKFLOW_STEP("argi.agent.workflow.step"),
+
 	/** A durable run store operation (submit, acquire, commit). */
 	RUN_STORE("argi.run.store");
 
