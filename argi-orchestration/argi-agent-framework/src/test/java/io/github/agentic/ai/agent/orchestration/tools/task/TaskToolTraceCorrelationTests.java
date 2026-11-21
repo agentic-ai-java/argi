@@ -15,11 +15,14 @@
  */
 package io.github.agentic.ai.agent.orchestration.tools.task;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,6 +58,8 @@ import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 @DisplayName("TaskTool/TaskOutputTool cross-agent trace correlation tests")
 class TaskToolTraceCorrelationTests {
@@ -244,6 +249,60 @@ class TaskToolTraceCorrelationTests {
 		String recorded = span.getHighCardinalityKeyValue(AgentTraceKeys.ERROR).getValue();
 		assertThat(recorded).doesNotContain("hunter2");
 		assertThat(recorded).contains("<redacted>");
+	}
+
+	@Test
+	@DisplayName("a rejected submission rolls back the recorded correlation")
+	void aRejectedSubmissionRollsBackTheCorrelation() {
+		ConfigCaptureHook captureHook = new ConfigCaptureHook();
+		ReactAgent child = subAgent("child_agent", new FixedResponseChatModel("unused"), captureHook);
+		AgentTracer tracer = enabledTracer();
+		TaskTraceCorrelation correlation = TaskTraceCorrelation.empty();
+		ExecutorService stalled = mock(ExecutorService.class);
+		try (BoundedTaskRepository repository = new BoundedTaskRepository(stalled, 1, 0, 1, Duration.ofMinutes(1))) {
+			repository.putTask("occupy", () -> "occupy");
+			TaskTool tool = new TaskTool(Map.of("child_agent", child), repository, tracer, correlation);
+
+			assertThatThrownBy(() -> tool.apply(new TaskTool.Request("desc", "prompt", "child_agent", true),
+					toolContext(parentConfig()))).isInstanceOf(RejectedExecutionException.class);
+
+			assertThat(correlation.retainedCount())
+				.as("the submission was rejected, so no correlation may remain")
+				.isZero();
+			assertThat(captureHook.capturedConfig())
+				.as("the rejected delegation must not have executed the sub-agent")
+				.isNull();
+		}
+	}
+
+	@Test
+	@DisplayName("a terminal result releases the correlation while the repository result stays pollable")
+	void aTerminalResultReleasesTheCorrelationForLaterPolls() throws Exception {
+		ConfigCaptureHook captureHook = new ConfigCaptureHook();
+		ReactAgent child = subAgent("child_agent", new FixedResponseChatModel("child response"), captureHook);
+		AgentTracer tracer = enabledTracer();
+		TaskTraceCorrelation correlation = TaskTraceCorrelation.empty();
+		DefaultTaskRepository repository = new DefaultTaskRepository();
+		TaskTool tool = new TaskTool(Map.of("child_agent", child), repository, tracer, correlation);
+		TaskOutputTool output = new TaskOutputTool(repository, tracer, correlation);
+
+		String launchResult = tool.apply(new TaskTool.Request("desc", "prompt", "child_agent", true),
+				toolContext(parentConfig()));
+		Matcher matcher = Pattern.compile("task_id: (task_[a-f0-9\\-]+)").matcher(launchResult);
+		assertThat(matcher.find()).isTrue();
+		String taskId = matcher.group(1);
+
+		String firstPoll = output.apply(new TaskOutputTool.Request(taskId, true, 10000L), toolContext(parentConfig()));
+
+		assertThat(firstPoll).contains("Status: Completed").contains("child response");
+		assertThat(correlation.retainedCount())
+			.as("the terminal result was delivered with its link, so the correlation is released")
+			.isZero();
+
+		String secondPoll = output.apply(new TaskOutputTool.Request(taskId, false, 1L), toolContext(parentConfig()));
+
+		assertThat(secondPoll).as("the repository result itself is untouched").contains("Status: Completed")
+			.contains("child response");
 	}
 
 	static final class RecordingHandler implements ObservationHandler<Observation.Context> {
