@@ -203,6 +203,17 @@ public class ScheduledAgentTask {
 	}
 
 	/**
+	 * Scheduled execution is permitted only while start is in flight (STARTING: a
+	 * one-time task may legitimately run before start() returns) or the schedule is
+	 * live (RUNNING); every stopped or failed state gates execution out.
+	 * @return true if the published execution may run
+	 */
+	private boolean isExecutionPermitted() {
+		ScheduleState current = state.get();
+		return current == ScheduleState.STARTING || current == ScheduleState.RUNNING;
+	}
+
+	/**
 	 * Execute the graph
 	 * @param runnableConfig
 	 * @param inputs
@@ -221,6 +232,13 @@ public class ScheduledAgentTask {
 	 * Execute the graph with retry logic
 	 */
 	private void executeGraph() {
+		if (!isExecutionPermitted()) {
+			// A publication that lands after stop() or a failed start must not run the
+			// graph; cancelling the late future alone is too late when the scheduler
+			// already handed the task to a worker (#215 review).
+			log.debug("Skipped scheduled execution of {} in state {}", taskId, state.get());
+			return;
+		}
 		try {
 			int attempt = 0;
 			while (attempt <= config.getMaxRetries()) {

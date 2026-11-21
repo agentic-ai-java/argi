@@ -28,13 +28,18 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import io.github.agentic.ai.workflow.graph.CompiledGraph;
+import io.github.agentic.ai.workflow.graph.KeyStrategy;
+import io.github.agentic.ai.workflow.graph.StateGraph;
+import io.github.agentic.ai.workflow.graph.action.AsyncNodeAction;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-
 
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.Trigger;
 
+import static io.github.agentic.ai.workflow.graph.StateGraph.END;
+import static io.github.agentic.ai.workflow.graph.StateGraph.START;
 import static io.github.agentic.ai.workflow.graph.scheduling.ScheduledAgentTaskLifecycleTest.graphFailingFirstAttempts;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -193,6 +198,56 @@ class ScheduledAgentTaskAtomicStartStopTest {
 				() -> assertFalse(task.isStarted(), "Stopping a never-started task must not report started"));
 	}
 
+	/** 复现 #370 二审：stop 后发布的调度执行必须被生命周期 gate 拒绝，图零调用。 */
+	@Test
+	void aStopDuringStartPreventsThePublishedExecutionFromRunning() throws Exception {
+		factory.registerProvider(() -> manager);
+		CountDownLatch scheduleEntered = new CountDownLatch(1);
+		CountDownLatch releaseSchedule = new CountDownLatch(1);
+		manager.scheduler.gateNextSchedule(scheduleEntered, releaseSchedule);
+		manager.scheduler.runTaskBeforeReturningFuture();
+		AtomicInteger invocations = new AtomicInteger();
+		final ScheduledAgentTask task = new ScheduledAgentTask(graphCountingInvocations(invocations),
+				ScheduleConfig.builder().initialDelay(0).build());
+		AtomicReference<Throwable> startFailure = new AtomicReference<>();
+		Thread starter = startInBackground(task, startFailure, "gated-start");
+		try {
+			starter.start();
+			assertTrue(scheduleEntered.await(5, TimeUnit.SECONDS), "start must be inside schedule");
+
+			task.stop();
+			// 评审指定的交错：放行后 scheduler 先执行已发布的 runnable，再返回 future。
+			releaseSchedule.countDown();
+			starter.join(TimeUnit.SECONDS.toMillis(5));
+
+			assertAll(() -> assertFalse(starter.isAlive(), "start must finish"),
+					() -> assertTrue(startFailure.get() instanceof IllegalStateException,
+							"A start losing the race to stop must fail, got: " + startFailure.get()),
+					() -> assertEquals(0, invocations.get(),
+							"An execution published after stop must be gated, not run"),
+					() -> assertTrue(task.isStopped(), "The task must end stopped"),
+					() -> assertEquals(0, manager.getActiveTaskCount(), "The task must be unregistered"));
+		}
+		finally {
+			releaseSchedule.countDown();
+			starter.join(TimeUnit.SECONDS.toMillis(5));
+		}
+	}
+
+	/** Builds a graph that counts every invocation, always succeeding. */
+	private static CompiledGraph graphCountingInvocations(AtomicInteger invocations) throws Exception {
+		Map<String, KeyStrategy> strategies = new HashMap<>();
+		strategies.put("result", (left, right) -> right);
+		return new StateGraph("counting-graph", () -> strategies)
+			.addNode("attempt", AsyncNodeAction.node_async(state -> {
+				invocations.incrementAndGet();
+				return Map.of("result", "ok");
+			}))
+			.addEdge(START, "attempt")
+			.addEdge("attempt", END)
+			.compile();
+	}
+
 	private Thread startInBackground(ScheduledAgentTask task, AtomicReference<Throwable> failure, String name) {
 		Thread worker = new Thread(() -> {
 			try {
@@ -258,7 +313,7 @@ class ScheduledAgentTaskAtomicStartStopTest {
 
 	}
 
-	/** 可控 TaskScheduler：可阻塞 gate、可注入失败，仅统计调度次数。 */
+	/** 可控 TaskScheduler：可阻塞 gate、可注入失败、可先执行任务再返回 future，仅统计调度次数。 */
 	private static final class GatedTaskScheduler implements TaskScheduler {
 
 		private final AtomicInteger scheduleCount = new AtomicInteger();
@@ -271,6 +326,8 @@ class ScheduledAgentTaskAtomicStartStopTest {
 
 		private volatile ScheduledFuture<?> lastFuture;
 
+		private volatile boolean runTaskBeforeReturningFuture;
+
 		private void gateNextSchedule(CountDownLatch entered, CountDownLatch release) {
 			this.scheduleEntered = entered;
 			this.releaseSchedule = release;
@@ -278,6 +335,10 @@ class ScheduledAgentTaskAtomicStartStopTest {
 
 		private void throwOnSchedule(RuntimeException cause) {
 			plannedFailure.set(cause);
+		}
+
+		private void runTaskBeforeReturningFuture() {
+			runTaskBeforeReturningFuture = true;
 		}
 
 		private int scheduleCount() {
@@ -288,7 +349,7 @@ class ScheduledAgentTaskAtomicStartStopTest {
 			return lastFuture;
 		}
 
-		private ScheduledFuture<?> submit() {
+		private ScheduledFuture<?> submit(Runnable task) {
 			scheduleCount.incrementAndGet();
 			RuntimeException planned = plannedFailure.get();
 			if (planned != null) {
@@ -304,6 +365,11 @@ class ScheduledAgentTaskAtomicStartStopTest {
 					Thread.currentThread().interrupt();
 				}
 			}
+			if (runTaskBeforeReturningFuture && task != null) {
+				// The reviewer's interleaving: the scheduler runs the published task
+				// before it ever hands out the future to cancel.
+				task.run();
+			}
 			ScheduledFuture<?> future = new StubScheduledFuture();
 			lastFuture = future;
 			return future;
@@ -311,32 +377,32 @@ class ScheduledAgentTaskAtomicStartStopTest {
 
 		@Override
 		public ScheduledFuture<?> schedule(Runnable task, Trigger trigger) {
-			return submit();
+			return submit(task);
 		}
 
 		@Override
 		public ScheduledFuture<?> schedule(Runnable task, Instant startTime) {
-			return submit();
+			return submit(task);
 		}
 
 		@Override
 		public ScheduledFuture<?> scheduleAtFixedRate(Runnable task, Instant startTime, Duration period) {
-			return submit();
+			return submit(task);
 		}
 
 		@Override
 		public ScheduledFuture<?> scheduleAtFixedRate(Runnable task, Duration period) {
-			return submit();
+			return submit(task);
 		}
 
 		@Override
 		public ScheduledFuture<?> scheduleWithFixedDelay(Runnable task, Instant startTime, Duration delay) {
-			return submit();
+			return submit(task);
 		}
 
 		@Override
 		public ScheduledFuture<?> scheduleWithFixedDelay(Runnable task, Duration delay) {
-			return submit();
+			return submit(task);
 		}
 
 	}
