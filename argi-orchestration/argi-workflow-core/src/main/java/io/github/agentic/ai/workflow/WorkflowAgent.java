@@ -393,28 +393,67 @@ public final class WorkflowAgent implements Agent {
 	 * then dispatches it (issue #322). Exit happens exactly once per execution: a
 	 * suspension leaves successfully (the hand-off is not a failure; resume fragments
 	 * are issue #324's scope) and any failure leaves with a failure reason.
+	 * <p>
+	 * Every callback is isolated (issue #370 review): an observer that throws never
+	 * prevents the step from running, never reaches the business-error path, and its
+	 * failure is reported to the other observers as {@link LifecycleEvent.ExtensionFailed}
+	 * while the business exit stays exactly once per remaining observer.
 	 */
 	private ExecutionResult executeStep(WorkflowStep step, RunData data, AgentExecutionContext context) {
-		if (this.observers.isEmpty()) {
+		List<LifecycleObserver> bound = boundObservers();
+		if (bound.isEmpty()) {
 			return doExecuteStep(step, data, context);
 		}
 		LifecycleIdentity identity = LifecycleIdentity.builder(runInvocation(context)).step(new StepId(step.id()))
 				.build();
-		this.observers
-			.forEach(observer -> observer.onEvent(new LifecycleEvent.StageEntered(LifecycleStage.WORKFLOW_STEP, identity)));
+		bound.forEach(observer -> emitTo(observer,
+				new LifecycleEvent.StageEntered(LifecycleStage.WORKFLOW_STEP, identity), identity));
 		try {
 			ExecutionResult result = doExecuteStep(step, data, context);
 			// A normal return - completion or a suspension hand-off - is a successful
 			// stage exit; only a thrown failure marks the stage unsuccessful.
-			this.observers.forEach(observer -> observer
-				.onEvent(new LifecycleEvent.StageExited(LifecycleStage.WORKFLOW_STEP, identity, true, null)));
+			bound.forEach(observer -> emitTo(observer,
+					new LifecycleEvent.StageExited(LifecycleStage.WORKFLOW_STEP, identity, true, null), identity));
 			return result;
 		}
 		catch (RuntimeException error) {
-			this.observers.forEach(observer -> observer.onEvent(new LifecycleEvent.StageExited(LifecycleStage.WORKFLOW_STEP,
-					identity, false, error.getClass().getSimpleName() + ": " + error.getMessage())));
+			bound.forEach(observer -> emitTo(observer, new LifecycleEvent.StageExited(LifecycleStage.WORKFLOW_STEP,
+					identity, false, error.getClass().getSimpleName() + ": " + error.getMessage()), identity));
 			throw error;
 		}
+	}
+
+	/** Observers bound to {@link LifecycleStage#WORKFLOW_STEP} by their own declaration. */
+	private List<LifecycleObserver> boundObservers() {
+		return this.observers.stream()
+			.filter(observer -> observer.stages().contains(LifecycleStage.WORKFLOW_STEP))
+			.toList();
+	}
+
+	/** Delivers one event to one observer, isolating and reporting any callback failure. */
+	private void emitTo(LifecycleObserver observer, LifecycleEvent event, LifecycleIdentity identity) {
+		try {
+			observer.onEvent(event);
+		}
+		catch (RuntimeException failure) {
+			reportExtensionFailed(observer, identity, failure);
+		}
+	}
+
+	private void reportExtensionFailed(LifecycleObserver failing, LifecycleIdentity identity,
+			RuntimeException failure) {
+		LifecycleEvent report = new LifecycleEvent.ExtensionFailed(LifecycleStage.WORKFLOW_STEP, identity,
+				failing.id(), failure.getClass().getSimpleName() + ": " + failure.getMessage());
+		this.observers.stream()
+			.filter(observer -> observer != failing && observer.stages().contains(LifecycleStage.WORKFLOW_STEP))
+			.forEach(observer -> {
+				try {
+					observer.onEvent(report);
+				}
+				catch (RuntimeException ignored) {
+					// A failing failure-report must never reach the business execution.
+				}
+			});
 	}
 
 	/** The workflow run identity: the trusted run id, falling back to the definition. */

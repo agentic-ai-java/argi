@@ -48,6 +48,7 @@ import io.github.agentic.ai.runtime.execution.TenantReference;
 import io.github.agentic.ai.runtime.execution.TrustedExecutionContext;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -57,8 +58,7 @@ class WorkflowStepLifecycleTest {
 	private final RecordingObserver observer = new RecordingObserver();
 
 	@Test
-	void stepsEmitPairedEnterAndExitEventsInLifoOrder() throws Exception {
-		Agent agent = agent(request -> AgentOutcome.completed(List.of(ChatMessage.assistant("done")),
+	void stepsEmitPairedEnterAndExitEventsInLifoOrder() throws Exception {		Agent agent = agent(request -> AgentOutcome.completed(List.of(ChatMessage.assistant("done")),
 				Map.of("value", "v"), new Usage(1L, 1L, 2L)));
 		WorkflowDefinition definition = new WorkflowDefinition("demo", "1",
 				List.of(new WorkflowStep.Agent("answer", "worker"),
@@ -345,11 +345,86 @@ class WorkflowStepLifecycleTest {
 		return new AgentExecutionContext(trusted, Clock.systemUTC());
 	}
 
+	@Test
+	void aThrowingEnterObserverDoesNotPreventTheStepOrUnpairOthers() throws Exception {
+		Agent agent = agent(request -> AgentOutcome.completed(List.of(ChatMessage.assistant("done")),
+				Map.of("value", "v"), new Usage(1L, 1L, 2L)));
+		WorkflowDefinition definition = new WorkflowDefinition("demo", "1",
+				List.of(new WorkflowStep.Agent("answer", "worker")));
+		WorkflowAgent workflow = WorkflowAgent.builder(definition)
+			.agents(Map.of("worker", agent))
+			.observers(new ThrowingObserver(true, false), observer)
+			.build();
+		observer.expectExits(1);
+
+		try (AgentExecutionContext context = context()) {
+			AgentOutcome outcome = workflow
+				.invoke(new AgentRequest(List.of(ChatMessage.user("hello")), Map.of(), null), context)
+				.get(3, TimeUnit.SECONDS);
+			// The business step must run even though the enter callback blew up.
+			assertEquals(AgentOutcome.Status.COMPLETED, outcome.status());
+		}
+		observer.awaitExits();
+
+		assertAll(() -> assertEquals(List.of("ENTER answer", "EXIT answer ok"), observer.events, "pairing intact"),
+				() -> assertEquals(1, observer.extensionFailures.size(), "the failure must be reported"),
+				() -> assertEquals("throwing-observer", observer.extensionFailures.get(0).extensionId()));
+	}
+
+	@Test
+	void aThrowingExitObserverSendsExactlyOneBusinessExitToOthers() throws Exception {
+		Agent agent = agent(request -> AgentOutcome.completed(List.of(ChatMessage.assistant("done")),
+				Map.of("value", "v"), new Usage(1L, 1L, 2L)));
+		WorkflowDefinition definition = new WorkflowDefinition("demo", "1",
+				List.of(new WorkflowStep.Agent("answer", "worker")));
+		WorkflowAgent workflow = WorkflowAgent.builder(definition)
+			.agents(Map.of("worker", agent))
+			.observers(new ThrowingObserver(false, true), observer)
+			.build();
+		observer.expectExits(1);
+
+		try (AgentExecutionContext context = context()) {
+			AgentOutcome outcome = workflow
+				.invoke(new AgentRequest(List.of(ChatMessage.user("hello")), Map.of(), null), context)
+				.get(3, TimeUnit.SECONDS);
+			// The throwing exit must not turn into a business error or a second exit.
+			assertEquals(AgentOutcome.Status.COMPLETED, outcome.status());
+		}
+		observer.awaitExits();
+
+		assertAll(() -> assertEquals(List.of("ENTER answer", "EXIT answer ok"), observer.events,
+				"exactly one business exit, no synthesized failure exit"),
+				() -> assertEquals(1, observer.extensionFailures.size()));
+	}
+
+	@Test
+	void observersBoundToOtherStagesAreNotInvoked() throws Exception {
+		Agent agent = agent(request -> AgentOutcome.completed(List.of(ChatMessage.assistant("done")),
+				Map.of("value", "v"), new Usage(1L, 1L, 2L)));
+		WorkflowDefinition definition = new WorkflowDefinition("demo", "1",
+				List.of(new WorkflowStep.Agent("answer", "worker")));
+		WorkflowAgent workflow = WorkflowAgent.builder(definition)
+			.agents(Map.of("worker", agent))
+			.observers(new OtherStageObserver())
+			.build();
+
+		try (AgentExecutionContext context = context()) {
+			AgentOutcome outcome = workflow
+				.invoke(new AgentRequest(List.of(ChatMessage.user("hello")), Map.of(), null), context)
+				.get(3, TimeUnit.SECONDS);
+			assertEquals(AgentOutcome.Status.COMPLETED, outcome.status());
+		}
+
+		assertTrue(OtherStageObserver.seen.isEmpty(), "an observer bound to other stages must not be invoked");
+	}
+
 	static final class RecordingObserver implements LifecycleObserver {
 
 		final List<String> events = new CopyOnWriteArrayList<>();
 
 		final List<String> threads = new CopyOnWriteArrayList<>();
+
+		final List<LifecycleEvent.ExtensionFailed> extensionFailures = new CopyOnWriteArrayList<>();
 
 		final AtomicReference<Throwable> unexpected = new AtomicReference<>();
 
@@ -397,10 +472,69 @@ class WorkflowStepLifecycleTest {
 						gate.countDown();
 					}
 				}
+				else if (event instanceof LifecycleEvent.ExtensionFailed failed) {
+					this.extensionFailures.add(failed);
+				}
 			}
 			catch (Throwable error) {
 				this.unexpected.compareAndSet(null, error);
 			}
+		}
+
+	}
+
+	/** An observer whose enter or exit callback throws (issue #370 review isolation). */
+	static final class ThrowingObserver implements LifecycleObserver {
+
+		private final boolean throwOnEnter;
+
+		private final boolean throwOnExit;
+
+		ThrowingObserver(boolean throwOnEnter, boolean throwOnExit) {
+			this.throwOnEnter = throwOnEnter;
+			this.throwOnExit = throwOnExit;
+		}
+
+		@Override
+		public java.util.Set<LifecycleStage> stages() {
+			return java.util.Set.of(LifecycleStage.WORKFLOW_STEP);
+		}
+
+		@Override
+		public String id() {
+			return "throwing-observer";
+		}
+
+		@Override
+		public void onEvent(LifecycleEvent event) {
+			if (event instanceof LifecycleEvent.StageEntered && this.throwOnEnter) {
+				throw new IllegalStateException("enter boom");
+			}
+			if (event instanceof LifecycleEvent.StageExited && this.throwOnExit) {
+				throw new IllegalStateException("exit boom");
+			}
+		}
+
+	}
+
+	/** An observer bound to a stage the workflow never emits. */
+	static final class OtherStageObserver implements LifecycleObserver {
+
+		static final List<LifecycleEvent> seen = new CopyOnWriteArrayList<>();
+
+		@Override
+		public java.util.Set<LifecycleStage> stages() {
+			return java.util.Set.of(LifecycleStage.MODEL_CALL);
+		}
+
+		@Override
+		public String id() {
+			return "other-stage-observer";
+		}
+
+		@Override
+		public void onEvent(LifecycleEvent event) {
+			seen.add(event);
 		}
 
 	}
