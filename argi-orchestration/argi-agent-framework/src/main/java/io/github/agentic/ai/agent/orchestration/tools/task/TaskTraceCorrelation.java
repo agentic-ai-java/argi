@@ -89,12 +89,14 @@ public final class TaskTraceCorrelation {
 	/**
 	 * @param taskId the background task id
 	 * @return the correlation facts recorded at the delegation site, if any; an expired
-	 * entry is removed and never served
+	 * entry is removed and never served. Any lookup also sweeps expired entries across
+	 * the whole store, so convergence never depends on a new submission (#370 review).
 	 */
 	public Optional<AgentTraceContext> correlation(String taskId) {
 		if (taskId == null) {
 			return Optional.empty();
 		}
+		sweepExpired();
 		StampedContext stamped = this.contextsByTaskId.get(taskId);
 		if (stamped == null) {
 			return Optional.empty();
@@ -103,15 +105,40 @@ public final class TaskTraceCorrelation {
 			this.contextsByTaskId.remove(taskId, stamped);
 			return Optional.empty();
 		}
-		return Optional.of(stamped.context());
+		// Sliding retention: reading a live entry re-anchors its expiry, so the receive
+		// link of a still-pollable task result never lapses between polls.
+		StampedContext refreshed = new StampedContext(stamped.context(), deadline());
+		this.contextsByTaskId.replace(taskId, stamped, refreshed);
+		return Optional.of(refreshed.context());
 	}
 
 	/**
-	 * Drop the correlation facts of a finished background task.
+	 * Re-anchor the retention of a recorded entry, even one whose submission-anchored
+	 * window has already lapsed (#370 review): the delegation site calls this when the
+	 * background task finishes, so the pollable result window is measured from
+	 * completion rather than submission and a long-running task keeps its link.
+	 * @param taskId the background task id
+	 */
+	public void refresh(String taskId) {
+		if (taskId == null) {
+			return;
+		}
+		StampedContext stamped = this.contextsByTaskId.get(taskId);
+		if (stamped != null) {
+			this.contextsByTaskId.replace(taskId, stamped, new StampedContext(stamped.context(), deadline()));
+		}
+	}
+
+	/**
+	 * Drop the correlation facts of a finished background task. Sweeping expired entries
+	 * along the way ties the cleanup to every release event, so a repository removal,
+	 * clear or shutdown reported through this call converges the whole store without a
+	 * new submission (#370 review gap 2).
 	 * @param taskId the background task id
 	 */
 	public void forget(String taskId) {
 		if (taskId != null) {
+			sweepExpired();
 			this.contextsByTaskId.remove(taskId);
 		}
 	}

@@ -98,6 +98,12 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 		BackgroundTask bgTask = this.taskRepository.getTask(request.taskId(), callerTenantId);
 
 		if (bgTask == null) {
+			// The task was removed, cleared or expired in the repository: release the
+			// correlation so an idle shared store converges without new submissions
+			// (#370 review gap 2).
+			if (this.traceCorrelation != null) {
+				this.traceCorrelation.forget(request.taskId());
+			}
 			return "Error: No background task found with ID: " + request.taskId();
 		}
 
@@ -137,7 +143,6 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 					result.append("\nCause: ").append(bgTask.getError().getCause().getMessage());
 				}
 				span.error(bgTask.getError()).outcome("failed");
-				releaseCorrelation(request.taskId());
 				return result.toString();
 			}
 			else if (!bgTask.isCompleted()) {
@@ -147,16 +152,15 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 			}
 
 			span.outcome(outcome != null ? outcome : "completed").success();
-			releaseCorrelation(request.taskId());
 			return result.toString();
 		}
 	}
 
 	/**
-	 * Release the correlation once a terminal result has been delivered: the receive span
-	 * was already linked above, so a later poll no longer needs the link facts. Non
-	 * terminal outcomes (still-running, timeout, interrupted) keep the entry so a
-	 * subsequent poll can still link.
+	 * Terminal outcomes no longer drop the correlation (issue #370 review): the receive
+	 * span was linked above and every poll slides the retention forward through the
+	 * lookup, so later polls can still establish the same link until the correlation
+	 * expires unused.
 	 */
 	private void releaseCorrelation(String taskId) {
 		if (this.traceCorrelation != null) {

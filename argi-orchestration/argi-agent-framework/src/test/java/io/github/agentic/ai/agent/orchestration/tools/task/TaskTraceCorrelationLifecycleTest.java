@@ -51,11 +51,16 @@ class TaskTraceCorrelationLifecycleTest {
 		correlation.record("task-1", context("task-1"));
 		assertThat(correlation.correlation("task-1")).isPresent();
 
+		// Sliding retention (#370 review): reading a live entry re-anchors its window.
 		clock.advance(Duration.ofMinutes(29));
-		assertThat(correlation.correlation("task-1")).as("inside the retention window").isPresent();
+		assertThat(correlation.correlation("task-1")).as("inside the sliding window").isPresent();
 
-		clock.advance(Duration.ofMinutes(2));
-		assertThat(correlation.correlation("task-1")).as("past the retention window").isEmpty();
+		clock.advance(Duration.ofMinutes(29));
+		assertThat(correlation.correlation("task-1")).as("still inside the re-anchored window").isPresent();
+
+		// With no reads for a full retention window the entry finally lapses.
+		clock.advance(Duration.ofMinutes(31));
+		assertThat(correlation.correlation("task-1")).as("idle past the sliding window").isEmpty();
 	}
 
 	@Test
