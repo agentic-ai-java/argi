@@ -15,6 +15,8 @@
  */
 package io.github.agentic.ai.workflow.graph;
 
+import io.github.agentic.ai.workflow.graph.checkpoint.GraphCheckpointBoundary;
+
 import io.github.agentic.ai.workflow.graph.action.InterruptionMetadata;
 import io.github.agentic.ai.runtime.execution.ExecutionGuard;
 import io.github.agentic.ai.runtime.execution.TrustedExecutionContext;
@@ -99,6 +101,9 @@ public final class RunnableConfig implements HasMetadata<RunnableConfig.Builder>
 	private final transient ExecutionGuard executionGuard;
 
 	@JsonIgnore
+	private final transient GraphCheckpointBoundary checkpointBoundary;
+
+	@JsonIgnore
 	private final transient TrustedExecutionContext trustedExecutionContext;
 
 	/**
@@ -116,6 +121,7 @@ public final class RunnableConfig implements HasMetadata<RunnableConfig.Builder>
 		this.store = builder.store;
 		this.context = builder.context;
 		this.executionGuard = builder.executionGuard;
+		this.checkpointBoundary = builder.checkpointBoundary;
 		this.trustedExecutionContext = builder.trustedExecutionContext;
 	}
 
@@ -156,6 +162,11 @@ public final class RunnableConfig implements HasMetadata<RunnableConfig.Builder>
 	 */
 	public Optional<String> nextNode() {
 		return ofNullable(nextNode);
+	}
+
+	@JsonIgnore
+	public Optional<GraphCheckpointBoundary> checkpointBoundary() {
+		return ofNullable(checkpointBoundary);
 	}
 
 	@JsonIgnore
@@ -375,6 +386,8 @@ public final class RunnableConfig implements HasMetadata<RunnableConfig.Builder>
 
 		private ExecutionGuard executionGuard;
 
+		private GraphCheckpointBoundary checkpointBoundary;
+
 		private TrustedExecutionContext trustedExecutionContext;
 
 		private CompiledGraph.StreamMode streamMode = CompiledGraph.StreamMode.VALUES;
@@ -402,6 +415,7 @@ public final class RunnableConfig implements HasMetadata<RunnableConfig.Builder>
 			this.store = config.store;
 			this.context = new ConcurrentHashMap<>(config.context);
 			this.executionGuard = config.executionGuard;
+			this.checkpointBoundary = config.checkpointBoundary;
 			this.trustedExecutionContext = config.trustedExecutionContext;
 		}
 
@@ -482,6 +496,12 @@ public final class RunnableConfig implements HasMetadata<RunnableConfig.Builder>
 		 */
 		public Builder checkpointsNumRetained(int numRetained) {
 			return addMetadata(CHECKPOINTS_NUM_RETAINED, numRetained);
+		}
+
+		/** Bind an external atomic checkpoint owner for this invocation only. */
+		public Builder checkpointBoundary(GraphCheckpointBoundary boundary) {
+			this.checkpointBoundary = boundary;
+			return this;
 		}
 
 		public Builder executionGuard(ExecutionGuard executionGuard) {

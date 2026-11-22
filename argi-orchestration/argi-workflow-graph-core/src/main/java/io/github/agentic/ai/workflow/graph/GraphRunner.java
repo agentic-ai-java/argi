@@ -45,12 +45,15 @@ public class GraphRunner {
 
 	public GraphRunner(CompiledGraph compiledGraph, RunnableConfig config) {
 		this.compiledGraph = compiledGraph;
-		this.config = config.withoutExecutionGuard();
+		this.config = config.checkpointBoundary().isPresent() ? config : config.withoutExecutionGuard();
 		// Initialize the main execution handler - demonstrates encapsulation
 		this.mainGraphExecutor = new MainGraphExecutor();
 	}
 
 	public Flux<GraphResponse<NodeOutput>> run(OverAllState initialState) {
+		if (config.checkpointBoundary().isPresent()) {
+			return runWithCheckpointLease(initialState);
+		}
 		return compiledGraph.compileConfig.checkpointSaver()
 			.map(saver -> CheckpointExecutionQueue.serialize(saver, config, () -> {
 				if (saver instanceof LeasedCheckpointSaver leasedSaver) {

@@ -109,6 +109,11 @@ public final class StructuredOutputFinalizer {
 
 	private final ChatClient repairClient;
 
+	/** Whether validation can make an additional model call requiring its own journal. */
+	public boolean usesModelRepair() {
+		return repairClient != null;
+	}
+
 	/** Creates a pure validating finalizer without repair capability. */
 	public StructuredOutputFinalizer() {
 		this(null);

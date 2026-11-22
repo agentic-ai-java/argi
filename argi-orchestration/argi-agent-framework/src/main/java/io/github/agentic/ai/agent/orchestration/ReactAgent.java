@@ -58,6 +58,8 @@ import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.agent.orchestration.interceptor.StreamingModelInterceptor;
 import io.github.agentic.ai.agent.orchestration.interceptor.ToolInterceptor;
 import io.github.agentic.ai.agent.orchestration.node.AgentLlmNode;
+import io.github.agentic.ai.agent.durable.DurableSession;
+import io.github.agentic.ai.agent.orchestration.durable.DurableCheckpointAdapter;
 import io.github.agentic.ai.agent.result.StructuredOutputFinalizer;
 import io.github.agentic.ai.agent.orchestration.node.AgentToolNode;
 import io.github.agentic.ai.workflow.graph.checkpoint.BaseCheckpointSaver;
@@ -716,10 +718,74 @@ public class ReactAgent extends BaseAgent {
 		return compiledGraph;
 	}
 
+	/**
+	 * Executes or resumes this direct agent invocation through a caller-owned run
+	 * session.
+	 */
+	public Flux<NodeOutput> stream(Map<String, Object> input, RunnableConfig config, DurableSession session) {
+		Objects.requireNonNull(config, "config cannot be null");
+		var trusted = config.trustedExecutionContext()
+			.orElseThrow(() -> new IllegalArgumentException("Durable execution requires a trusted execution context"));
+		if (!trusted.runId().equals(session.runId())) {
+			throw new IllegalArgumentException("Session and execution context must identify the same run");
+		}
+		RunnableConfig invocation = RunnableConfig.builder(config)
+			.checkpointBoundary(new DurableCheckpointAdapter(session, stateSerializer))
+			.build();
+		return doStream(normalizeMessageInput(input), invocation);
+	}
+
+	public Flux<NodeOutput> stream(String message, RunnableConfig config, DurableSession session) {
+		return stream(buildMessageInput(message), config, session);
+	}
+
+	public ChatMessage call(String message, RunnableConfig config, DurableSession session) {
+		return call(buildMessageInput(message), config, session);
+	}
+
+	public ChatMessage call(Map<String, Object> input, RunnableConfig config, DurableSession session) {
+		NodeOutput output = stream(input, config, session).last().block();
+		return extractAssistantMessage(Optional.of(Objects.requireNonNull(output).state()));
+	}
+
+	/** Validates the committed terminal response without a hidden repair model call. */
+	public Flux<AgentResult> streamResult(Map<String, Object> input, RunnableConfig config, DurableSession session) {
+		return stream(input, config, session).filter(output -> StateGraph.END.equals(output.node())).map(output -> {
+			session.guard().assertActive();
+			ChatMessage terminal = extractAssistantMessage(Optional.of(output.state()));
+			AgentResult result = new StructuredOutputFinalizer().finalizeOutput(terminal, outputSchema,
+					session.checkpoint().usage(), session.guard());
+			session.guard().assertActive();
+			return result;
+		});
+	}
+
+	public Flux<AgentResult> streamResult(String message, RunnableConfig config, DurableSession session) {
+		return streamResult(buildMessageInput(message), config, session);
+	}
+
+	public AgentResult callResult(Map<String, Object> input, RunnableConfig config, DurableSession session) {
+		return streamResult(input, config, session).single().block();
+	}
+
+	public AgentResult callResult(String message, RunnableConfig config, DurableSession session) {
+		return callResult(buildMessageInput(message), config, session);
+	}
+
 	@Override
 	protected Flux<NodeOutput> doStream(Map<String, Object> input, RunnableConfig runnableConfig) {
 		CompiledGraph compiledGraph = getAndCompileGraph();
 		RunnableConfig config = buildStreamConfig(runnableConfig);
+		if (DurableCheckpointAdapter.sessionFrom(config).isPresent()) {
+			DurableSession session = DurableCheckpointAdapter.sessionFrom(config).orElseThrow();
+			return compiledGraph.stream(input, config).map(output -> {
+				session.guard().assertActive();
+				if (StateGraph.END.equals(output.node())) {
+					output.setTokenUsage(session.checkpoint().usage());
+				}
+				return output;
+			});
+		}
 		Optional<BaseCheckpointSaver> saver = compiledGraph.compileConfig.checkpointSaver();
 		// Capture the pre-turn snapshot after this subscription acquires its execution
 		// slot:

@@ -131,8 +131,21 @@ public final class ModelTurnRecorder {
 	 * does not match the run or request
 	 */
 	public Optional<RecordedModelTurn> replayTurn(Turn turn, ChatRequest request, RunSnapshot snapshot) {
-		requireNonNull(turn, "turn cannot be null");
 		requireNonNull(request, "request cannot be null");
+		return replayCommittedTurn(turn, ModelTurnCodec.requestHash(request), request.tools(), snapshot);
+	}
+
+	/**
+	 * Reads a turn from its committed execution checkpoint without reconstructing a
+	 * request or re-running interceptors. The runtime supplies the fingerprint and
+	 * disclosed definitions saved with that checkpoint, after resolving the run's fixed
+	 * definitions. This validates journal consistency, not authorization or ownership.
+	 */
+	public Optional<RecordedModelTurn> replayCommittedTurn(Turn turn, String requestHash, List<ToolDefinition> tools,
+			RunSnapshot snapshot) {
+		requireNonNull(turn, "turn cannot be null");
+		requireNonNull(requestHash, "requestHash cannot be null");
+		requireNonNull(tools, "tools cannot be null");
 		requireNonNull(snapshot, "snapshot cannot be null");
 		if (!turn.runId().equals(snapshot.spec().runId())) {
 			throw new ModelTurnJournalException("Run snapshot does not match model turn " + turn.turnId());
@@ -154,11 +167,12 @@ public final class ModelTurnRecorder {
 		if (hash == null || hash.isBlank()) {
 			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " has an invalid request fingerprint");
 		}
-		if (!hash.equals(ModelTurnCodec.requestHash(request))) {
-			throw new ModelTurnJournalException("Model turn " + turn.turnId()
-					+ " was recorded for a different request; refusing to replay it. This happens when the"
-					+ " request is rewritten non-deterministically, for example by summarisation, or when"
-					+ " the engine reuses a turn identity",
+		if (!hash.equals(requestHash)) {
+			throw new ModelTurnJournalException(
+					"Model turn " + turn.turnId()
+							+ " was recorded for a different request; refusing to replay it. This happens when the"
+							+ " request is rewritten non-deterministically, for example by summarisation, or when"
+							+ " the engine reuses a turn identity",
 					new RunStoreConflictException(
 							"Journal entry id identifies different data: " + turn.runId() + "/" + turn.turnId()));
 		}
@@ -171,7 +185,7 @@ public final class ModelTurnRecorder {
 		}
 		validateEntry(response, ModelTurnEntryIds.response(turn), RunEntry.Kind.MODEL_CALL, ModelTurnCodec.RESPONSE_TYPE);
 		ChatResponse decoded = ModelTurnCodec.decodeResponse(response.payload().json());
-		List<RunEntry> expected = preparePlans(turn, decoded, request.tools());
+		List<RunEntry> expected = preparePlans(turn, decoded, tools);
 		if (plans.size() != expected.size()) {
 			throw new ModelTurnJournalException("Model turn " + turn.turnId() + " has an incomplete or extra tool plan");
 		}
