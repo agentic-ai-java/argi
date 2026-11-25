@@ -31,6 +31,7 @@ import io.github.agentic.ai.workflow.graph.state.strategy.AppendStrategy;
 import io.github.agentic.ai.workflow.graph.observation.trace.AgentTracer;
 import io.a2a.spec.AgentCard;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Objects;
 
@@ -55,6 +56,8 @@ public class A2aRemoteAgent extends BaseAgent {
 
 	private String userIdMetadataKey;
 
+	private Duration streamDemandTimeout = A2aNodeActionWithConfig.DEFAULT_STREAM_DEMAND_TIMEOUT;
+
 	// Private constructor for Builder pattern
 	private A2aRemoteAgent(Builder builder) {
 		super(builder.name, builder.description, builder.includeContents, builder.returnReasoningContents, builder.outputKey, builder.outputKeyStrategy);
@@ -67,6 +70,7 @@ public class A2aRemoteAgent extends BaseAgent {
 		this.shareState = builder.shareState;
 		this.agentTracer = builder.agentTracer;
 		this.userIdMetadataKey = builder.userIdMetadataKey;
+		this.streamDemandTimeout = builder.streamDemandTimeout;
 	}
 
 	@Override
@@ -82,7 +86,8 @@ public class A2aRemoteAgent extends BaseAgent {
 		StateGraph graph = new StateGraph(name, this.keyStrategyFactory);
 		graph.addNode("A2aNode", AsyncNodeActionWithConfig.node_async(
 				new A2aNodeActionWithConfig(agentCard, name, includeContents, outputKey, instruction, streaming,
-						this.shareState, this.compileConfig, this.agentTracer).userIdMetadataKey(this.userIdMetadataKey)));
+						this.shareState, this.compileConfig, this.agentTracer).userIdMetadataKey(this.userIdMetadataKey)
+					.streamDemandTimeout(this.streamDemandTimeout)));
 		graph.addEdge(StateGraph.START, "A2aNode");
 		graph.addEdge("A2aNode", StateGraph.END);
 		return graph;
@@ -113,7 +118,7 @@ public class A2aRemoteAgent extends BaseAgent {
 
 		public A2aRemoteAgentNode(String id, boolean includeContents, boolean returnReasoningContents, String instruction, AgentCardWrapper agentCard, boolean streaming, boolean shareState, CompiledGraph subGraph) {
 			super(Objects.requireNonNull(id, "id cannot be null"),
-					(config) -> AsyncNodeActionWithConfig.node_async(new A2aNodeActionWithConfig(agentCard, subGraph.stateGraph.getName(), includeContents, A2aRemoteAgent.this.outputKey, instruction, streaming, shareState, config, A2aRemoteAgent.this.agentTracer).userIdMetadataKey(A2aRemoteAgent.this.userIdMetadataKey)));
+					(config) -> AsyncNodeActionWithConfig.node_async(new A2aNodeActionWithConfig(agentCard, subGraph.stateGraph.getName(), includeContents, A2aRemoteAgent.this.outputKey, instruction, streaming, shareState, config, A2aRemoteAgent.this.agentTracer).userIdMetadataKey(A2aRemoteAgent.this.userIdMetadataKey).streamDemandTimeout(A2aRemoteAgent.this.streamDemandTimeout)));
 			this.subGraph = subGraph;
 		}
 
@@ -156,6 +161,8 @@ public class A2aRemoteAgent extends BaseAgent {
 		private AgentTracer agentTracer;
 
 		private String userIdMetadataKey = A2aNodeActionWithConfig.DEFAULT_USER_ID_METADATA_KEY;
+
+		private Duration streamDemandTimeout = A2aNodeActionWithConfig.DEFAULT_STREAM_DEMAND_TIMEOUT;
 
 		public Builder name(String name) {
 			this.name = name;
@@ -242,6 +249,23 @@ public class A2aRemoteAgent extends BaseAgent {
 		 */
 		public Builder userIdMetadataKey(String userIdMetadataKey) {
 			this.userIdMetadataKey = userIdMetadataKey;
+			return this;
+		}
+
+		/**
+		 * Bound how long a streaming call waits for the subscriber to request the next
+		 * event before failing with {@link A2aBackpressureException}. Defaults to
+		 * {@link A2aNodeActionWithConfig#DEFAULT_STREAM_DEMAND_TIMEOUT};
+		 * {@link Duration#ZERO} waits indefinitely.
+		 * @param streamDemandTimeout the maximum wait for downstream demand
+		 * @return this builder
+		 */
+		public Builder streamDemandTimeout(Duration streamDemandTimeout) {
+			Objects.requireNonNull(streamDemandTimeout, "streamDemandTimeout must not be null");
+			if (streamDemandTimeout.isNegative()) {
+				throw new IllegalArgumentException("streamDemandTimeout must not be negative");
+			}
+			this.streamDemandTimeout = streamDemandTimeout;
 			return this;
 		}
 

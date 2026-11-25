@@ -48,11 +48,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -66,6 +69,16 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 
 	/** Default {@link RunnableConfig} metadata key holding the caller's user id. */
 	public static final String DEFAULT_USER_ID_METADATA_KEY = "userId";
+
+	/**
+	 * Default time a streaming call waits for the subscriber to request the next event.
+	 * The producer has no internal queue: it reads the remote stream only as fast as the
+	 * subscriber consumes, so this is the bound on how long a stalled consumer may park a
+	 * worker before the stream fails with {@link A2aBackpressureException}. Sixty seconds
+	 * absorbs slow checkpoint writes and paused clients while still turning a dead
+	 * consumer into an explicit failure instead of an unbounded buffer.
+	 */
+	public static final Duration DEFAULT_STREAM_DEMAND_TIMEOUT = Duration.ofSeconds(60);
 
 	private final String agentName;
 
@@ -88,6 +101,8 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	private AgentTracer agentTracer;
 
 	private String userIdMetadataKey = DEFAULT_USER_ID_METADATA_KEY;
+
+	private Duration streamDemandTimeout = DEFAULT_STREAM_DEMAND_TIMEOUT;
 
 	public A2aNodeActionWithConfig(AgentCardWrapper agentCard, String agentName, boolean includeContents,
 			String outputKeyToParent, String instruction, boolean streaming) {
@@ -158,6 +173,28 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 			throw new IllegalArgumentException("userIdMetadataKey must not be blank");
 		}
 		this.userIdMetadataKey = userIdMetadataKey;
+		return this;
+	}
+
+	/**
+	 * Bound how long a streaming call waits for the subscriber to request the next event
+	 * before failing with {@link A2aBackpressureException}. The producer buffers nothing
+	 * internally, so a stalled consumer blocks the remote read instead of growing memory;
+	 * this timeout turns an indefinitely stalled consumer into an explicit terminal error.
+	 * The done response is an ordinary event and needs one permit, so a consumer that stops
+	 * requesting before it fails explicitly instead of hanging. Set {@link Duration#ZERO}
+	 * to disable the timeout entirely (wait forever; zero does not mean "fail
+	 * immediately").
+	 * @param streamDemandTimeout the maximum wait for downstream demand, defaults to
+	 * {@link #DEFAULT_STREAM_DEMAND_TIMEOUT}
+	 * @return this node action
+	 */
+	public A2aNodeActionWithConfig streamDemandTimeout(Duration streamDemandTimeout) {
+		Objects.requireNonNull(streamDemandTimeout, "streamDemandTimeout must not be null");
+		if (streamDemandTimeout.isNegative()) {
+			throw new IllegalArgumentException("streamDemandTimeout must not be negative");
+		}
+		this.streamDemandTimeout = streamDemandTimeout;
 		return this;
 	}
 
@@ -257,6 +294,14 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * mistaken for a normal completion. On success the stream ends with a done response
 	 * carrying the accumulated text for the parent state, unless the subscriber cancels
 	 * first.
+	 *
+	 * <p>Events are demand driven (issue #212): the producer holds no internal queue and
+	 * emits only while the subscriber has outstanding requests, so a stalled consumer
+	 * blocks the socket read instead of buffering without bound. The wait is woken by
+	 * demand, cancellation or disposal; an error terminal is delivered even at zero demand,
+	 * while the done response is an ordinary event that requires one permit and is lost to
+	 * an explicit {@link A2aBackpressureException} (rather than an unbounded buffer) if the
+	 * consumer stops requesting before it.</p>
 	 */
 	private Flux<GraphResponse<NodeOutput>> createStreamingFlux(OverAllState state, RunnableConfig config,
 			AgentTraceContext context) throws Exception {
@@ -264,100 +309,128 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		final String outputKey = StringUtils.hasLength(this.outputKeyToParent) ? this.outputKeyToParent : "messages";
 
 		return Flux.<GraphResponse<NodeOutput>>create(sink -> {
-			final StringBuilder accumulated = new StringBuilder();
-			String baseUrl = resolveAgentBaseUrl(this.agentCard);
-			if (baseUrl == null || baseUrl.isBlank()) {
-				fail(sink, new A2aTransportException("AgentCard.url is empty"));
+			final StreamEmission emission = new StreamEmission(sink, this.streamDemandTimeout);
+			sink.onRequest(emission::onRequest);
+			sink.onDispose(emission::onCancel);
+			// The exchange blocks on socket reads and on downstream demand. Running it as a
+			// separate task keeps the subscription worker free to forward the subscriber's
+			// requests to the sink; blocking on that worker would starve its own demand.
+			Schedulers.boundedElastic()
+				.schedule(() -> runStreamingExchange(state, outputKey, context, requestPayload, emission));
+		}).subscribeOn(Schedulers.boundedElastic());
+	}
+
+	private void runStreamingExchange(OverAllState state, String outputKey, AgentTraceContext context,
+			String requestPayload, StreamEmission emission) {
+		final FluxSink<GraphResponse<NodeOutput>> sink = emission.sink();
+		final StringBuilder accumulated = new StringBuilder();
+		String baseUrl = resolveAgentBaseUrl(this.agentCard);
+		if (baseUrl == null || baseUrl.isBlank()) {
+			emission.fail(new A2aTransportException("AgentCard.url is empty"));
+			return;
+		}
+		if (emission.isCancelled()) {
+			return;
+		}
+
+		A2aException failure = null;
+		try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+			HttpPost post = new HttpPost(baseUrl);
+			post.setHeader("Content-Type", "application/json");
+			post.setHeader("Accept", "text/event-stream");
+			post.setEntity(new StringEntity(requestPayload, ContentType.APPLICATION_JSON));
+			// A stalled consumer aborts the exchange before failing the stream, so the
+			// terminal signal never waits for the peer to finish sending.
+			emission.exchangeAbort(post::cancel);
+
+			// Cancelling the subscription must reach the transport: otherwise a silent
+			// remote peer keeps the worker blocked in the synchronous read below and the
+			// connection open until it sends another byte or closes on its own.
+			sink.onCancel(() -> {
+				emission.onCancel();
+				abort(httpClient, post);
+			});
+			if (emission.isCancelled()) {
 				return;
 			}
 
-			A2aException failure = null;
-			try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
-				HttpPost post = new HttpPost(baseUrl);
-				post.setHeader("Content-Type", "application/json");
-				post.setHeader("Accept", "text/event-stream");
-				post.setEntity(new StringEntity(requestPayload, ContentType.APPLICATION_JSON));
-
-				// Cancelling the subscription must reach the transport: otherwise a silent
-				// remote peer keeps the worker blocked in the synchronous read below and the
-				// connection open until it sends another byte or closes on its own.
-				sink.onCancel(() -> abort(httpClient, post));
-				if (sink.isCancelled()) {
-					return;
-				}
-
-				// The worker thread has no ambient observation, so the producer context is
-				// carried explicitly through the captured trace context and linked through
-				// the shared delegation id instead of a parent/child relationship.
-				AgentTraceSpan sendSpan = startSpan(AgentTraceOperation.A2A_SEND, context).role("producer");
-				try {
-					httpClient.execute(post, response -> {
-						int statusCode = response.getCode();
-						if (statusCode != 200) {
-							throw new A2aTransportException("HTTP request failed, status: " + statusCode);
-						}
-
-						HttpEntity entity = response.getEntity();
-						if (entity == null) {
-							throw new A2aTransportException("Empty HTTP entity");
-						}
-
-						String contentType = entity.getContentType() != null ? entity.getContentType() : "";
-						boolean isEventStream = contentType.contains("text/event-stream");
-
-						AgentTraceSpan receiveSpan = startSpan(AgentTraceOperation.A2A_RECEIVE, context)
-							.role("consumer");
-						try {
-							if (isEventStream) {
-								consumeEventStream(entity.getContent(), state, sink, accumulated);
-							}
-							else {
-								consumeSingleBodyResponse(entity, state, sink, accumulated);
-							}
-							if (!sink.isCancelled()) {
-								receiveSpan.success();
-							}
-						}
-						catch (Exception ex) {
-							if (!sink.isCancelled()) {
-								receiveSpan.error(ex);
-							}
-							throw ex;
-						}
-						finally {
-							receiveSpan.close();
-						}
-						return null;
-					});
-					if (!sink.isCancelled()) {
-						sendSpan.success();
+			// The worker thread has no ambient observation, so the producer context is
+			// carried explicitly through the captured trace context and linked through
+			// the shared delegation id instead of a parent/child relationship.
+			AgentTraceSpan sendSpan = startSpan(AgentTraceOperation.A2A_SEND, context).role("producer");
+			try {
+				httpClient.execute(post, response -> {
+					int statusCode = response.getCode();
+					if (statusCode != 200) {
+						throw new A2aTransportException("HTTP request failed, status: " + statusCode);
 					}
-				}
-				catch (Exception e) {
-					if (!sink.isCancelled()) {
-						sendSpan.error(e);
+
+					HttpEntity entity = response.getEntity();
+					if (entity == null) {
+						throw new A2aTransportException("Empty HTTP entity");
 					}
-					throw e;
+
+					String contentType = entity.getContentType() != null ? entity.getContentType() : "";
+					boolean isEventStream = contentType.contains("text/event-stream");
+
+					AgentTraceSpan receiveSpan = startSpan(AgentTraceOperation.A2A_RECEIVE, context).role("consumer");
+					try {
+						if (isEventStream) {
+							consumeEventStream(entity.getContent(), state, emission, accumulated);
+						}
+						else {
+							consumeSingleBodyResponse(entity, state, emission, accumulated);
+						}
+						if (!emission.isCancelled()) {
+							receiveSpan.success();
+						}
+					}
+					catch (Exception ex) {
+						if (!emission.isCancelled()) {
+							receiveSpan.error(ex);
+						}
+						throw ex;
+					}
+					finally {
+						receiveSpan.close();
+					}
+					return null;
+				});
+				if (!emission.isCancelled()) {
+					sendSpan.success();
 				}
-				finally {
-					sendSpan.close();
-				}
-			}
-			catch (A2aException e) {
-				failure = e;
 			}
 			catch (Exception e) {
-				failure = asA2aFailure(e);
+				if (!emission.isCancelled()) {
+					sendSpan.error(e);
+				}
+				throw e;
 			}
+			finally {
+				sendSpan.close();
+			}
+		}
+		catch (A2aException e) {
+			failure = e;
+		}
+		catch (Exception e) {
+			failure = asA2aFailure(e);
+		}
 
-			if (failure != null) {
-				// The failure is the single terminal state: text chunks already delivered
-				// keep their identity and no done response follows an error.
-				fail(sink, failure);
-				return;
-			}
-			complete(sink, outputKey, accumulated);
-		}).subscribeOn(Schedulers.boundedElastic());
+		if (failure != null) {
+			// The failure is the single terminal state: text chunks already delivered
+			// keep their identity and no done response follows an error.
+			emission.fail(failure);
+			return;
+		}
+		try {
+			complete(emission, outputKey, accumulated);
+		}
+		catch (A2aException e) {
+			// only reachable when waiting for the final permit was interrupted; the
+			// subscriber must not stay pending without a terminal state
+			emission.fail(e);
+		}
 	}
 
 	/**
@@ -370,14 +443,14 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * (issue #213).
 	 */
 	private void consumeEventStream(InputStream content, OverAllState state,
-			FluxSink<GraphResponse<NodeOutput>> sink, StringBuilder accumulated) throws IOException {
+			StreamEmission emission, StringBuilder accumulated) throws IOException {
 		try (BufferedReader reader = new BufferedReader(new InputStreamReader(content, StandardCharsets.UTF_8))) {
 			final List<String> dataLines = new ArrayList<>(2);
 			String line;
-			while (!sink.isCancelled() && (line = reader.readLine()) != null) {
+			while (!emission.isCancelled() && (line = reader.readLine()) != null) {
 				if (line.isEmpty()) {
 					// a blank line dispatches the accumulated event per the SSE wire format
-					if (!dataLines.isEmpty() && dispatchSseEvent(String.join("\n", dataLines), state, sink,
+					if (!dataLines.isEmpty() && dispatchSseEvent(String.join("\n", dataLines), state, emission,
 							accumulated)) {
 						return;
 					}
@@ -393,14 +466,14 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 				}
 				// other field names (event:, id:, retry:) are ignorable extensions
 			}
-			if (!sink.isCancelled() && !dataLines.isEmpty()) {
+			if (!emission.isCancelled() && !dataLines.isEmpty()) {
 				// the peer may close without a trailing blank line; the pending event
 				// still counts
-				if (dispatchSseEvent(String.join("\n", dataLines), state, sink, accumulated)) {
+				if (dispatchSseEvent(String.join("\n", dataLines), state, emission, accumulated)) {
 					return;
 				}
 			}
-			if (!sink.isCancelled()) {
+			if (!emission.isCancelled()) {
 				throw new A2aProtocolException("A2A event stream ended without a terminal state");
 			}
 		}
@@ -417,7 +490,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * a completed status-update, an event marked {@code final}, or a standalone Message
 	 * result
 	 */
-	private boolean dispatchSseEvent(String data, OverAllState state, FluxSink<GraphResponse<NodeOutput>> sink,
+	private boolean dispatchSseEvent(String data, OverAllState state, StreamEmission emission,
 			StringBuilder accumulated) {
 		if ("[DONE]".equals(data)) {
 			return true;
@@ -451,7 +524,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		}
 		if (text != null && !text.isEmpty()) {
 			accumulated.append(text);
-			emit(sink, buildStreamingOutput(text, state));
+			emission.next(buildStreamingOutput(text, state));
 		}
 		return terminal;
 	}
@@ -474,7 +547,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 * structured errors; a single body is by itself the terminal state (issue #213).
 	 */
 	private void consumeSingleBodyResponse(HttpEntity entity, OverAllState state,
-			FluxSink<GraphResponse<NodeOutput>> sink, StringBuilder accumulated) throws IOException, ParseException {
+			StreamEmission emission, StringBuilder accumulated) throws IOException, ParseException {
 		final String body = EntityUtils.toString(entity, "UTF-8");
 		final Map<String, Object> parsed;
 		try {
@@ -500,18 +573,7 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		}
 		if (text != null && !text.isEmpty()) {
 			accumulated.append(text);
-			emit(sink, buildStreamingOutput(text, state));
-		}
-	}
-
-	/**
-	 * Deliver the structured failure as the stream's single terminal state. Text chunks
-	 * already emitted keep their identity; a cancelled subscription gets neither the error
-	 * nor a done response.
-	 */
-	private static void fail(FluxSink<GraphResponse<NodeOutput>> sink, A2aException failure) {
-		if (!sink.isCancelled()) {
-			sink.error(failure);
+			emission.next(buildStreamingOutput(text, state));
 		}
 	}
 
@@ -634,17 +696,8 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 		return data.length() <= 120 ? data : data.substring(0, 120) + "...";
 	}
 
-	private static void emit(FluxSink<GraphResponse<NodeOutput>> sink, NodeOutput output) {
-		if (!sink.isCancelled()) {
-			sink.next(GraphResponse.of(output));
-		}
-	}
-
-	private void complete(FluxSink<GraphResponse<NodeOutput>> sink, String outputKey, StringBuilder accumulated) {
-		if (!sink.isCancelled()) {
-			sink.next(GraphResponse.done(buildFinalResult(outputKey, accumulated.toString())));
-			sink.complete();
-		}
+	private void complete(StreamEmission emission, String outputKey, StringBuilder accumulated) {
+		emission.complete(buildFinalResult(outputKey, accumulated.toString()));
 	}
 
 	/**
@@ -1045,6 +1098,171 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 	 */
 	private String resolveAgentBaseUrl(AgentCardWrapper agentCard) {
 		return agentCard.url();
+	}
+
+	/**
+	 * Serializes the streaming producer against downstream demand. No queue sits between
+	 * the producer and the subscriber: {@link #next} emits only after it has consumed one
+	 * permit supplied by a downstream request, so a stalled consumer blocks the socket
+	 * read and applies backpressure to the remote peer instead of growing memory. Because
+	 * the producer never emits without a permit, the sink's internal queue is empty
+	 * whenever a terminal signal is sent, and {@link FluxSink#error}/{@link FluxSink#complete}
+	 * are delivered even at zero demand, so they are never lost behind buffered events
+	 * (issue #212).
+	 */
+	private static final class StreamEmission {
+
+		/** Upper bound of one wait slice; the loop re-checks permits and cancellation. */
+		private static final long MAX_WAIT_SLICE_MILLIS = 50;
+
+		private final FluxSink<GraphResponse<NodeOutput>> sink;
+
+		private final Duration demandTimeout;
+
+		private final Object demandMonitor = new Object();
+
+		private long permits;
+
+		private volatile boolean cancelled;
+
+		private volatile boolean timedOut;
+
+		private Runnable exchangeAbort;
+
+		StreamEmission(FluxSink<GraphResponse<NodeOutput>> sink, Duration demandTimeout) {
+			this.sink = sink;
+			this.demandTimeout = demandTimeout;
+		}
+
+		FluxSink<GraphResponse<NodeOutput>> sink() {
+			return this.sink;
+		}
+
+		/** Register how to abort the in-flight exchange once the consumer stalls. */
+		void exchangeAbort(Runnable abort) {
+			synchronized (this.demandMonitor) {
+				this.exchangeAbort = abort;
+			}
+		}
+
+		/** Record a downstream request and wake the producer. */
+		void onRequest(long requested) {
+			synchronized (this.demandMonitor) {
+				if (requested == Long.MAX_VALUE || this.permits == Long.MAX_VALUE) {
+					this.permits = Long.MAX_VALUE;
+				}
+				else {
+					final long total = this.permits + requested;
+					this.permits = total < 0 ? Long.MAX_VALUE : total;
+				}
+				this.demandMonitor.notifyAll();
+			}
+		}
+
+		void onCancel() {
+			synchronized (this.demandMonitor) {
+				this.cancelled = true;
+				this.demandMonitor.notifyAll();
+			}
+		}
+
+		boolean isCancelled() {
+			return this.cancelled || this.timedOut || this.sink.isCancelled();
+		}
+
+		void next(NodeOutput output) {
+			if (isCancelled() || !awaitDemand()) {
+				return;
+			}
+			this.sink.next(GraphResponse.of(output));
+		}
+
+		/**
+		 * Deliver the structured failure as the stream's single terminal state. Text
+		 * chunks already emitted keep their identity; a cancelled subscription gets
+		 * neither the error nor a done response.
+		 */
+		void fail(A2aException failure) {
+			if (!isCancelled()) {
+				this.sink.error(failure);
+			}
+		}
+
+		void complete(Map<String, Object> finalResult) {
+			if (isCancelled() || !awaitDemand()) {
+				return;
+			}
+			this.sink.next(GraphResponse.done(finalResult));
+			this.sink.complete();
+		}
+
+		/**
+		 * Wait for and consume one downstream permit. The loop re-checks every short slice
+		 * so a missed wake-up only delays the producer briefly. When the consumer stalls
+		 * for longer than the configured timeout the exchange is aborted first and the
+		 * stream fails immediately; the producer then unwinds normally, so a slow transport
+		 * teardown can never delay the terminal signal.
+		 * @return {@code true} when the event may be emitted, {@code false} when the
+		 * subscription was cancelled or the stream failed
+		 */
+		private boolean awaitDemand() {
+			final boolean waitForever = this.demandTimeout.isZero();
+			final long startNanos = System.nanoTime();
+			final long timeoutNanos = waitForever ? 0L : this.demandTimeout.toNanos();
+			synchronized (this.demandMonitor) {
+				while (this.permits <= 0) {
+					if (isCancelled()) {
+						return false;
+					}
+					final long remainingNanos = waitForever ? Long.MAX_VALUE
+							: timeoutNanos - (System.nanoTime() - startNanos);
+					if (remainingNanos <= 0) {
+						this.timedOut = true;
+						break;
+					}
+					final long waitMillis = Math.max(1,
+							Math.min(MAX_WAIT_SLICE_MILLIS, TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+					try {
+						this.demandMonitor.wait(waitMillis);
+					}
+					catch (InterruptedException ex) {
+						Thread.currentThread().interrupt();
+						throw new A2aTransportException(
+								"A2A streaming worker was interrupted while waiting for demand", ex);
+					}
+				}
+				if (!this.timedOut) {
+					this.permits--;
+					return true;
+				}
+			}
+			reportStalledConsumer();
+			return false;
+		}
+
+		/**
+		 * Abort the exchange and deliver the explicit backpressure failure. Aborting first
+		 * releases the connection without waiting for the peer, and delivering the error
+		 * from here (rather than letting it unwind through the HTTP client) keeps the
+		 * terminal signal independent of the transport teardown.
+		 */
+		private void reportStalledConsumer() {
+			final A2aBackpressureException failure = new A2aBackpressureException(format(
+					"A2A stream consumer requested no event for %s; the stream cannot advance without downstream "
+							+ "demand (configure streamDemandTimeout)",
+					this.demandTimeout));
+			final Runnable abort;
+			synchronized (this.demandMonitor) {
+				abort = this.exchangeAbort;
+			}
+			if (abort != null) {
+				abort.run();
+			}
+			if (!this.sink.isCancelled()) {
+				this.sink.error(failure);
+			}
+		}
+
 	}
 
 }
