@@ -84,13 +84,23 @@ public class A2aRemoteAgent extends BaseAgent {
 		}
 
 		StateGraph graph = new StateGraph(name, this.keyStrategyFactory);
-		graph.addNode("A2aNode", AsyncNodeActionWithConfig.node_async(
-				new A2aNodeActionWithConfig(agentCard, name, includeContents, outputKey, instruction, streaming,
-						this.shareState, this.compileConfig, this.agentTracer).userIdMetadataKey(this.userIdMetadataKey)
-					.streamDemandTimeout(this.streamDemandTimeout)));
+		graph.addNode("A2aNode", AsyncNodeActionWithConfig.node_async(newNodeAction(agentCard, name, includeContents,
+				outputKey, instruction, streaming, this.shareState, this.compileConfig, this.agentTracer)));
 		graph.addEdge(StateGraph.START, "A2aNode");
 		graph.addEdge("A2aNode", StateGraph.END);
 		return graph;
+	}
+
+	/**
+	 * Single place that applies the agent-level node options, so the initGraph and asNode
+	 * construction sites cannot drift apart on userId or demand-timeout wiring.
+	 */
+	private A2aNodeActionWithConfig newNodeAction(AgentCardWrapper agentCard, String agentName, boolean includeContents,
+			String outputKeyToParent, String instruction, boolean streaming, boolean shareState,
+			CompileConfig compileConfig, AgentTracer agentTracer) {
+		return new A2aNodeActionWithConfig(agentCard, agentName, includeContents, outputKeyToParent, instruction,
+				streaming, shareState, compileConfig, agentTracer).userIdMetadataKey(this.userIdMetadataKey)
+			.streamDemandTimeout(this.streamDemandTimeout);
 	}
 
 	@Override
@@ -118,7 +128,9 @@ public class A2aRemoteAgent extends BaseAgent {
 
 		public A2aRemoteAgentNode(String id, boolean includeContents, boolean returnReasoningContents, String instruction, AgentCardWrapper agentCard, boolean streaming, boolean shareState, CompiledGraph subGraph) {
 			super(Objects.requireNonNull(id, "id cannot be null"),
-					(config) -> AsyncNodeActionWithConfig.node_async(new A2aNodeActionWithConfig(agentCard, subGraph.stateGraph.getName(), includeContents, A2aRemoteAgent.this.outputKey, instruction, streaming, shareState, config, A2aRemoteAgent.this.agentTracer).userIdMetadataKey(A2aRemoteAgent.this.userIdMetadataKey).streamDemandTimeout(A2aRemoteAgent.this.streamDemandTimeout)));
+					(config) -> AsyncNodeActionWithConfig.node_async(newNodeAction(agentCard,
+						subGraph.stateGraph.getName(), includeContents, A2aRemoteAgent.this.outputKey, instruction,
+						streaming, shareState, config, A2aRemoteAgent.this.agentTracer)));
 			this.subGraph = subGraph;
 		}
 

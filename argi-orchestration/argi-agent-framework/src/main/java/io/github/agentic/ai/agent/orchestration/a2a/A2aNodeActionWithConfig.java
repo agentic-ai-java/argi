@@ -1145,7 +1145,13 @@ public class A2aNodeActionWithConfig implements NodeActionWithConfig {
 			}
 		}
 
-		/** Record a downstream request and wake the producer. */
+		/**
+		 * Record a downstream request and wake the producer. Demand is tracked from these
+		 * notifications instead of {@link FluxSink#requestedFromDownstream()}: the sink
+		 * decrements its own counter while delivering, so reading it from the producer can
+		 * briefly report one request too many, which would let one event slip into the
+		 * sink's internal queue and delay the terminal signal behind it.
+		 */
 		void onRequest(long requested) {
 			synchronized (this.demandMonitor) {
 				if (requested == Long.MAX_VALUE || this.permits == Long.MAX_VALUE) {
