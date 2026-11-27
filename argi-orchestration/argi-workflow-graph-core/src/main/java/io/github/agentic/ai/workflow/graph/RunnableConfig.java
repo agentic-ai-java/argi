@@ -415,6 +415,7 @@ public final class RunnableConfig implements HasMetadata<RunnableConfig.Builder>
 			this.store = config.store;
 			this.context = new ConcurrentHashMap<>(config.context);
 			this.executionGuard = config.executionGuard;
+			// Preserved for same-invocation copies; child dispatchers must clear or reject it.
 			this.checkpointBoundary = config.checkpointBoundary;
 			this.trustedExecutionContext = config.trustedExecutionContext;
 		}

@@ -30,6 +30,8 @@ import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.agent.react.ToolContextPatchProvider;
+import io.github.agentic.ai.agent.orchestration.tools.task.TaskRepository;
+import io.github.agentic.ai.agent.orchestration.tools.task.TaskTool;
 import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatClientCapabilities;
 import io.github.agentic.ai.api.chat.ChatEvent;
@@ -62,6 +64,8 @@ import io.github.agentic.ai.runtime.execution.run.RunState;
 import io.github.agentic.ai.runtime.execution.run.RunStore;
 import io.github.agentic.ai.workflow.graph.NodeOutput;
 import io.github.agentic.ai.workflow.graph.RunnableConfig;
+import io.github.agentic.ai.workflow.graph.observation.trace.AgentTracer;
+import io.micrometer.observation.ObservationRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -78,6 +82,7 @@ import java.util.function.Predicate;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import reactor.adapter.JdkFlowAdapter;
 import reactor.core.publisher.Flux;
@@ -88,6 +93,9 @@ import static org.mockito.AdditionalAnswers.delegatesTo;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 /** The same recovery/commit contract exercised through both real ReAct engines. */
 @Timeout(20)
@@ -335,6 +343,53 @@ class DurableReActEnginesTest {
 	}
 
 	@Test
+	void graphRejectsAgentToolDelegationWithoutReplayingTheParentPlan() throws Exception {
+		ChatClient childClient = mock(ChatClient.class);
+		ReactAgent child = ReactAgent.builder().name("child").chatClient(childClient).build();
+
+		assertDelegationRejected(AgentTool.create(child), """
+				{"input":"child prompt"}
+				""", childClient);
+	}
+
+	@ParameterizedTest(name = "tracing={0}, background={1}")
+	@CsvSource({ "false, false", "false, true", "true, false", "true, true" })
+	void graphRejectsTaskToolDelegationBeforeStartingOrEnqueueingTheChild(boolean tracing, boolean background)
+			throws Exception {
+		ChatClient childClient = mock(ChatClient.class);
+		ReactAgent child = ReactAgent.builder().name("child").chatClient(childClient).build();
+		TaskRepository repository = mock(TaskRepository.class);
+		AgentTracer tracer = tracing ? new AgentTracer(ObservationRegistry.create()) : null;
+		Tool task = TaskTool.builder()
+			.subAgent("child", child)
+			.taskRepository(repository)
+			.agentTracer(tracer)
+			.build();
+
+		assertDelegationRejected(task, """
+				{"description":"Delegate a task","prompt":"child prompt","subagent_type":"child","run_in_background":%s}
+				""".formatted(background), childClient);
+		verifyNoInteractions(repository);
+	}
+
+	private void assertDelegationRejected(Tool tool, String arguments, ChatClient childClient) throws Exception {
+		Fixture fixture = new Fixture();
+		ToolCall delegation = new ToolCall("delegation", tool.definition().name(), arguments);
+		Result result = fixture.run(Engine.GRAPH, List.of(tool), List.of(delegation));
+
+		assertThat(result.text()).isEqualTo("done");
+		assertThat(fixture.toolMessages).filteredOn(message -> delegation.id().equals(message.toolCallId()))
+			.singleElement().satisfies(message -> {
+				assertThat(message.text()).contains("Sub-agent delegation is not supported in durable execution");
+				assertThat(message.metadata()).containsEntry("error", true);
+			});
+		assertThat(fixture.tasks).extracting(ToolTaskIdentity::ordinal).containsExactly(0, 1);
+		assertThat(fixture.planningCalls.get()).isEqualTo(1);
+		verify(childClient, never()).call(any());
+		verify(childClient, never()).stream(any());
+	}
+
+	@Test
 	void graphDoesNotReadOrWriteTheLegacySaverInTheRecordedRun() throws Exception {
 		Fixture fixture = new Fixture();
 		fixture.run(Engine.GRAPH);
@@ -399,6 +454,8 @@ class DurableReActEnginesTest {
 
 		final List<String> deliveredAssistantMessages = new ArrayList<>();
 
+		final List<ChatMessage> toolMessages = new ArrayList<>();
+
 		Predicate<RunCommit> failBefore = commit -> false;
 
 		Predicate<RunCommit> failAfter = commit -> false;
@@ -462,8 +519,15 @@ class DurableReActEnginesTest {
 		}
 
 		Result run(Engine engine) throws Exception {
-			ChatClient client = new ScriptedClient(this);
-			ToolRegistry registry = new ToolRegistry(List.of(new LookupTool(this)));
+			return run(engine, List.of(), List.of());
+		}
+
+		Result run(Engine engine, List<Tool> additionalTools, List<ToolCall> additionalCalls) throws Exception {
+			ChatClient client = new ScriptedClient(this, additionalCalls);
+			List<Tool> tools = new ArrayList<>();
+			tools.add(new LookupTool(this));
+			tools.addAll(additionalTools);
+			ToolRegistry registry = new ToolRegistry(tools);
 			try (AgentExecutionContext context = context()) {
 				activeContext = context;
 				activeGuard = context.control();
@@ -599,19 +663,29 @@ class DurableReActEnginesTest {
 		}
 	}
 
-	private record ScriptedClient(Fixture fixture) implements ChatClient {
+	private record ScriptedClient(Fixture fixture, List<ToolCall> additionalCalls) implements ChatClient {
+
+		private ScriptedClient(Fixture fixture) {
+			this(fixture, List.of());
+		}
+
 		@Override
 		public CompletionStage<ChatResponse> call(ChatRequest request) {
 			int invocation = fixture.modelCalls.incrementAndGet();
-			boolean planned = request.messages().stream().anyMatch(message -> message.role() == ChatRole.TOOL);
+			List<ChatMessage> toolMessages = request.messages().stream().filter(message -> message.role() == ChatRole.TOOL)
+				.toList();
+			fixture.toolMessages.addAll(toolMessages);
+			boolean planned = !toolMessages.isEmpty();
 			List<ToolCall> calls;
 			if (planned) {
 				calls = List.of();
 			}
 			else {
 				fixture.planningCalls.incrementAndGet();
-				calls = List.of(new ToolCall("provider-" + invocation + "-a", "lookup", "{ \"q\": 1 }"),
-						new ToolCall("provider-" + invocation + "-b", "lookup", "{\"q\":2}"));
+				calls = new ArrayList<>();
+				calls.add(new ToolCall("provider-" + invocation + "-a", "lookup", "{ \"q\": 1 }"));
+				calls.add(new ToolCall("provider-" + invocation + "-b", "lookup", "{\"q\":2}"));
+				calls.addAll(additionalCalls);
 			}
 			ChatMessage message = ChatMessage.assistant(planned ? "done" : "checking", calls);
 			return CompletableFuture
