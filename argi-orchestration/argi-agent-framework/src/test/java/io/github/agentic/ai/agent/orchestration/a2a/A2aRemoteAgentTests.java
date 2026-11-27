@@ -18,6 +18,7 @@ package io.github.agentic.ai.agent.orchestration.a2a;
 import io.github.agentic.ai.workflow.graph.CompileConfig;
 import io.github.agentic.ai.workflow.graph.StateGraph;
 import io.github.agentic.ai.workflow.graph.internal.node.Node;
+import io.github.agentic.ai.workflow.graph.observation.trace.AgentTracer;
 import io.a2a.spec.AgentCapabilities;
 import io.a2a.spec.AgentCard;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -242,6 +244,47 @@ class A2aRemoteAgentTests {
 					.agentCard(agentCardWrapper.getAgentCard())
 					.build();
 		}, "Should throw when description is missing");
+	}
+
+	/**
+	 * Both node construction sites (initGraph and asNode) create the action through one
+	 * factory, so a configured demand timeout must reach the action it produces.
+	 */
+	@Test
+	void builder_streamDemandTimeoutIsAppliedToNodeAction() throws Exception {
+		Duration configured = Duration.ofSeconds(7);
+		A2aRemoteAgent agent = A2aRemoteAgent.builder()
+				.name("test-agent")
+				.description("Test agent")
+				.agentCard(agentCardWrapper.getAgentCard())
+				.instruction("Test: {input}")
+				.streamDemandTimeout(configured)
+				.build();
+
+		Method newNodeAction = A2aRemoteAgent.class.getDeclaredMethod("newNodeAction", AgentCardWrapper.class,
+				String.class, boolean.class, String.class, String.class, boolean.class, boolean.class,
+				CompileConfig.class, AgentTracer.class);
+		newNodeAction.setAccessible(true);
+		A2aNodeActionWithConfig action = (A2aNodeActionWithConfig) newNodeAction.invoke(agent, agentCardWrapper,
+				"test-agent", true, "output", "instruction", false, true, null, null);
+
+		Field timeoutField = A2aNodeActionWithConfig.class.getDeclaredField("streamDemandTimeout");
+		timeoutField.setAccessible(true);
+
+		assertEquals(configured, timeoutField.get(action),
+				"the configured timeout must be applied to the node action");
+	}
+
+	/**
+	 * Null and negative timeouts are rejected where they are configured.
+	 */
+	@Test
+	void builder_streamDemandTimeoutRejectsNullAndNegative() {
+		assertThrows(NullPointerException.class, () -> A2aRemoteAgent.builder().streamDemandTimeout(null));
+		assertThrows(IllegalArgumentException.class,
+				() -> A2aRemoteAgent.builder().streamDemandTimeout(Duration.ofMillis(-1)));
+		// ZERO is valid: it disables the timeout instead of failing immediately
+		assertDoesNotThrow(() -> A2aRemoteAgent.builder().streamDemandTimeout(Duration.ZERO));
 	}
 
 }
