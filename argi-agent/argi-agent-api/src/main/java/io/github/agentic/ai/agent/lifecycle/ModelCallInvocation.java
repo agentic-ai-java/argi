@@ -104,10 +104,7 @@ public record ModelCallInvocation(LifecycleIdentity identity, ModelTurnId modelT
 	private static final class ReadOnlyModelRequest extends ModelRequest {
 
 		private ReadOnlyModelRequest(ModelRequest source) {
-			super(source.getSystemMessage(), source.getMessages(), source.getOptions(), source.getChatClient(),
-					source.getToolRegistry(), source.getTools(), source.hasToolSelection(),
-					source.getDynamicToolRegistry(), source.getToolDescriptions(), source.getContext(),
-					source.getAttributes(), source.getTrustedExecutionContext().orElse(null));
+			super(source);
 		}
 
 		@Override

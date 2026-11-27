@@ -62,6 +62,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import reactor.adapter.JdkFlowAdapter;
 
 /**
  * A graph-independent ReAct loop. Each turn performs model call, tool authorization
@@ -427,8 +428,7 @@ public final class ReActAgent implements Agent {
 			// The effective tool set is only known at the end of the interceptor chain,
 			// where selection semantics are resolved; execution in the same turn must use
 			// exactly the set the model was shown (issue #268: declared and executed agree).
-			ModelCallHandler handler = modelRequest -> invokeModel(modelRequest, usage, effectiveTools,
-					streamMessageId);
+			ModelCallHandler handler = modelRequest -> invokeModel(modelRequest, usage, effectiveTools, streamMessageId);
 			for (int index = interceptors.size() - 1; index >= 0; index--) {
 				ModelInterceptor interceptor = interceptors.get(index);
 				ModelCallHandler next = handler;
@@ -499,7 +499,19 @@ public final class ReActAgent implements Agent {
 			ChatRequest chatRequest = new ChatRequest(composeMessages(request), effective.definitions(),
 					request.getOptions(), request.getAttributes());
 			if (streamModel) {
-				return ModelResponse.of(collectModelStream(selectedClient, chatRequest, usage, streamMessageId));
+				Flow.Publisher<ChatEvent> publisher = Objects.requireNonNull(selectedClient.stream(chatRequest),
+						"chat client returned no stream");
+				if (request.getModelAttempt().isEmpty()) {
+					return ModelResponse.of(collectModelStream(publisher, usage, streamMessageId));
+				}
+				// Preserve provider response validation while leaving public stream events
+				// visible to model policies before the terminal consumer collects them.
+				return ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(
+						JdkFlowAdapter.flowPublisherToFlux(publisher).doOnNext(event -> {
+							if (event.type() == ChatEvent.Type.RESPONSE) {
+								ModelResponse.of(event.response());
+							}
+						})));
 			}
 			CompletableFuture<ChatResponse> future = selectedClient.call(chatRequest).toCompletableFuture();
 			toolOperation.set(future);
@@ -515,13 +527,6 @@ public final class ReActAgent implements Agent {
 			finally {
 				toolOperation.compareAndSet(future, null);
 			}
-		}
-
-		private ChatResponse collectModelStream(ChatClient selectedClient, ChatRequest request, UsageAccumulator usage,
-				String messageId) {
-			return collectModelStream(
-					Objects.requireNonNull(selectedClient.stream(request), "chat client returned no stream"), usage,
-					messageId);
 		}
 
 		private ChatResponse collectModelStream(Flow.Publisher<ChatEvent> publisher, UsageAccumulator usage,

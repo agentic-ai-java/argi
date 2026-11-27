@@ -15,6 +15,7 @@
  */
 package io.github.agentic.ai.agent.interceptor;
 
+import io.github.agentic.ai.agent.retry.ModelAttempt;
 import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.chat.ChatRole;
@@ -69,6 +70,8 @@ public class ModelRequest {
 	// are passed to the provider and must stay free of runtime objects.
 	private final ExecutionGuard executionGuard;
 
+	private final ModelAttempt modelAttempt;
+
 	public ModelRequest(ChatMessage systemMessage, List<ChatMessage> messages, GenerationOptions options,
 			ChatClient chatClient, ToolRegistry toolRegistry, List<String> tools, boolean toolSelectionSpecified,
 			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
@@ -90,6 +93,24 @@ public class ModelRequest {
 			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
 			Map<String, Object> attributes, TrustedExecutionContext trustedExecutionContext,
 			ExecutionGuard executionGuard) {
+		this(systemMessage, messages, options, chatClient, toolRegistry, tools, toolSelectionSpecified,
+				dynamicToolRegistry, toolDescriptions, context, attributes, trustedExecutionContext, executionGuard,
+				null);
+	}
+
+	/** Copies a request for a read-only lifecycle snapshot, retaining its execution constraints. */
+	protected ModelRequest(ModelRequest source) {
+		this(source.systemMessage, source.messages, source.options, source.chatClient, source.toolRegistry,
+				source.tools, source.toolSelectionSpecified, source.dynamicToolRegistry, source.toolDescriptions,
+				source.context, source.attributes, source.trustedExecutionContext, source.executionGuard, source.modelAttempt);
+	}
+
+	private ModelRequest(ChatMessage systemMessage, List<ChatMessage> messages, GenerationOptions options,
+			ChatClient chatClient, ToolRegistry toolRegistry, List<String> tools, boolean toolSelectionSpecified,
+			ToolRegistry dynamicToolRegistry, Map<String, String> toolDescriptions, Map<String, Object> context,
+			Map<String, Object> attributes, TrustedExecutionContext trustedExecutionContext,
+			ExecutionGuard executionGuard, ModelAttempt modelAttempt) {
+		this.modelAttempt = modelAttempt;
 		if (systemMessage != null && systemMessage.role() != ChatRole.SYSTEM) {
 			throw new IllegalArgumentException("systemMessage must have the SYSTEM role");
 		}
@@ -126,6 +147,7 @@ public class ModelRequest {
 			.attributes(request.attributes)
 			.trustedExecutionContext(request.trustedExecutionContext)
 			.executionGuard(request.executionGuard);
+		copy.modelAttempt = request.modelAttempt;
 		copy.toolSelectionSpecified = request.toolSelectionSpecified;
 		return copy;
 	}
@@ -195,6 +217,11 @@ public class ModelRequest {
 		return Optional.ofNullable(executionGuard);
 	}
 
+	/** Position in the retry/fallback sequence, never forwarded to a provider. */
+	public Optional<ModelAttempt> getModelAttempt() {
+		return Optional.ofNullable(modelAttempt);
+	}
+
 	public Map<String, String> getToolDescriptions() {
 		return toolDescriptions;
 	}
@@ -238,6 +265,8 @@ public class ModelRequest {
 		private TrustedExecutionContext trustedExecutionContext;
 
 		private ExecutionGuard executionGuard;
+
+		private ModelAttempt modelAttempt;
 
 		public Builder systemMessage(ChatMessage systemMessage) {
 			this.systemMessage = systemMessage;
@@ -316,10 +345,19 @@ public class ModelRequest {
 			return this;
 		}
 
+		public Builder modelAttempt(ModelAttempt attempt) {
+			java.util.Objects.requireNonNull(attempt);
+			if (modelAttempt != null && (attempt.number() < modelAttempt.number() || attempt.limit() > modelAttempt.limit())) {
+				throw new IllegalArgumentException("Cannot rewind a model attempt or raise its limit");
+			}
+			this.modelAttempt = attempt;
+			return this;
+		}
+
 		public ModelRequest build() {
 			return new ModelRequest(systemMessage, messages, options, chatClient, toolRegistry, tools,
 					toolSelectionSpecified, dynamicToolRegistry, toolDescriptions, context, attributes,
-					trustedExecutionContext, executionGuard);
+					trustedExecutionContext, executionGuard, modelAttempt);
 		}
 
 	}
