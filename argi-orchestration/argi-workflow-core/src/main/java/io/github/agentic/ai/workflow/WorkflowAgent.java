@@ -34,6 +34,12 @@ import io.github.agentic.ai.api.tool.Tool;
 import io.github.agentic.ai.api.tool.ToolContext;
 import io.github.agentic.ai.api.tool.ToolRegistry;
 import io.github.agentic.ai.api.tool.ToolResult;
+import io.github.agentic.ai.agent.lifecycle.InvocationId;
+import io.github.agentic.ai.agent.lifecycle.LifecycleEvent;
+import io.github.agentic.ai.agent.lifecycle.LifecycleIdentity;
+import io.github.agentic.ai.agent.lifecycle.LifecycleObserver;
+import io.github.agentic.ai.agent.lifecycle.LifecycleStage;
+import io.github.agentic.ai.agent.lifecycle.StepId;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -86,6 +92,10 @@ public final class WorkflowAgent implements Agent {
 
 	private final int subflowMaxDepth;
 
+	private final List<LifecycleObserver> observers;
+
+	private final java.util.concurrent.Executor parallelExecutor;
+
 	private final Map<String, StoredContinuation> continuations = new ConcurrentHashMap<>();
 
 	private final Schema inputSchema;
@@ -100,6 +110,8 @@ public final class WorkflowAgent implements Agent {
 		this.registry = Objects.requireNonNull(builder.registry, "registry must not be null");
 		this.mapper = Objects.requireNonNull(builder.mapper, "mapper must not be null");
 		this.subflowMaxDepth = builder.subflowMaxDepth;
+		this.observers = List.copyOf(builder.observers);
+		this.parallelExecutor = builder.parallelExecutor;
 		this.inputSchema = compileSchema(definition.inputSchema());
 		this.outputSchema = compileSchema(definition.outputSchema());
 	}
@@ -163,6 +175,10 @@ public final class WorkflowAgent implements Agent {
 
 		private int subflowMaxDepth = 16;
 
+		private final List<LifecycleObserver> observers = new ArrayList<>();
+
+		private java.util.concurrent.Executor parallelExecutor;
+
 		private Builder(WorkflowDefinition definition) {
 			this.definition = Objects.requireNonNull(definition, "definition must not be null");
 		}
@@ -203,6 +219,33 @@ public final class WorkflowAgent implements Agent {
 				throw new IllegalArgumentException("subflowMaxDepth must be greater than or equal to 1");
 			}
 			this.subflowMaxDepth = subflowMaxDepth;
+			return this;
+		}
+
+		/**
+		 * Register lifecycle observers that receive {@link LifecycleStage#WORKFLOW_STEP}
+		 * enter/exit events for every executed step (issue #322). Observation remains an
+		 * explicit opt-in: with no observers, execution behavior is preserved exactly.
+		 * @param observers the observers to append, must not be null
+		 * @return this builder
+		 */
+		public Builder observers(LifecycleObserver... observers) {
+			Objects.requireNonNull(observers, "observers must not be null");
+			for (LifecycleObserver observer : observers) {
+				this.observers.add(Objects.requireNonNull(observer, "observer must not be null"));
+			}
+			return this;
+		}
+
+		/**
+		 * Set the executor that runs parallel branches. When omitted, branches run on
+		 * {@link java.util.concurrent.ForkJoinPool#commonPool()} exactly as before; the
+		 * seam exists so tests can drive deterministic branch interleaving.
+		 * @param parallelExecutor the branch executor, may be null for the default
+		 * @return this builder
+		 */
+		public Builder parallelExecutor(java.util.concurrent.Executor parallelExecutor) {
+			this.parallelExecutor = parallelExecutor;
 			return this;
 		}
 
@@ -345,7 +388,81 @@ public final class WorkflowAgent implements Agent {
 					: continueAfter(resumed, steps, index, data));
 	}
 
+	/**
+	 * Emits {@link LifecycleStage#WORKFLOW_STEP} enter/exit events around the step and
+	 * then dispatches it (issue #322). Exit happens exactly once per execution: a
+	 * suspension leaves successfully (the hand-off is not a failure; resume fragments
+	 * are issue #324's scope) and any failure leaves with a failure reason.
+	 * <p>
+	 * Every callback is isolated (issue #370 review): an observer that throws never
+	 * prevents the step from running, never reaches the business-error path, and its
+	 * failure is reported to the other observers as {@link LifecycleEvent.ExtensionFailed}
+	 * while the business exit stays exactly once per remaining observer.
+	 */
 	private ExecutionResult executeStep(WorkflowStep step, RunData data, AgentExecutionContext context) {
+		List<LifecycleObserver> bound = boundObservers();
+		if (bound.isEmpty()) {
+			return doExecuteStep(step, data, context);
+		}
+		LifecycleIdentity identity = LifecycleIdentity.builder(runInvocation(context)).step(new StepId(step.id()))
+				.build();
+		bound.forEach(observer -> emitTo(observer,
+				new LifecycleEvent.StageEntered(LifecycleStage.WORKFLOW_STEP, identity), identity));
+		try {
+			ExecutionResult result = doExecuteStep(step, data, context);
+			// A normal return - completion or a suspension hand-off - is a successful
+			// stage exit; only a thrown failure marks the stage unsuccessful.
+			bound.forEach(observer -> emitTo(observer,
+					new LifecycleEvent.StageExited(LifecycleStage.WORKFLOW_STEP, identity, true, null), identity));
+			return result;
+		}
+		catch (RuntimeException error) {
+			bound.forEach(observer -> emitTo(observer, new LifecycleEvent.StageExited(LifecycleStage.WORKFLOW_STEP,
+					identity, false, error.getClass().getSimpleName() + ": " + error.getMessage()), identity));
+			throw error;
+		}
+	}
+
+	/** Observers bound to {@link LifecycleStage#WORKFLOW_STEP} by their own declaration. */
+	private List<LifecycleObserver> boundObservers() {
+		return this.observers.stream()
+			.filter(observer -> observer.stages().contains(LifecycleStage.WORKFLOW_STEP))
+			.toList();
+	}
+
+	/** Delivers one event to one observer, isolating and reporting any callback failure. */
+	private void emitTo(LifecycleObserver observer, LifecycleEvent event, LifecycleIdentity identity) {
+		try {
+			observer.onEvent(event);
+		}
+		catch (RuntimeException failure) {
+			reportExtensionFailed(observer, identity, failure);
+		}
+	}
+
+	private void reportExtensionFailed(LifecycleObserver failing, LifecycleIdentity identity,
+			RuntimeException failure) {
+		LifecycleEvent report = new LifecycleEvent.ExtensionFailed(LifecycleStage.WORKFLOW_STEP, identity,
+				failing.id(), failure.getClass().getSimpleName() + ": " + failure.getMessage());
+		this.observers.stream()
+			.filter(observer -> observer != failing && observer.stages().contains(LifecycleStage.WORKFLOW_STEP))
+			.forEach(observer -> {
+				try {
+					observer.onEvent(report);
+				}
+				catch (RuntimeException ignored) {
+					// A failing failure-report must never reach the business execution.
+				}
+			});
+	}
+
+	/** The workflow run identity: the trusted run id, falling back to the definition. */
+	private InvocationId runInvocation(AgentExecutionContext context) {
+		String runId = context.trusted() != null ? context.trusted().runId() : null;
+		return new InvocationId(Objects.requireNonNullElse(runId, definition.id() + ":" + definition.version()));
+	}
+
+	private ExecutionResult doExecuteStep(WorkflowStep step, RunData data, AgentExecutionContext context) {
 		context.control().assertActive();
 		if (step instanceof WorkflowStep.Agent agent) {
 			return executeWithRetry(agent.retry(), () -> executeAgent(agent, data, context), context);
@@ -545,26 +662,30 @@ public final class WorkflowAgent implements Agent {
 		int baseMessageCount = data.messages.size();
 		Semaphore permits = new Semaphore(step.maxConcurrency());
 		List<CompletableFuture<RunData>> futures = step.branches().stream()
-			.map(branch -> CompletableFuture.supplyAsync(() -> {
-				try {
-					permits.acquire();
-				}
-				catch (InterruptedException interrupted) {
-					Thread.currentThread().interrupt();
-					throw new WorkflowExecutionException("Parallel workflow admission was interrupted", interrupted);
-				}
-				RunData branchData = data.copy();
-				try {
-					ExecutionResult result = executeStep(branch, branchData, context);
-					if (result.suspension != null) {
-						throw new WorkflowExecutionException("Parallel workflow suspension requires durable coordination");
+			.map(branch -> {
+				java.util.function.Supplier<RunData> task = () -> {
+					try {
+						permits.acquire();
 					}
-					return branchData;
-				}
-				finally {
-					permits.release();
-				}
-			}))
+					catch (InterruptedException interrupted) {
+						Thread.currentThread().interrupt();
+						throw new WorkflowExecutionException("Parallel workflow admission was interrupted", interrupted);
+					}
+					RunData branchData = data.copy();
+					try {
+						ExecutionResult result = executeStep(branch, branchData, context);
+						if (result.suspension != null) {
+							throw new WorkflowExecutionException("Parallel workflow suspension requires durable coordination");
+						}
+						return branchData;
+					}
+					finally {
+						permits.release();
+					}
+				};
+				return this.parallelExecutor == null ? CompletableFuture.supplyAsync(task)
+						: CompletableFuture.supplyAsync(task, this.parallelExecutor);
+			})
 			.toList();
 		for (CompletableFuture<RunData> future : futures) {
 			RunData branch = await(future);
