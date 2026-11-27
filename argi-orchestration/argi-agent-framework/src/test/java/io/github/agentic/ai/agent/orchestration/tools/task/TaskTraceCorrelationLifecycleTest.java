@@ -19,6 +19,12 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import io.github.agentic.ai.workflow.graph.observation.trace.AgentTraceContext;
 import org.junit.jupiter.api.Test;
@@ -33,8 +39,9 @@ class TaskTraceCorrelationLifecycleTest {
 	private final TaskTraceCorrelation correlation = new TaskTraceCorrelation(clock, Duration.ofMinutes(30));
 
 	@Test
-	void anExpiredEntryIsNeverServedAndIsSweptByTheNextRecord() {
+	void aCompletedEntryIsNeverServedAfterItsRetentionAndIsSweptByTheNextRecord() {
 		correlation.record("task-1", context("task-1"));
+		correlation.refresh("task-1");
 
 		clock.advance(Duration.ofMinutes(31));
 
@@ -47,11 +54,12 @@ class TaskTraceCorrelationLifecycleTest {
 	}
 
 	@Test
-	void aLiveEntryIsServedUntilItsRetentionElapses() {
+	void aCompletedEntrySlidesOnPollsAndLapsesWhenIdle() {
 		correlation.record("task-1", context("task-1"));
+		correlation.refresh("task-1");
 		assertThat(correlation.correlation("task-1")).isPresent();
 
-		// Sliding retention (#370 review): reading a live entry re-anchors its window.
+		// Sliding retention (#370 review): reading a completed entry re-anchors its window.
 		clock.advance(Duration.ofMinutes(29));
 		assertThat(correlation.correlation("task-1")).as("inside the sliding window").isPresent();
 
@@ -61,6 +69,75 @@ class TaskTraceCorrelationLifecycleTest {
 		// With no reads for a full retention window the entry finally lapses.
 		clock.advance(Duration.ofMinutes(31));
 		assertThat(correlation.correlation("task-1")).as("idle past the sliding window").isEmpty();
+	}
+
+	@Test
+	void aRunningEntrySurvivesTheRetentionWindowAndInterveningTraffic() {
+		correlation.record("running-task", context("running-task"));
+		clock.advance(Duration.ofMinutes(31));
+
+		// Intervening submissions, lookups and releases sweep expired completed entries
+		// only; a running task's link must survive all of them (#370 review gap 1).
+		correlation.record("other-task", context("other-task"));
+		correlation.correlation("other-task");
+		correlation.refresh("other-task");
+		correlation.forget("other-task");
+		correlation.forgetAll(List.of("unknown-task"));
+
+		assertThat(correlation.correlation("running-task"))
+			.as("a running task keeps its delegation link however long it runs").isPresent();
+
+		correlation.refresh("running-task");
+		clock.advance(Duration.ofMinutes(29));
+		assertThat(correlation.correlation("running-task"))
+			.as("completion starts the retention window").isPresent();
+		clock.advance(Duration.ofMinutes(31));
+		assertThat(correlation.correlation("running-task")).isEmpty();
+	}
+
+	@Test
+	void forgetAllReleasesOnlyTheGivenTasks() {
+		correlation.record("task-1", context("task-1"));
+		correlation.record("task-2", context("task-2"));
+
+		correlation.forgetAll(List.of("task-1", "unknown-task"));
+
+		assertThat(correlation.correlation("task-1")).isEmpty();
+		assertThat(correlation.correlation("task-2")).isPresent();
+	}
+
+	@Test
+	void concurrentSubmissionsAndPollsNeverSweepARunningEntry() throws Exception {
+		correlation.record("running-task", context("running-task"));
+		clock.advance(Duration.ofMinutes(31));
+
+		ExecutorService workers = Executors.newFixedThreadPool(8);
+		try {
+			List<Future<?>> futures = new ArrayList<>();
+			for (int worker = 0; worker < 8; worker++) {
+				final int index = worker;
+				futures.add(workers.submit(() -> {
+					for (int i = 0; i < 200; i++) {
+						String taskId = "task-" + index + "-" + i;
+						correlation.record(taskId, context(taskId));
+						correlation.correlation(taskId);
+						correlation.refresh(taskId);
+						correlation.forget(taskId);
+					}
+					return null;
+				}));
+			}
+			for (Future<?> future : futures) {
+				future.get(10, TimeUnit.SECONDS);
+			}
+		}
+		finally {
+			workers.shutdownNow();
+		}
+
+		assertThat(correlation.correlation("running-task"))
+			.as("concurrent traffic must not sweep a running task's link").isPresent();
+		assertThat(correlation.retainedCount()).as("only the running task's entry remains").isEqualTo(1);
 	}
 
 	@Test

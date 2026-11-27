@@ -104,6 +104,9 @@ public class TaskTool implements BiFunction<TaskTool.Request, ToolContext, Strin
 		this.agentTracer = agentTracer;
 		this.traceCorrelation = agentTracer != null && traceCorrelation == null ? new TaskTraceCorrelation()
 				: traceCorrelation;
+		if (this.traceCorrelation != null) {
+			this.taskRepository.addLifecycleListener(this.traceCorrelation::forgetAll);
+		}
 	}
 
 	@Override

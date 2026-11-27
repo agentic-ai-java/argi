@@ -81,6 +81,9 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 		this.taskRepository = taskRepository;
 		this.agentTracer = agentTracer;
 		this.traceCorrelation = traceCorrelation;
+		if (this.traceCorrelation != null) {
+			this.taskRepository.addLifecycleListener(this.traceCorrelation::forgetAll);
+		}
 	}
 
 	@Override
@@ -153,18 +156,6 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 
 			span.outcome(outcome != null ? outcome : "completed").success();
 			return result.toString();
-		}
-	}
-
-	/**
-	 * Terminal outcomes no longer drop the correlation (issue #370 review): the receive
-	 * span was linked above and every poll slides the retention forward through the
-	 * lookup, so later polls can still establish the same link until the correlation
-	 * expires unused.
-	 */
-	private void releaseCorrelation(String taskId) {
-		if (this.traceCorrelation != null) {
-			this.traceCorrelation.forget(taskId);
 		}
 	}
 

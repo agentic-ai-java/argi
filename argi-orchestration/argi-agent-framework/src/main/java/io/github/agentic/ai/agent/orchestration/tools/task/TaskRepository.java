@@ -15,6 +15,7 @@
  */
 package io.github.agentic.ai.agent.orchestration.tools.task;
 
+import java.util.Collection;
 import java.util.function.Supplier;
 
 /**
@@ -71,5 +72,29 @@ public interface TaskRepository {
 	 * Clear all tasks from the repository.
 	 */
 	void clear();
+
+	/**
+	 * Register a listener notified when tasks leave the repository, so resources keyed by
+	 * task id (for example trace correlations) converge without waiting for another poll.
+	 * The default implementation ignores the listener; repositories that drop tasks
+	 * outside the caller's polling path should override it.
+	 * @param listener the listener to notify, never null
+	 */
+	default void addLifecycleListener(TaskLifecycleListener listener) {
+	}
+
+	/**
+	 * Receives the identifiers of tasks that left the repository, whether they were
+	 * removed explicitly, cleared, expired or dropped by shutdown.
+	 */
+	@FunctionalInterface
+	interface TaskLifecycleListener {
+
+		/**
+		 * @param taskIds the identifiers that are no longer retrievable from the repository
+		 */
+		void onTasksRemoved(Collection<String> taskIds);
+
+	}
 
 }

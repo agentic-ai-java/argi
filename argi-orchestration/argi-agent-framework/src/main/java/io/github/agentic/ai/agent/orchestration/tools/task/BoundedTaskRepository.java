@@ -18,12 +18,15 @@ package io.github.agentic.ai.agent.orchestration.tools.task;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -77,6 +80,8 @@ public final class BoundedTaskRepository implements TaskRepository, AutoCloseabl
 	private final Deque<Task> ready = new ArrayDeque<>();
 
 	private final LinkedHashMap<String, Task> completed = new LinkedHashMap<>();
+
+	private final List<TaskLifecycleListener> lifecycleListeners = new CopyOnWriteArrayList<>();
 
 	// Execution resources: submission and shutdown are performed outside monitor.
 	private final ExecutorService executor;
@@ -203,8 +208,10 @@ public final class BoundedTaskRepository implements TaskRepository, AutoCloseabl
 
 	@Override
 	public void removeTask(String taskId) {
+		boolean removed;
 		synchronized (this.monitor) {
 			Task task = this.tasks.get(taskId);
+			removed = task != null;
 			if (task != null) {
 				task.visible = false;
 				if (task.finished) {
@@ -213,15 +220,34 @@ public final class BoundedTaskRepository implements TaskRepository, AutoCloseabl
 				}
 			}
 		}
+		if (removed) {
+			notifyRemoved(List.of(taskId));
+		}
 	}
 
 	@Override
 	public void clear() {
+		List<String> removed;
 		synchronized (this.monitor) {
+			removed = new ArrayList<>(this.tasks.keySet());
 			this.tasks.values().forEach(task -> task.visible = false);
 			this.tasks.values().removeIf(task -> task.finished);
 			this.completed.clear();
 		}
+		notifyRemoved(removed);
+	}
+
+	@Override
+	public void addLifecycleListener(TaskLifecycleListener listener) {
+		this.lifecycleListeners.add(Objects.requireNonNull(listener, "listener must not be null"));
+	}
+
+	private void notifyRemoved(Collection<String> taskIds) {
+		if (taskIds.isEmpty() || this.lifecycleListeners.isEmpty()) {
+			return;
+		}
+		Collection<String> snapshot = List.copyOf(taskIds);
+		this.lifecycleListeners.forEach(listener -> listener.onTasksRemoved(snapshot));
 	}
 
 	// Requires the caller to hold monitor.
@@ -333,11 +359,13 @@ public final class BoundedTaskRepository implements TaskRepository, AutoCloseabl
 	 */
 	@Override
 	public void close() {
+		List<String> removed;
 		synchronized (this.monitor) {
 			if (this.closed) {
 				return;
 			}
 			this.closed = true;
+			removed = new ArrayList<>(this.tasks.keySet());
 			for (Task task : new ArrayList<>(this.tasks.values())) {
 				if (!task.started && !task.finished) {
 					// Finish first so the synchronous cancellation callback returns
@@ -349,6 +377,7 @@ public final class BoundedTaskRepository implements TaskRepository, AutoCloseabl
 			this.completed.clear();
 			this.tasks.values().removeIf(task -> task.finished);
 		}
+		notifyRemoved(removed);
 		this.cleanupExecutor.shutdownNow();
 		if (this.ownsExecutor) {
 			this.executor.shutdown();

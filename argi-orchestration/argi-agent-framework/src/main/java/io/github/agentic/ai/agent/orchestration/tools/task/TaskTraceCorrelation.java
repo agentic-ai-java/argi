@@ -18,6 +18,8 @@ package io.github.agentic.ai.agent.orchestration.tools.task;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -36,13 +38,15 @@ import org.springframework.util.Assert;
  * whose delegation identifier becomes the span link key of the consumer. Entries are only
  * recorded when an {@link AgentTracer} is enabled.
  * <p>
- * Entries have a three-layer lifecycle (issue #228): a rejected submission rolls the record
- * back at the delegation site, a terminal polled result releases it at the receive site once
- * the receive span has been linked, and the retention window below sweeps whatever survives
- * (tasks nobody polls for, repository clear or shutdown). The retention is deliberately long
- * relative to a polling window and independent of the repository type, so the default, the
- * bounded and any injected repository all converge without the store needing repository
- * lifecycle hooks; a live entry is never dropped early just to reclaim space.
+ * Entries have a three-layer lifecycle (issue #228, #370 review): a rejected submission
+ * rolls the record back at the delegation site; a running task's entry has no expiry at
+ * all, because its delegation link must survive however long the task runs; completion
+ * re-anchors the entry at the delegation site ({@link #refresh}, measured from completion
+ * rather than submission), after which polls slide the window and the retention sweeps
+ * entries nobody polls for. Repository remove, clear and shutdown report through
+ * {@link TaskRepository#addLifecycleListener}, so a shared store converges without waiting
+ * for another poll; the retention window then only has to cover results that leave the
+ * repository through internal expiry.
  */
 public final class TaskTraceCorrelation {
 
@@ -74,15 +78,16 @@ public final class TaskTraceCorrelation {
 	}
 
 	/**
-	 * Record the correlation facts of a background delegation. Expired entries are swept
-	 * along the way so a store without consumers still converges to its live entries.
+	 * Record the correlation facts of a background delegation. The entry is active and
+	 * never expires while the task runs; only {@link #refresh} starts its retention
+	 * window. Expired completed entries are swept along the way.
 	 * @param taskId the background task id
 	 * @param context the correlation facts captured at the delegation site
 	 */
 	public void record(String taskId, AgentTraceContext context) {
 		if (taskId != null && context != null) {
 			sweepExpired();
-			this.contextsByTaskId.put(taskId, new StampedContext(context, deadline()));
+			this.contextsByTaskId.put(taskId, new StampedContext(context, null));
 		}
 	}
 
@@ -105,18 +110,24 @@ public final class TaskTraceCorrelation {
 			this.contextsByTaskId.remove(taskId, stamped);
 			return Optional.empty();
 		}
-		// Sliding retention: reading a live entry re-anchors its expiry, so the receive
-		// link of a still-pollable task result never lapses between polls.
+		if (stamped.expiresAt() == null) {
+			// Still running: there is no retention window to slide, and concurrent
+			// submissions or polls must never sweep it (#370 review gap 1).
+			return Optional.of(stamped.context());
+		}
+		// Sliding retention: reading a completed entry re-anchors its expiry, so the
+		// receive link of a still-pollable task result never lapses between polls.
 		StampedContext refreshed = new StampedContext(stamped.context(), deadline());
 		this.contextsByTaskId.replace(taskId, stamped, refreshed);
 		return Optional.of(refreshed.context());
 	}
 
 	/**
-	 * Re-anchor the retention of a recorded entry, even one whose submission-anchored
-	 * window has already lapsed (#370 review): the delegation site calls this when the
-	 * background task finishes, so the pollable result window is measured from
-	 * completion rather than submission and a long-running task keeps its link.
+	 * Mark a recorded entry completed and start its retention window. The delegation site
+	 * calls this when the background task finishes, so the pollable result window is
+	 * measured from completion rather than submission. An absent entry is left absent:
+	 * a repository removal that already released the correlation must not be resurrected
+	 * by the completion callback.
 	 * @param taskId the background task id
 	 */
 	public void refresh(String taskId) {
@@ -130,10 +141,8 @@ public final class TaskTraceCorrelation {
 	}
 
 	/**
-	 * Drop the correlation facts of a finished background task. Sweeping expired entries
-	 * along the way ties the cleanup to every release event, so a repository removal,
-	 * clear or shutdown reported through this call converges the whole store without a
-	 * new submission (#370 review gap 2).
+	 * Drop the correlation facts of one task. Called from the receive site when a poll
+	 * finds the task gone.
 	 * @param taskId the background task id
 	 */
 	public void forget(String taskId) {
@@ -143,11 +152,25 @@ public final class TaskTraceCorrelation {
 		}
 	}
 
+	/**
+	 * Drop the correlation facts of tasks that the repository reports as removed, cleared,
+	 * expired or shut down. Registered as a {@link TaskRepository.TaskLifecycleListener}
+	 * by both task tools, so cleanup no longer waits for the next poll or submission.
+	 * @param taskIds the identifiers that are no longer retrievable
+	 */
+	public void forgetAll(Collection<String> taskIds) {
+		if (taskIds == null || taskIds.isEmpty()) {
+			return;
+		}
+		taskIds.forEach(this.contextsByTaskId::remove);
+	}
+
 	/** Test observation point for the retention assertions. */
 	int retainedCount() {
 		return this.contextsByTaskId.size();
 	}
 
+	/** Removes completed entries past their window; running entries are never swept. */
 	private void sweepExpired() {
 		this.contextsByTaskId.forEach((taskId, stamped) -> {
 			if (isExpired(stamped)) {
@@ -157,14 +180,16 @@ public final class TaskTraceCorrelation {
 	}
 
 	private boolean isExpired(StampedContext stamped) {
-		return this.clock.instant().isAfter(stamped.expiresAt());
+		// A null expiry marks a running task: no amount of elapsed time expires it.
+		return stamped.expiresAt() != null && this.clock.instant().isAfter(stamped.expiresAt());
 	}
 
-	private java.time.Instant deadline() {
+	private Instant deadline() {
 		return this.clock.instant().plus(this.retention);
 	}
 
-	private record StampedContext(AgentTraceContext context, java.time.Instant expiresAt) {
+	/** {@code expiresAt} is null while the delegated task is still running. */
+	private record StampedContext(AgentTraceContext context, Instant expiresAt) {
 
 	}
 

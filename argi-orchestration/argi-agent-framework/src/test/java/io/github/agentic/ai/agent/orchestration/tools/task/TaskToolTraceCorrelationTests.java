@@ -373,6 +373,9 @@ class TaskToolTraceCorrelationTests {
 		TaskOutputTool output = new TaskOutputTool(repository, tracer, correlation);
 		correlation.record("task-stale-1", AgentTraceContext.capture(null, null).withTaskId("task-stale-1"));
 		correlation.record("task-stale-2", AgentTraceContext.capture(null, null).withTaskId("task-stale-2"));
+		// Completed tasks: running entries are retained and never expire.
+		correlation.refresh("task-stale-1");
+		correlation.refresh("task-stale-2");
 		clock.advance(Duration.ofMinutes(31));
 
 		String result = output.apply(new TaskOutputTool.Request("task-never-existed", false, 1L),
