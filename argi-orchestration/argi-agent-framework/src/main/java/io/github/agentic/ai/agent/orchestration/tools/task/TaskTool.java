@@ -123,8 +123,15 @@ public class TaskTool implements BiFunction<TaskTool.Request, ToolContext, Strin
 			return "Error: prompt is required";
 		}
 
+		// Check before tracing or background submission because the child cannot reuse
+		// the parent's durable checkpoint boundary.
+		RunnableConfig invocationConfig = ToolContextHelper.getConfig(toolContext).orElse(null);
+		if (invocationConfig != null && invocationConfig.checkpointBoundary().isPresent()) {
+			throw new IllegalStateException("Sub-agent delegation is not supported in durable execution");
+		}
+
 		boolean tracing = tracing();
-		RunnableConfig parentConfig = tracing ? ToolContextHelper.getConfig(toolContext).orElse(null) : null;
+		RunnableConfig parentConfig = tracing ? invocationConfig : null;
 		AgentTraceContext parentContext = tracing ? captureContext(toolContext, parentConfig) : null;
 
 		if (Boolean.TRUE.equals(request.runInBackground())) {

@@ -26,6 +26,9 @@ import io.github.agentic.ai.workflow.graph.OverAllState;
 import io.github.agentic.ai.workflow.graph.RunnableConfig;
 import io.github.agentic.ai.workflow.graph.action.NodeActionWithConfig;
 import io.github.agentic.ai.agent.orchestration.interceptor.InterceptorChain;
+import io.github.agentic.ai.agent.durable.DurableSession;
+import io.github.agentic.ai.agent.durable.ModelTurnCodec;
+import io.github.agentic.ai.agent.orchestration.durable.DurableCheckpointAdapter;
 import io.github.agentic.ai.agent.orchestration.interceptor.ToolCallExecutionContext;
 import io.github.agentic.ai.agent.orchestration.interceptor.ToolCallHandler;
 import io.github.agentic.ai.agent.orchestration.interceptor.ToolCallRequest;
@@ -185,6 +188,15 @@ public class AgentToolNode implements NodeActionWithConfig {
 		config.assertExecutionActive();
 		List<ChatMessage> messages = (List<ChatMessage>) state.value("messages").orElseThrow();
 		ChatMessage lastMessage = messages.get(messages.size() - 1);
+		var durable = DurableCheckpointAdapter.sessionFrom(config);
+		if (durable.isPresent()) {
+			DurableSession session = durable.get();
+			toolBindings.publish(config, new AgentToolBindings(session.selectedTools()));
+			var calls = session.plannedCalls();
+			session.beginTools();
+			return parallelToolExecution && calls.size() > 1 ? executeToolCallsParallel(calls, state, config)
+					: executeToolCallsSequential(calls, state, config);
+		}
 		// A resumed run must use the exact bindings that advertised this assistant turn.
 		for (int index = messages.size() - 1; index >= 0; index--) {
 			ChatMessage assistant = messages.get(index);
@@ -267,13 +279,14 @@ public class AgentToolNode implements NodeActionWithConfig {
 
 		OverAllState toolState = toolVisibleState(state);
 		Boolean returnDirect = null;
-		for (io.github.agentic.ai.api.chat.ToolCall toolCall : toolCalls) {
+		for (int ordinal = 0; ordinal < toolCalls.size(); ordinal++) {
+			io.github.agentic.ai.api.chat.ToolCall toolCall = toolCalls.get(ordinal);
 			config.assertExecutionActive();
 			// Each tool gets its own isolated update map
 			// If this tool times out, clear() only affects this map, not mergedUpdates
 			Map<String, Object> toolSpecificUpdate = new ConcurrentHashMap<>();
 			ToolCallResponse response = executeToolCallWithInterceptors(toolCall, toolState, config, toolSpecificUpdate,
-					false);
+					false, ordinal);
 			config.assertExecutionActive();
 			toolResponses.add(response.toMessage());
 			returnDirect = shouldReturnDirect(toolCall, returnDirect, config);
@@ -563,9 +576,9 @@ public class AgentToolNode implements NodeActionWithConfig {
 	 */
 	private ToolCallResponse executeToolCallWithInterceptors(io.github.agentic.ai.api.chat.ToolCall toolCall,
 			OverAllState state, RunnableConfig config, Map<String, Object> extraStateFromToolCall,
-			boolean inParallelExecution) {
+			boolean inParallelExecution, int ordinal) {
 		return executeToolCallWithInterceptors(toolCall, state, config, extraStateFromToolCall, inParallelExecution,
-				null, -1, System.nanoTime() + toolExecutionTimeout.toNanos());
+				null, ordinal, System.nanoTime() + toolExecutionTimeout.toNanos());
 	}
 
 	/**
@@ -589,16 +602,24 @@ public class AgentToolNode implements NodeActionWithConfig {
 			long deadlineNanos) {
 
 		config.assertExecutionActive();
+		Map<String, Object> invocationContext = new HashMap<>(config.metadata().orElse(Map.of()));
+		DurableCheckpointAdapter.sessionFrom(config)
+			.ifPresent(session -> invocationContext.put(DurableSession.TASK_IDENTITY_ATTRIBUTE,
+					session.taskIdentity(toolIndex)));
 		// Create ToolCallRequest
 		ToolCallRequest request = ToolCallRequest.builder()
 			.toolCall(new io.github.agentic.ai.api.chat.ToolCall(toolCall.id(), toolCall.name(), toolCall.arguments()))
-			.context(config.metadata().orElse(new HashMap<>()))
+			.context(invocationContext)
 			.executionContext(new ToolCallExecutionContext(config, state))
 			.build();
 
 		// Create base handler that actually executes the tool
 		ToolCallHandler baseHandler = req -> {
 			config.assertExecutionActive();
+			if (DurableCheckpointAdapter.sessionFrom(config).isPresent() && (!toolCall.name().equals(req.getToolName())
+					|| !toolCall.arguments().equals(ModelTurnCodec.canonicalArguments(req.getArguments())))) {
+				throw new IllegalStateException("Tool interceptor changed a committed plan");
+			}
 			ToolRegistry activeRegistry = activeToolRegistry(config);
 			if (activeRegistry.find(req.getToolName()).isPresent()) {
 				return executeNeutralTool(activeRegistry, req, state, config, extraStateFromToolCall,

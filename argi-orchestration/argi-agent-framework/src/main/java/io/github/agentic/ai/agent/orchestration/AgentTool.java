@@ -182,6 +182,11 @@ public class AgentTool {
 				.ofNullable(toolContext.attributes().get(ToolContextConstants.AGENT_CONFIG_CONTEXT_KEY))
 				.filter(RunnableConfig.class::isInstance)
 				.map(RunnableConfig.class::cast);
+			// The boundary belongs to the current invocation and must not be reused by a child
+			// agent, which would otherwise resume the parent's checkpoint.
+			if (parentConfigOpt.flatMap(RunnableConfig::checkpointBoundary).isPresent()) {
+				throw new IllegalStateException("Sub-agent delegation is not supported in durable execution");
+			}
 			try {
 				if (parentConfigOpt.isPresent()) {
 					RunnableConfig parentConfig = parentConfigOpt.get();

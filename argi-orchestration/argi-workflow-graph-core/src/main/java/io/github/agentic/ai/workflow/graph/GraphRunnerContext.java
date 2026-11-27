@@ -125,7 +125,25 @@ public class GraphRunnerContext {
 		this.config = config;
 		this.checkpointScope = checkpointScope;
 
-		if (config.metadata(RunnableConfig.HUMAN_FEEDBACK_METADATA_KEY).isPresent()
+		if (config.checkpointBoundary().isPresent()) {
+			Checkpoint initial = Checkpoint.builder()
+				.nodeId(START)
+				.nextNodeId(START)
+				.state(cloneState(initialState.data()))
+				.build();
+			Checkpoint saved = config.checkpointBoundary().orElseThrow().loadOrCreate(initial);
+			this.overallState = stateCreate(cloneState(saved.getState()).data(), initialState);
+			if (START.equals(saved.getNextNodeId())) {
+				this.currentNodeId = START;
+				this.nextNodeId = null;
+			}
+			else {
+				this.currentNodeId = null;
+				this.nextNodeId = saved.getNextNodeId();
+				this.resumeFrom = saved.getNodeId();
+			}
+		}
+		else if (config.metadata(RunnableConfig.HUMAN_FEEDBACK_METADATA_KEY).isPresent()
 				|| config.checkPointId().isPresent()) {
 			initializeFromResume(initialState, config);
 		}
@@ -337,6 +355,20 @@ public class GraphRunnerContext {
 			// #25).
 			return Optional.empty();
 		}
+		if (config.checkpointBoundary().isPresent()) {
+			Checkpoint cp = Checkpoint.builder()
+				.nodeId(nodeId)
+				.nextNodeId(nextNodeId)
+				.state(cloneState(overallState.data()))
+				.build();
+			synchronized (checkpointWriteMonitor) {
+				if (cancelled) {
+					return Optional.empty();
+				}
+				config.checkpointBoundary().orElseThrow().commit(cp);
+				return Optional.of(cp);
+			}
+		}
 		if (compiledGraph.compileConfig.checkpointSaver().isPresent()) {
 			var cp = Checkpoint.builder()
 				.nodeId(nodeId)
@@ -373,6 +405,23 @@ public class GraphRunnerContext {
 			}
 		}
 		return Optional.empty();
+	}
+
+	/**
+	 * Persist terminal state before delivering END on an externally coordinated
+	 * invocation.
+	 */
+	public void completeCheckpoint() throws Exception {
+		if (config.checkpointBoundary().isPresent()) {
+			assertExecutionActive();
+			config.checkpointBoundary()
+				.orElseThrow()
+				.complete(Checkpoint.builder()
+					.nodeId(END)
+					.nextNodeId(END)
+					.state(cloneState(overallState.data()))
+					.build());
+		}
 	}
 
 	public BaseCheckpointSaver.Tag releaseCheckpoint() throws Exception {
@@ -609,6 +658,12 @@ public class GraphRunnerContext {
 	}
 
 	private void bindExecutionGuard() {
+		if (config.checkpointBoundary().isPresent()) {
+			this.config = RunnableConfig.builder(config)
+				.executionGuard(config.checkpointBoundary().orElseThrow().guard())
+				.build();
+			return;
+		}
 		if (checkpointScope == null) {
 			this.config = this.config.withoutExecutionGuard();
 			return;

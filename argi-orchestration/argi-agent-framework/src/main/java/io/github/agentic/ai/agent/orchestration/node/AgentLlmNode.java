@@ -28,6 +28,8 @@ import io.github.agentic.ai.workflow.graph.action.NodeActionWithConfig;
 import io.github.agentic.ai.workflow.graph.serializer.AgentInstructionMessage;
 import io.github.agentic.ai.workflow.graph.utils.TypeRef;
 import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
+import io.github.agentic.ai.agent.durable.DurableSession;
+import io.github.agentic.ai.agent.orchestration.durable.DurableCheckpointAdapter;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
 import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
@@ -50,9 +52,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 
+import reactor.adapter.JdkFlowAdapter;
 import reactor.core.publisher.Flux;
 
 import static io.github.agentic.ai.workflow.graph.RunnableConfig.AGENT_MODEL_NAME;
@@ -212,6 +221,10 @@ public class AgentLlmNode implements NodeActionWithConfig {
 		// add streaming support
 		boolean stream = config.metadata("_stream_", new TypeRef<Boolean>() {
 		}).orElse(true);
+		var durable = DurableCheckpointAdapter.sessionFrom(config);
+		if (durable.isPresent()) {
+			return durableModelTurn(modelRequest, config, stream, durable.get());
+		}
 		if (stream) {
 			// Each cold subscription owns its selection, including any retry
 			// replacements.
@@ -306,6 +319,79 @@ public class AgentLlmNode implements NodeActionWithConfig {
 			}
 
 			return updatedState;
+		}
+	}
+
+	private Map<String, Object> durableModelTurn(ModelRequest initial, RunnableConfig config, boolean stream,
+			DurableSession session) {
+		ModelCallHandler provider = request -> {
+			ChatClient selected = request.getChatClient() != null ? request.getChatClient() : chatClient;
+			ChatRequest effective = buildChatRequest(request, config);
+			session.reserve(AGENT_MODEL_NAME, selected, effective);
+			if (stream && selected.capabilities().streaming()) {
+				return ModelResponse.stream(InterceptorChain.applyStreamingInterceptors(streamingInterceptors,
+						selected.stream(effective), request));
+			}
+			return ModelResponse.of(awaitDurable(selected.call(effective).toCompletableFuture(), session));
+		};
+		// Storage exceptions deliberately bypass the legacy model-error-to-message path.
+		ModelResponse logical = InterceptorChain.chainModelInterceptors(modelInterceptors, provider).call(initial);
+		ChatResponse response;
+		if (logical.isStreaming()) {
+			var terminal = JdkFlowAdapter.flowPublisherToFlux(logical.getStream())
+				.filter(event -> event.type() == io.github.agentic.ai.api.chat.ChatEvent.Type.RESPONSE)
+				.map(io.github.agentic.ai.api.chat.ChatEvent::response)
+				.single()
+				.toFuture();
+			response = awaitDurable(terminal, session);
+		}
+		else {
+			response = logical.getChatResponse();
+		}
+		response = AgentChatProtocol.response(response, null);
+		session.prepareResponse(response);
+		Map<String, Object> update = new HashMap<>();
+		update.put("messages", response.messages().get(0));
+		update.put(io.github.agentic.ai.workflow.graph.NodeOutput.TOKEN_USAGE_KEY, response.usage());
+		if (StringUtils.hasLength(outputKey)) {
+			update.put(outputKey, response.messages().get(0));
+		}
+		return update;
+	}
+
+	private static ChatResponse awaitDurable(CompletableFuture<ChatResponse> future,
+                                             DurableSession session) {
+		try (AutoCloseable ignored = session.guard().onLoss(() -> future.cancel(true))) {
+			while (true) {
+				session.guard().assertActive();
+				try {
+					ChatResponse response = session.guard().deadline().isPresent()
+							? future.get(25, TimeUnit.MILLISECONDS) : future.get();
+					session.guard().assertActive();
+					return response;
+				}
+				catch (TimeoutException waiting) {
+					// ExecutionControl deadlines are synchronous; check while awaiting
+					// the provider.
+				}
+			}
+		}
+		catch (InterruptedException failure) {
+			future.cancel(true);
+			Thread.currentThread().interrupt();
+			throw new CancellationException("Model call interrupted");
+		}
+		catch (ExecutionException failure) {
+			if (failure.getCause() instanceof RuntimeException cause) {
+				throw cause;
+			}
+			throw new CompletionException(failure.getCause());
+		}
+		catch (RuntimeException failure) {
+			throw failure;
+		}
+		catch (Exception failure) {
+			throw new CompletionException(failure);
 		}
 	}
 

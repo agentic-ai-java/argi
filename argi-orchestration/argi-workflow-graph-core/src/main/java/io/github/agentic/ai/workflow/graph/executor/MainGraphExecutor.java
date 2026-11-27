@@ -160,6 +160,7 @@ public class MainGraphExecutor extends BaseGraphExecutor {
 		try {
 			context.assertExecutionActive();
 			context.doListeners(END, null);
+			context.completeCheckpoint();
 			NodeOutput output = context.buildNodeOutput(END);
 			return Flux.just(GraphResponse.of(output),
 					GraphResponse.continueWith(() -> handleCompletion(context, resultValue)));

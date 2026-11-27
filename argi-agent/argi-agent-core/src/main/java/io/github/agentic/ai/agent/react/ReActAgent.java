@@ -16,6 +16,8 @@
 package io.github.agentic.ai.agent.react;
 
 import io.github.agentic.ai.agent.Agent;
+import io.github.agentic.ai.agent.durable.DurableSession;
+import io.github.agentic.ai.agent.durable.ToolTaskIdentity;
 import io.github.agentic.ai.agent.AgentEvent;
 import io.github.agentic.ai.agent.AgentExecutionContext;
 import io.github.agentic.ai.agent.AgentOutcome;
@@ -48,6 +50,8 @@ import io.github.agentic.ai.agent.tool.patch.strict.ToolUpdateUnit;
 import io.github.agentic.ai.agent.tool.patch.ToolContextPatchValidator;
 import io.github.agentic.ai.agent.tool.patch.ToolContextPatchViolationException;
 import io.github.agentic.ai.agent.validation.ToolArgumentValidator;
+import io.github.agentic.ai.runtime.execution.run.RunPayload;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -125,7 +129,32 @@ public final class ReActAgent implements Agent {
 	public Flow.Publisher<AgentEvent> stream(AgentRequest request, AgentExecutionContext context) {
 		Objects.requireNonNull(request, "request must not be null");
 		Objects.requireNonNull(context, "context must not be null");
-		return subscriber -> new RunSubscription(request, context, subscriber).subscribe();
+		return subscriber -> new RunSubscription(request, context, subscriber, null).subscribe();
+	}
+
+	/**
+	 * Explicit per-invocation journal path. The session restores its own committed
+	 * input/state.
+	 */
+	public Flow.Publisher<AgentEvent> stream(AgentRequest request, AgentExecutionContext context,
+			DurableSession session) {
+		Objects.requireNonNull(session, "session cannot be null");
+		if (!session.runId().equals(context.trusted().runId())) {
+			throw new IllegalArgumentException("Session and execution context must identify the same run");
+		}
+		if (request.resumeToken() != null || humanInTheLoop != null) {
+			throw new IllegalArgumentException("Durable HITL requires a separate continuation protocol");
+		}
+		if (outputFinalizer != null && outputFinalizer.usesModelRepair()) {
+			throw new IllegalArgumentException("Model-based output repair is not journaled by this execution path");
+		}
+		return subscriber -> new RunSubscription(request, context, subscriber, session).subscribe();
+	}
+
+	public CompletableFuture<AgentOutcome> invoke(AgentRequest request, AgentExecutionContext context,
+			DurableSession session) {
+		Agent execution = (input, scope) -> stream(input, scope, session);
+		return execution.invoke(request, context);
 	}
 
 	public static final class Builder {
@@ -257,6 +286,12 @@ public final class ReActAgent implements Agent {
 
 		private final AgentRequest request;
 
+		private final DurableSession durable;
+
+		private final List<AgentEvent> committedEvents = new ArrayList<>();
+
+		private ToolTaskIdentity taskIdentity;
+
 		private final AgentExecutionContext context;
 
 		private final Flow.Subscriber<? super AgentEvent> subscriber;
@@ -270,7 +305,8 @@ public final class ReActAgent implements Agent {
 		private final AtomicReference<CompletableFuture<?>> toolOperation = new AtomicReference<>();
 
 		private RunSubscription(AgentRequest request, AgentExecutionContext context,
-				Flow.Subscriber<? super AgentEvent> subscriber) {
+				Flow.Subscriber<? super AgentEvent> subscriber, DurableSession durable) {
+			this.durable = durable;
 			this.request = request;
 			this.context = context;
 			this.subscriber = Objects.requireNonNull(subscriber, "subscriber must not be null");
@@ -331,6 +367,15 @@ public final class ReActAgent implements Agent {
 		}
 
 		private void run() {
+			if (durable != null) {
+				try (AutoCloseable ignored = durable.guard().onLoss(context.control()::loseOwnership)) {
+					runDurable();
+				}
+				catch (Exception failure) {
+					throw rethrow(failure);
+				}
+				return;
+			}
 			context.control().assertActive();
 			if (request.resumeToken() != null) {
 				if (humanInTheLoop == null) {
@@ -390,6 +435,112 @@ public final class ReActAgent implements Agent {
 			return "tool-" + call.id();
 		}
 
+		/**
+		 * Kept separate to limit changes to the existing in-memory execution path.
+		 *
+		 * TODO: Consider sharing a cursor-driven loop with run(), while preserving
+		 * durable commit-before-dispatch boundaries and the existing non-durable
+		 * streaming and HITL behavior.
+		 */
+		private void runDurable() {
+			context.control().assertActive();
+			durable.start("react", durableState(request.messages(), request.inputs(), null));
+			DurableState restored = DurableSession.decode(durable.checkpoint().engineState(), DurableState.class);
+			if (durable.checkpoint().phase() == DurableSession.Phase.FINISHED) {
+				AgentOutcome outcome = Objects.requireNonNull(restored.outcome());
+				if (restored.structuredOutputJson() != null) {
+					Map<String, Object> outputs = new LinkedHashMap<>(outcome.outputs());
+					outputs.put("structuredOutput", new JsonMapper().readTree(restored.structuredOutputJson()));
+					outcome = AgentOutcome.completed(outcome.messages(), outputs, outcome.usage());
+				}
+				emit(new AgentEvent.Finished(outcome));
+				flushCommittedEvents();
+				return;
+			}
+			List<ChatMessage> messages = new ArrayList<>(restored.messages());
+			Map<String, Object> state = new LinkedHashMap<>(restored.state());
+			UsageAccumulator usage = new UsageAccumulator();
+			usage.restore(durable.checkpoint().usage());
+			while (durable.checkpoint().round() < maxTurns) {
+				context.control().assertActive();
+				durable.guard().assertActive();
+				ChatResponse response;
+				if (durable.checkpoint().phase() == DurableSession.Phase.MODEL_READY) {
+					ToolRegistry available = resolveTools(state);
+					response = modelTurn(messages, state, usage, available, new AtomicReference<>(available),
+							Math.toIntExact(durable.checkpoint().round()));
+					if (response.messages().size() != 1 || response.messages().get(0).role() != ChatRole.ASSISTANT) {
+						throw new IllegalStateException("Model response must contain exactly one assistant message");
+					}
+					durable.prepareResponse(response);
+					messages.addAll(response.messages());
+					durable.commitCheckpoint(durableState(messages, state, null));
+					usage.restore(durable.checkpoint().usage());
+				}
+				else {
+					response = durable.recordedTurn().response();
+				}
+				for (ChatMessage message : response.messages()) {
+					emit(new AgentEvent.Message(durable.turn().turnId(), message));
+				}
+				emit(new AgentEvent.UsageUpdate(usage.value()));
+				flushCommittedEvents();
+				if (response.toolCalls().isEmpty()) {
+					finish(messages, state, usage.value(), messages.get(messages.size() - 1), durable.turn().turnId());
+					return;
+				}
+				List<ToolCall> calls = durable.plannedCalls();
+				ToolRegistry available = durable.selectedTools();
+				durable.beginTools();
+				String directMessageId = null;
+				for (int ordinal = 0; ordinal < calls.size(); ordinal++) {
+					taskIdentity = durable.taskIdentity(ordinal);
+					ToolStep step = executeTool(calls.get(ordinal), messages, state, available);
+					if (step.returnDirect()) {
+						directMessageId = toolMessageId(calls.get(ordinal));
+						break;
+					}
+				}
+				taskIdentity = null;
+				if (directMessageId != null) {
+					finish(messages, state, usage.value(), messages.get(messages.size() - 1), directMessageId);
+					return;
+				}
+				durable.commitCheckpoint(durableState(messages, state, null));
+				flushCommittedEvents();
+			}
+			throw new IllegalStateException("ReAct agent exceeded the configured turn limit");
+		}
+
+		private RunPayload durableState(List<ChatMessage> messages, Map<String, Object> state, AgentOutcome outcome) {
+			String structuredOutputJson = null;
+			if (outcome != null
+					&& outcome.outputs().get("structuredOutput") instanceof tools.jackson.databind.JsonNode tree) {
+				// Preserve the finalizer's JSON tree explicitly across the engine-neutral
+				// checkpoint codec; it must not turn into a bean or an untyped Map on replay.
+				structuredOutputJson = tree.toString();
+				state = new LinkedHashMap<>(state);
+				state.remove("structuredOutput");
+				Map<String, Object> outputs = new LinkedHashMap<>(outcome.outputs());
+				outputs.remove("structuredOutput");
+				outcome = AgentOutcome.completed(outcome.messages(), outputs, outcome.usage());
+			}
+			return DurableSession.encode("argi.react-state",
+					new DurableState(messages, state, outcome, structuredOutputJson));
+		}
+
+		private void flushCommittedEvents() {
+			List<AgentEvent> events = List.copyOf(committedEvents);
+			committedEvents.clear();
+			for (AgentEvent event : events) {
+				durable.guard().assertActive();
+				context.control().assertActive();
+				if (!cancelled.get()) {
+					subscriber.onNext(event);
+				}
+			}
+		}
+
 		private ToolRegistry resolveTools(Map<String, Object> state) {
 			if (dynamicToolProvider == null) {
 				return tools;
@@ -418,7 +569,9 @@ public final class ReActAgent implements Agent {
 			// message ID and seals it with the same-ID snapshot, never with a fixed
 			// stream marker shared by every turn.
 			String streamMessageId = modelMessageId(turn);
-			ModelRequest request = ModelRequest.builder().messages(messages).toolRegistry(availableTools)
+			ModelRequest request = ModelRequest.builder()
+				.messages(messages)
+				.toolRegistry(availableTools)
 				.trustedExecutionContext(context.trusted())
 				.executionGuard(context.control())
 				.context(state)
@@ -498,6 +651,9 @@ public final class ReActAgent implements Agent {
 			ChatClient selectedClient = request.getChatClient() != null ? request.getChatClient() : chatClient;
 			ChatRequest chatRequest = new ChatRequest(composeMessages(request), effective.definitions(),
 					request.getOptions(), request.getAttributes());
+			if (durable != null) {
+				effectiveTools.set(durable.reserve("model", selectedClient, chatRequest));
+			}
 			if (streamModel) {
 				return ModelResponse.of(collectModelStream(selectedClient, chatRequest, usage, streamMessageId));
 			}
@@ -506,7 +662,9 @@ public final class ReActAgent implements Agent {
 			try (AutoCloseable ignored = context.control().onLoss(() -> future.cancel(true))) {
 				ChatResponse response = await(future);
 				usage.add(response.usage());
-				emit(new AgentEvent.UsageUpdate(usage.value()));
+				if (durable == null) {
+					emit(new AgentEvent.UsageUpdate(usage.value()));
+				}
 				return ModelResponse.of(response);
 			}
 			catch (Exception error) {
@@ -558,6 +716,12 @@ public final class ReActAgent implements Agent {
 					@Override
 					public void onNext(ChatEvent event) {
 						context.control().assertActive();
+						if (durable != null) {
+							if (event.type() == ChatEvent.Type.RESPONSE) {
+								response = event.response();
+							}
+							return;
+						}
 						switch (event.type()) {
 							case TEXT_DELTA -> emit(new AgentEvent.MessageDelta(messageId, event.text()));
 							case USAGE -> emit(new AgentEvent.UsageUpdate(usage.valueIncluding(event.usage())));
@@ -586,7 +750,9 @@ public final class ReActAgent implements Agent {
 				});
 				ChatResponse response = await(future);
 				usage.add(response.usage());
-				emit(new AgentEvent.UsageUpdate(usage.value()));
+				if (durable == null) {
+					emit(new AgentEvent.UsageUpdate(usage.value()));
+				}
 				return response;
 			}
 			catch (Exception error) {
@@ -626,6 +792,11 @@ public final class ReActAgent implements Agent {
 				}
 			}
 			Map<String, Object> toolVisibleState = strictToolState ? StateIsolation.readOnlyView(state) : state;
+			if (durable != null) {
+				durable.guard().assertActive();
+				toolVisibleState = new LinkedHashMap<>(toolVisibleState);
+				toolVisibleState.put(DurableSession.TASK_IDENTITY_ATTRIBUTE, taskIdentity);
+			}
 			CompletableFuture<ToolResult> future = availableTools.execute(call, new ToolContext(toolVisibleState))
 				.toCompletableFuture();
 			toolOperation.set(future);
@@ -726,10 +897,21 @@ public final class ReActAgent implements Agent {
 					outputs.put("structuredOutput", result.data());
 				}
 			}
-			emit(new AgentEvent.Finished(AgentOutcome.completed(messages, outputs, deliveredUsage)));
+			AgentOutcome outcome = AgentOutcome.completed(messages, outputs, deliveredUsage);
+			if (durable != null) {
+				durable.finish(durableState(messages, outputs, outcome));
+			}
+			emit(new AgentEvent.Finished(outcome));
+			if (durable != null) {
+				flushCommittedEvents();
+			}
 		}
 
 		private void emit(AgentEvent event) {
+			if (durable != null) {
+				committedEvents.add(event);
+				return;
+			}
 			if (!cancelled.get()) {
 				subscriber.onNext(event);
 			}
@@ -761,6 +943,14 @@ public final class ReActAgent implements Agent {
 		return new CompletionException(error);
 	}
 
+	private record DurableState(List<ChatMessage> messages, Map<String, Object> state, AgentOutcome outcome,
+			String structuredOutputJson) {
+		private DurableState {
+			messages = List.copyOf(messages);
+			state = Map.copyOf(state);
+		}
+	}
+
 	private record ToolStep(boolean returnDirect, AgentOutcome.Suspension suspension) {
 	}
 
@@ -771,6 +961,12 @@ public final class ReActAgent implements Agent {
 		private Long output = 0L;
 
 		private Long total = 0L;
+
+		private void restore(Usage usage) {
+			input = usage.inputTokens();
+			output = usage.outputTokens();
+			total = usage.totalTokens();
+		}
 
 		private void add(Usage usage) {
 			input = add(input, usage.inputTokens());

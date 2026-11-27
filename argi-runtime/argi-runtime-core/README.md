@@ -14,6 +14,7 @@ build graphs, schedule workers, load provider SDKs or install database drivers.
 | Run/Task, namespace, fencing lease, revisions, journal/outbox and store SPI | Runtime Core |
 | JSON validation, canonical payload hashing and versioned codecs | Runtime Core |
 | Definition registry and atomic in-memory reference store | Runtime Core |
+| Invocation-local RunCommitCoordinator (borrowed lease, snapshot/revision, explicit reload) | Runtime Core |
 | ObservedRunStore and Graph tracing | Optional Graph integration |
 | Topology, graph state, checkpoints and lease renewal scheduler | Graph/Loop engine |
 | Tool cancellation tokens and model/result adapters | Agent integration (#195) |
@@ -42,6 +43,12 @@ notifications. Registration handles detach listeners; closing detaches ownership
 No timer, background executor or implicit retry is installed. Blocking operations
 still require executor-owned timeouts/cancellation. A local guard is not proof of
 storage ownership: RunStore commits must atomically validate the fencing token.
+
+`RunCommitCoordinator` is an optional serial commit boundary. It receives the run's
+snapshot, guard and a supplier of the caller-owned current lease. A failed or
+uncertain commit requires an explicit storage reload and engine cursor rebuild;
+it never starts another owner or automatically retries a write. Both ReAct engines
+use it for [recorded model turns](../../docs/architecture/durable-react-execution.md).
 
 Budget limits remain immutable constraints, not usage accounting. Each executor
 owns usage reservation and accounting. Identity references remain unauthenticated
