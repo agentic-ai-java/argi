@@ -15,9 +15,14 @@
  */
 package io.github.agentic.ai.agent.orchestration.tools.task;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -30,6 +35,8 @@ import java.util.function.Supplier;
 public class DefaultTaskRepository implements TaskRepository {
 
 	private final Map<String, BackgroundTask> backgroundTasks = new ConcurrentHashMap<>();
+
+	private final List<TaskLifecycleListener> lifecycleListeners = new CopyOnWriteArrayList<>();
 
 	private final ExecutorService executor;
 
@@ -103,25 +110,57 @@ public class DefaultTaskRepository implements TaskRepository {
 
 	@Override
 	public void removeTask(String taskId) {
-		this.backgroundTasks.remove(taskId);
+		if (this.backgroundTasks.remove(taskId) != null) {
+			notifyRemoved(List.of(taskId));
+		}
 	}
 
 	@Override
 	public void clear() {
-		this.backgroundTasks.clear();
+		List<String> removed = new ArrayList<>();
+		for (String taskId : this.backgroundTasks.keySet()) {
+			if (this.backgroundTasks.remove(taskId) != null) {
+				removed.add(taskId);
+			}
+		}
+		notifyRemoved(removed);
 	}
 
 	/**
 	 * Remove completed tasks from the repository.
 	 */
 	public void clearCompletedTasks() {
-		this.backgroundTasks.entrySet().removeIf(entry -> entry.getValue().isCompleted());
+		List<String> removed = new ArrayList<>();
+		this.backgroundTasks.entrySet().removeIf(entry -> {
+			if (entry.getValue().isCompleted()) {
+				removed.add(entry.getKey());
+				return true;
+			}
+			return false;
+		});
+		notifyRemoved(removed);
+	}
+
+	@Override
+	public void addLifecycleListener(TaskLifecycleListener listener) {
+		this.lifecycleListeners.add(Objects.requireNonNull(listener, "listener must not be null"));
+	}
+
+	private void notifyRemoved(Collection<String> taskIds) {
+		if (taskIds.isEmpty() || this.lifecycleListeners.isEmpty()) {
+			return;
+		}
+		Collection<String> snapshot = List.copyOf(taskIds);
+		this.lifecycleListeners.forEach(listener -> listener.onTasksRemoved(snapshot));
 	}
 
 	/**
-	 * Shutdown the executor service if this repository owns it.
+	 * Shutdown the executor service if this repository owns it. The repository's lifetime
+	 * ends here, so correlations of retained tasks are released even though their results
+	 * stay readable.
 	 */
 	public void shutdown() {
+		notifyRemoved(new ArrayList<>(this.backgroundTasks.keySet()));
 		if (this.ownsExecutor && this.executor != null) {
 			this.executor.shutdown();
 			try {

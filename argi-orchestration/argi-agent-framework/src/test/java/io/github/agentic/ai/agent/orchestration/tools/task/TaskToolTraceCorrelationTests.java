@@ -15,16 +15,21 @@
  */
 package io.github.agentic.ai.agent.orchestration.tools.task;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import io.github.agentic.ai.adapter.springai.SpringAiChatClientAdapter;
+import io.github.agentic.ai.api.chat.ChatMessage;
 import io.github.agentic.ai.api.tool.ToolContext;
 import io.github.agentic.ai.workflow.graph.OverAllState;
 import io.github.agentic.ai.workflow.graph.RunnableConfig;
@@ -39,6 +44,7 @@ import io.github.agentic.ai.runtime.execution.ExecutionBudget;
 import io.github.agentic.ai.runtime.execution.PrincipalReference;
 import io.github.agentic.ai.runtime.execution.TenantReference;
 import io.github.agentic.ai.runtime.execution.TrustedExecutionContext;
+import io.github.agentic.ai.workflow.graph.observation.trace.AgentTraceContext;
 import io.github.agentic.ai.workflow.graph.observation.trace.AgentTraceKeys;
 import io.github.agentic.ai.workflow.graph.observation.trace.AgentTraceOperation;
 import io.github.agentic.ai.workflow.graph.observation.trace.AgentTracer;
@@ -55,6 +61,10 @@ import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @DisplayName("TaskTool/TaskOutputTool cross-agent trace correlation tests")
 class TaskToolTraceCorrelationTests {
@@ -246,6 +256,163 @@ class TaskToolTraceCorrelationTests {
 		assertThat(recorded).contains("<redacted>");
 	}
 
+	@Test
+	@DisplayName("a rejected submission rolls back the recorded correlation")
+	void aRejectedSubmissionRollsBackTheCorrelation() {
+		ConfigCaptureHook captureHook = new ConfigCaptureHook();
+		ReactAgent child = subAgent("child_agent", new FixedResponseChatModel("unused"), captureHook);
+		AgentTracer tracer = enabledTracer();
+		TaskTraceCorrelation correlation = TaskTraceCorrelation.empty();
+		ExecutorService stalled = mock(ExecutorService.class);
+		try (BoundedTaskRepository repository = new BoundedTaskRepository(stalled, 1, 0, 1, Duration.ofMinutes(1))) {
+			repository.putTask("occupy", () -> "occupy");
+			TaskTool tool = new TaskTool(Map.of("child_agent", child), repository, tracer, correlation);
+
+			assertThatThrownBy(() -> tool.apply(new TaskTool.Request("desc", "prompt", "child_agent", true),
+					toolContext(parentConfig()))).isInstanceOf(RejectedExecutionException.class);
+
+			assertThat(correlation.retainedCount())
+				.as("the submission was rejected, so no correlation may remain")
+				.isZero();
+			assertThat(captureHook.capturedConfig())
+				.as("the rejected delegation must not have executed the sub-agent")
+				.isNull();
+		}
+	}
+
+	@Test
+	@DisplayName("a terminal result keeps the correlation so later polls still link")
+	void aTerminalResultKeepsTheLinkForSubsequentPolls() throws Exception {
+		ConfigCaptureHook captureHook = new ConfigCaptureHook();
+		ReactAgent child = subAgent("child_agent", new FixedResponseChatModel("child response"), captureHook);
+		AgentTracer tracer = enabledTracer();
+		TaskTraceCorrelation correlation = TaskTraceCorrelation.empty();
+		DefaultTaskRepository repository = new DefaultTaskRepository();
+		TaskTool tool = new TaskTool(Map.of("child_agent", child), repository, tracer, correlation);
+		TaskOutputTool output = new TaskOutputTool(repository, tracer, correlation);
+
+		String launchResult = tool.apply(new TaskTool.Request("desc", "prompt", "child_agent", true),
+				toolContext(parentConfig()));
+		Matcher matcher = Pattern.compile("task_id: (task_[a-f0-9\\-]+)").matcher(launchResult);
+		assertThat(matcher.find()).isTrue();
+		String taskId = matcher.group(1);
+
+		String firstPoll = output.apply(new TaskOutputTool.Request(taskId, true, 10000L), toolContext(parentConfig()));
+
+		assertThat(firstPoll).contains("Status: Completed").contains("child response");
+		assertThat(correlation.retainedCount())
+			.as("the link must survive the terminal delivery for later polls (#370 review)")
+			.isEqualTo(1);
+
+		String secondPoll = output.apply(new TaskOutputTool.Request(taskId, false, 1L), toolContext(parentConfig()));
+
+		assertThat(secondPoll).as("the repository result itself is untouched").contains("Status: Completed")
+			.contains("child response");
+		// Both receive spans linked to the same delegation id: the correlation survived.
+		assertThat(this.handler.stopped).filteredOn(span -> span.getName().equals(
+				AgentTraceOperation.TASK_RECEIVE.operationName())).hasSize(2)
+			.allSatisfy(span -> assertThat(span.getHighCardinalityKeyValue(AgentTraceKeys.LINK_DELEGATION_ID))
+				.isNotNull());
+	}
+
+	@Test
+	@DisplayName("a task finishing after the retention window keeps its link for the first poll")
+	void aLongRunningTaskKeepsItsLinkUntilPolledAfterCompletion() throws Exception {
+		MutableClock clock = new MutableClock(Instant.parse("2026-11-22T12:00:00Z"));
+		// The sub-agent runs for 31 minutes of clock time before completing.
+		ChatModel longModel = new ChatModel() {
+			public ChatResponse call(Prompt prompt) {
+				clock.advance(Duration.ofMinutes(31));
+				return new ChatResponse(List.of(new Generation(new AssistantMessage("late response"))));
+			}
+
+			public Flux<ChatResponse> stream(Prompt prompt) {
+				return Flux.just(call(prompt));
+			}
+		};
+		ConfigCaptureHook captureHook = new ConfigCaptureHook();
+		ReactAgent child = subAgent("child_agent", longModel, captureHook);
+		AgentTracer tracer = enabledTracer();
+		TaskTraceCorrelation correlation = new TaskTraceCorrelation(clock, Duration.ofMinutes(30));
+		DefaultTaskRepository repository = new DefaultTaskRepository();
+		TaskTool tool = new TaskTool(Map.of("child_agent", child), repository, tracer, correlation);
+		TaskOutputTool output = new TaskOutputTool(repository, tracer, correlation);
+
+		String launchResult = tool.apply(new TaskTool.Request("desc", "prompt", "child_agent", true),
+				toolContext(parentConfig()));
+		Matcher matcher = Pattern.compile("task_id: (task_[a-f0-9\\-]+)").matcher(launchResult);
+		assertThat(matcher.find()).isTrue();
+		String taskId = matcher.group(1);
+
+		String firstPoll = output.apply(new TaskOutputTool.Request(taskId, true, 20000L), toolContext(parentConfig()));
+
+		assertThat(firstPoll).contains("Status: Completed").contains("late response");
+
+		// The second poll happens after 31 minutes of clock time: without the
+		// completion-time refresh the submission-anchored window has already lapsed
+		// and the receive span could no longer link.
+		output.apply(new TaskOutputTool.Request(taskId, false, 1L), toolContext(parentConfig()));
+
+		List<Observation.Context> receives = this.handler.stopped.stream()
+			.filter(span -> span.getName().equals(AgentTraceOperation.TASK_RECEIVE.operationName()))
+			.toList();
+		assertThat(receives).hasSize(2);
+		assertThat(receives.get(0).getHighCardinalityKeyValue(AgentTraceKeys.LINK_DELEGATION_ID)).isNotNull();
+		assertThat(receives.get(1).getHighCardinalityKeyValue(AgentTraceKeys.LINK_DELEGATION_ID))
+			.as("the completion-time refresh must keep the link alive past the submission window")
+			.isNotNull();
+	}
+
+	@Test
+	@DisplayName("polling an unknown task sweeps expired entries without a new submission")
+	void aPollOfAnUnknownTaskSweepsAllExpiredEntriesWithoutANewSubmission() throws Exception {
+		MutableClock clock = new MutableClock(Instant.parse("2026-11-22T12:00:00Z"));
+		AgentTracer tracer = enabledTracer();
+		TaskTraceCorrelation correlation = new TaskTraceCorrelation(clock, Duration.ofMinutes(30));
+		DefaultTaskRepository repository = new DefaultTaskRepository();
+		TaskOutputTool output = new TaskOutputTool(repository, tracer, correlation);
+		correlation.record("task-stale-1", AgentTraceContext.capture(null, null).withTaskId("task-stale-1"));
+		correlation.record("task-stale-2", AgentTraceContext.capture(null, null).withTaskId("task-stale-2"));
+		// Completed tasks: running entries are retained and never expire.
+		correlation.refresh("task-stale-1");
+		correlation.refresh("task-stale-2");
+		clock.advance(Duration.ofMinutes(31));
+
+		String result = output.apply(new TaskOutputTool.Request("task-never-existed", false, 1L),
+				toolContext(parentConfig()));
+
+		assertThat(result).contains("No background task found");
+		assertThat(correlation.retainedCount())
+			.as("one poll must sweep every expired entry, submission or not (#370 review gap 2)")
+			.isZero();
+	}
+
+	@Test
+	@DisplayName("polling a removed task releases its correlation")
+	void aPollOfARemovedTaskReleasesItsCorrelation() throws Exception {
+		ReactAgent child = mock(ReactAgent.class);
+		when(child.call(anyString())).thenReturn(ChatMessage.assistant("done"));
+		AgentTracer tracer = enabledTracer();
+		TaskTraceCorrelation correlation = TaskTraceCorrelation.empty();
+		DefaultTaskRepository repository = new DefaultTaskRepository();
+		TaskTool tool = new TaskTool(Map.of("child_agent", child), repository, tracer, correlation);
+		TaskOutputTool output = new TaskOutputTool(repository, tracer, correlation);
+
+		String launchResult = tool.apply(new TaskTool.Request("desc", "prompt", "child_agent", true),
+				toolContext(parentConfig()));
+		Matcher matcher = Pattern.compile("task_id: (task_[a-f0-9\\-]+)").matcher(launchResult);
+		assertThat(matcher.find()).isTrue();
+		String taskId = matcher.group(1);
+		repository.removeTask(taskId);
+
+		String result = output.apply(new TaskOutputTool.Request(taskId, false, 1L), toolContext(parentConfig()));
+
+		assertThat(result).contains("No background task found");
+		assertThat(correlation.retainedCount())
+			.as("a task removed from the repository must not keep a stranded correlation")
+			.isZero();
+	}
+
 	static final class RecordingHandler implements ObservationHandler<Observation.Context> {
 
 		final List<Observation.Context> stopped = new CopyOnWriteArrayList<>();
@@ -341,6 +508,36 @@ class TaskToolTraceCorrelationTests {
 		@Override
 		public Flux<ChatResponse> stream(Prompt prompt) {
 			return Flux.just(call(prompt));
+		}
+
+	}
+
+	/** Mutable clock for deterministic retention tests (the #331 metrics pattern). */
+	static final class MutableClock extends java.time.Clock {
+
+		private java.time.Instant now;
+
+		private MutableClock(java.time.Instant now) {
+			this.now = now;
+		}
+
+		private void advance(Duration duration) {
+			this.now = this.now.plus(duration);
+		}
+
+		@Override
+		public java.time.ZoneOffset getZone() {
+			return java.time.ZoneOffset.UTC;
+		}
+
+		@Override
+		public java.time.Clock withZone(java.time.ZoneId zone) {
+			return this;
+		}
+
+		@Override
+		public java.time.Instant instant() {
+			return this.now;
 		}
 
 	}

@@ -81,6 +81,9 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 		this.taskRepository = taskRepository;
 		this.agentTracer = agentTracer;
 		this.traceCorrelation = traceCorrelation;
+		if (this.traceCorrelation != null) {
+			this.taskRepository.addLifecycleListener(this.traceCorrelation::forgetAll);
+		}
 	}
 
 	@Override
@@ -98,6 +101,12 @@ public class TaskOutputTool implements BiFunction<TaskOutputTool.Request, ToolCo
 		BackgroundTask bgTask = this.taskRepository.getTask(request.taskId(), callerTenantId);
 
 		if (bgTask == null) {
+			// The task was removed, cleared or expired in the repository: release the
+			// correlation so an idle shared store converges without new submissions
+			// (#370 review gap 2).
+			if (this.traceCorrelation != null) {
+				this.traceCorrelation.forget(request.taskId());
+			}
 			return "Error: No background task found with ID: " + request.taskId();
 		}
 
