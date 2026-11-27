@@ -45,6 +45,8 @@ import static io.github.agentic.ai.workflow.graph.StateGraph.END;
 import static io.github.agentic.ai.workflow.graph.StateGraph.START;
 import static io.github.agentic.ai.workflow.graph.scheduling.ScheduleLifecycleListener.ScheduleEvent.EXECUTION_COMPLETED;
 import static io.github.agentic.ai.workflow.graph.scheduling.ScheduleLifecycleListener.ScheduleEvent.EXECUTION_FAILED;
+import static io.github.agentic.ai.workflow.graph.scheduling.ScheduleLifecycleListener.ScheduleEvent.EXECUTION_STARTED;
+import static io.github.agentic.ai.workflow.graph.scheduling.ScheduleLifecycleListener.ScheduleEvent.STOPPED;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -79,6 +81,42 @@ class ScheduledAgentTaskLifecycleTest {
 		assertEquals(1, count(events, EXECUTION_FAILED));
 		assertEquals(1, count(events, EXECUTION_COMPLETED));
 		assertTrue(manager.getTask(task.getTaskId()).isEmpty());
+	}
+
+	@Test
+	void stoppingFromAFailureListenerPreventsAnotherGraphAttempt() throws Exception {
+		registerRecordingManager();
+		AtomicInteger attempts = new AtomicInteger();
+		CopyOnWriteArrayList<ScheduleLifecycleListener.ScheduleEvent> events = new CopyOnWriteArrayList<>();
+		AtomicReference<ScheduledAgentTask> scheduledTask = new AtomicReference<>();
+		ScheduledAgentTask task = new ScheduledAgentTask(graphFailingFirstAttempts(attempts, 1),
+				ScheduleConfig.builder()
+					.initialDelay(0)
+					.maxRetries(1)
+					.retryDelay(Duration.ZERO)
+					.addListener(new ScheduleLifecycleListener() {
+						@Override
+						public void onEvent(ScheduleEvent event, Object data) {
+							events.add(event);
+							if (event == EXECUTION_FAILED) {
+								scheduledTask.get().stop();
+							}
+						}
+					})
+					.build());
+		scheduledTask.set(task);
+		task.start();
+
+		manager.scheduler.runNext();
+
+		assertEquals(1, attempts.get());
+		assertEquals(1, count(events, EXECUTION_STARTED));
+		assertEquals(1, count(events, EXECUTION_FAILED));
+		assertEquals(1, count(events, STOPPED));
+		assertEquals(0, count(events, EXECUTION_COMPLETED));
+		assertTrue(task.isStopped());
+		assertTrue(manager.getTask(task.getTaskId()).isEmpty());
+		assertEquals(1, manager.unregisterCount(task.getTaskId()));
 	}
 
 	@Test
