@@ -121,7 +121,7 @@
 
         <ojdbc-provider-oson.version>1.1.0</ojdbc-provider-oson.version>
 
-        <mcp.sdk.version>2.1.0</mcp.sdk.version>
+        <mcp.sdk.version>2.2.0</mcp.sdk.version>
         <a2a-sdk.version>0.3.4</a2a-sdk.version>
 
         <!-- JSpecify Version -->
