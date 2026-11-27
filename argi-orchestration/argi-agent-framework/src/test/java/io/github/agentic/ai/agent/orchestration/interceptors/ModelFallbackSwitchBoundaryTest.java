@@ -18,6 +18,7 @@ package io.github.agentic.ai.agent.orchestration.interceptors;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.github.agentic.ai.agent.fallback.ModelFallbackException;
 import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
@@ -314,7 +315,7 @@ class ModelFallbackSwitchBoundaryTest {
 	}
 
 	@Test
-	void recommendedOrderRetriesEachModelBeforeFailingOver() {
+	void streamingRetryExhaustsTotalBudgetBeforeFailover() {
 		StubClient fallback = new StubClient("fallback");
 		List<String> modelCalls = new ArrayList<>();
 		AtomicInteger primaryAttempts = new AtomicInteger();
@@ -329,7 +330,7 @@ class ModelFallbackSwitchBoundaryTest {
 			.retryableExceptionPredicate(failure -> true)
 			.build();
 		// The agent applies the interceptor list outermost-first, so registering the
-		// fallback before the retry gives "retry each model, then fail over".
+		// fallback and retry must share the same two dispatches.
 		ModelCallHandler model = request -> {
 			modelCalls.add(String.valueOf(request.getChatClient()));
 			if (request.getChatClient() == fallback) {
@@ -343,13 +344,17 @@ class ModelFallbackSwitchBoundaryTest {
 
 		ModelResponse result = fallbackInterceptor.interceptModel(ModelRequest.builder().build(), chain);
 		StepVerifier.create(JdkFlowAdapter.flowPublisherToFlux(result.getStream()))
-			.expectNextMatches(event -> event.type() == ChatEvent.Type.RESPONSE
-					&& "fallback".equals(event.response().text()))
-			.expectComplete()
+			.expectErrorSatisfies(error -> {
+				assertThat(error).isInstanceOfSatisfying(ModelFallbackException.class, failure -> {
+					assertThat(failure.reason()).isEqualTo(ModelFallbackException.Reason.ATTEMPT_LIMIT);
+					assertThat(failure.attempts()).isEqualTo(2);
+					assertThat(failure.switches()).isZero();
+				});
+			})
 			.verify(Duration.ofSeconds(5));
 
 		assertThat(primaryAttempts).as("the inner retry exhausts the primary before the failover").hasValue(2);
-		assertThat(modelCalls).hasSize(3);
+		assertThat(modelCalls).containsExactly("null", "null");
 	}
 
 	@Test

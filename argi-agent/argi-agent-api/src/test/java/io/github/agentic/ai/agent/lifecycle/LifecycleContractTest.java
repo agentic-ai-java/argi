@@ -16,6 +16,7 @@
 package io.github.agentic.ai.agent.lifecycle;
 
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
+import io.github.agentic.ai.agent.retry.ModelAttempt;
 import io.github.agentic.ai.runtime.execution.ExecutionBudget;
 import io.github.agentic.ai.runtime.execution.DelegationScope;
 import io.github.agentic.ai.runtime.execution.PrincipalReference;
@@ -504,6 +505,19 @@ class LifecycleContractTest {
 		assertThrows(UnsupportedOperationException.class, observed::clear);
 		shared.add("y");
 		assertEquals(List.of("x"), invocation.request().getAttributes().get("trace"));
+	}
+
+	@Test
+	void aRequestRewriteCannotRestartTheAttemptBudget() {
+		ModelCallInvocation seed = modelCallWithTrustedContext(null);
+		var position = new ModelAttempt(2, 3);
+		var limited = new ModelCallInvocation(seed.identity(), seed.modelTurn(),
+				ModelRequest.builder(seed.request()).modelAttempt(position).build());
+		assertEquals(position, limited.request().getModelAttempt().orElseThrow());
+		assertThrows(IllegalArgumentException.class, () ->
+				ModelRequest.builder(limited.request()).modelAttempt(new ModelAttempt(1, 4)));
+		assertEquals("model attempt budget must not change", LifecycleMutationGuard.check(
+				new LifecycleEvent.ModelCallRequested(limited), new LifecycleEvent.ModelCallRequested(seed)).orElseThrow());
 	}
 
 	@Test

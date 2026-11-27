@@ -105,3 +105,10 @@ does not replay tool calls, it does not own a persistent retry budget and it doe
 change the boundary of a streaming response that already produced output. The
 assembly of the retry behaviour as a lifecycle strategy, together with the other model
 policies, belongs to the lifecycle chain and to the model policy work.
+
+## Combining retry with fallback
+
+Register fallback before retry to retry a candidate before considering the next one.
+Both policies count the primary call. The smaller of the retry and fallback total
+attempt limits applies to the entire model turn, including switches. See the
+[configuration and migration example](model-fallback.md).

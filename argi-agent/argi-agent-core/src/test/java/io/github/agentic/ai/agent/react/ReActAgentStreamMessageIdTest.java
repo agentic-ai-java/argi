@@ -15,11 +15,16 @@
  */
 package io.github.agentic.ai.agent.react;
 
+import java.io.IOException;
+import java.util.Set;
 import io.github.agentic.ai.agent.AgentExecutionContext;
 import io.github.agentic.ai.agent.AgentEvent;
 import io.github.agentic.ai.agent.AgentOutcome;
 import io.github.agentic.ai.agent.AgentRequest;
 import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
+import io.github.agentic.ai.agent.fallback.ModelFallbackConfig;
+import io.github.agentic.ai.agent.fallback.ModelFallbackPolicy;
+import io.github.agentic.ai.agent.retry.ModelCallFailureCategory;
 import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
@@ -80,6 +85,27 @@ class ReActAgentStreamMessageIdTest {
 
 	private static final String SCHEMA = "{\"type\":\"object\",\"required\":[\"answer\"],"
 			+ "\"additionalProperties\":false,\"properties\":{\"answer\":{\"type\":\"string\"}}}";
+
+	@Test
+	void configuredFallbackPreservesTheIndependentAgentsPublicStreamBoundary() throws Exception {
+		RuntimeException failure = new RuntimeException(new IOException("unavailable"));
+		ScriptedStreamClient backup = ScriptedStreamClient.of(List.of(TurnScript.of(List.of(ChatEvent.textDelta("ok")),
+				response(ChatMessage.assistant("ok"), List.of(), 1))));
+		var config = new ModelFallbackConfig(List.of("backup"),
+				new ModelFallbackPolicy(Set.of(ModelCallFailureCategory.TRANSIENT), 1, 2));
+		var fallback = config.bind(Map.of("backup", backup));
+		ScriptedStreamClient partial = ScriptedStreamClient.of(List.of(TurnScript.failingAfter(
+				List.of(ChatEvent.textDelta("partial")), failure)));
+		MessageView failed = runSingleTurn(partial, builder -> builder.interceptors(List.of(fallback)));
+		assertEquals(Map.of("model-0", "partial"), failed.deltaTexts());
+		assertEquals(failure, assertFailure(failed));
+		assertEquals(1, backup.turns.size());
+
+		ScriptedStreamClient unavailable = ScriptedStreamClient.of(List.of(TurnScript.failingAfter(List.of(), failure)));
+		MessageView recovered = runSingleTurn(unavailable, builder -> builder.interceptors(List.of(fallback)));
+		assertEquals(Map.of("model-0", "ok"), recovered.snapshotTexts());
+		assertTrue(backup.turns.isEmpty());
+	}
 
 	@Test
 	void multiFragmentDeltasSealUnderTheSnapshotId() throws Exception {

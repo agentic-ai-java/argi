@@ -70,6 +70,13 @@ public final class LifecycleMutationGuard {
 					after.invocation().request().getTrustedExecutionContext())) {
 				return Optional.of("trusted execution context must not change");
 			}
+			if (!before.invocation().request().getModelAttempt().equals(after.invocation().request().getModelAttempt())) {
+				return Optional.of("model attempt budget must not change");
+			}
+			if (before.invocation().request().getExecutionGuard().orElse(null)
+					!= after.invocation().request().getExecutionGuard().orElse(null)) {
+				return Optional.of("execution guard must not change");
+			}
 			return Optional.empty();
 		}
 		if (original instanceof LifecycleEvent.ToolCallRequested before) {

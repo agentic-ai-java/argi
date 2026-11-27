@@ -27,6 +27,11 @@ import io.github.agentic.ai.api.chat.Usage;
 import io.github.agentic.ai.api.chat.ToolDefinition;
 import io.github.agentic.ai.api.tool.Tool;
 import io.github.agentic.ai.api.tool.ToolRegistry;
+import io.github.agentic.ai.agent.fallback.ModelFallbackConfig;
+import io.github.agentic.ai.agent.fallback.ModelFallbackException;
+import io.github.agentic.ai.agent.fallback.ModelFallbackPolicy;
+import io.github.agentic.ai.agent.retry.ModelCallFailureCategory;
+import io.github.agentic.ai.agent.orchestration.interceptor.modelretry.ModelRetryInterceptor;
 import io.github.agentic.ai.agent.orchestration.ReactAgent;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
@@ -38,6 +43,9 @@ import io.github.agentic.ai.agent.orchestration.interceptor.modelfallback.ModelF
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.io.IOException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -216,6 +224,75 @@ class ModelFallbackNeutralClientTest {
 		reactor.adapter.JdkFlowAdapter.flowPublisherToFlux(wrapped).blockLast();
 		assertThat(original.getToolRegistry().find("lookup")).containsSame(tool);
 	}
+
+	@Test
+	void configuredAgentUsesFirstHealthyClientInDeclaredOrder() throws Exception {
+		RuntimeException unavailable = new RuntimeException(new IOException("unavailable"));
+		StubClient primary = new StubClient(null, unavailable);
+		StubClient first = new StubClient(null, unavailable);
+		StubClient second = new StubClient("recovered", null);
+		ModelFallbackConfig config = new ObjectMapper().readValue("""
+				{"candidates":["first","second"],
+				 "policy":{"switchableCategories":["TRANSIENT"],"maxSwitches":2,"maxTotalAttempts":3}}
+				""", ModelFallbackConfig.class);
+		var agent = ReactAgent.builder().name("configured-failover").chatClient(primary)
+			.interceptors(config.bind(Map.of("second", second, "first", first))).build();
+		assertThat(agent.call("hello").text()).isEqualTo("recovered");
+		assertThat(primary.requests).hasSize(1);
+		assertThat(first.requests).containsExactlyElementsOf(primary.requests);
+		assertThat(second.requests).containsExactlyElementsOf(primary.requests);
+		assertThatThrownBy(() -> config.bind(Map.of("second", second))).hasMessageContaining("first");
+	}
+
+	@Test
+	void disallowedFailureAndSwitchLimitStopBeforeDispatch() {
+		StubClient alternative = new StubClient("unreachable", null);
+		RuntimeException rejected = new IllegalArgumentException("permanent");
+		RuntimeException unavailable = new RuntimeException(new IOException("unavailable"));
+		var config = new ModelFallbackConfig(List.of("backup"),
+				new ModelFallbackPolicy(Set.of(ModelCallFailureCategory.TRANSIENT), 0, 4));
+		var policy = config.bind(Map.of("backup", alternative));
+		for (RuntimeException failure : List.of(rejected, unavailable)) {
+			List<ChatClient> calls = new ArrayList<>();
+			assertThatThrownBy(() -> policy.interceptModel(ModelRequest.builder().build(), request -> {
+				calls.add(request.getChatClient());
+				throw failure;
+			})).isInstanceOfSatisfying(ModelFallbackException.class, stopped -> {
+				assertThat(stopped.reason()).isEqualTo(failure == rejected
+						? ModelFallbackException.Reason.NON_SWITCHABLE : ModelFallbackException.Reason.SWITCH_LIMIT);
+				assertThat(stopped.attempts()).isOne();
+				assertThat(stopped.switches()).isZero();
+				assertThat(stopped.getCause()).isSameAs(failure);
+			});
+			assertThat(calls).containsExactly((ChatClient) null);
+		}
+	}
+
+	@Test
+	void retryOnSecondCandidateOnlyGetsTheRemainingAttempts() {
+		StubClient backup = new StubClient(null, null);
+		List<ChatClient> calls = new ArrayList<>();
+		var retry = ModelRetryInterceptor.builder().maxAttempts(5).initialDelay(0)
+			.retryableExceptionPredicate(error -> error instanceof IllegalStateException).build();
+		var fallback = ModelFallbackInterceptor.builder().addFallbackClient(backup)
+			.policy(new ModelFallbackPolicy(Set.of(ModelCallFailureCategory.UNKNOWN), 1, 3)).build();
+		ModelCallHandler terminal = request -> {
+			calls.add(request.getChatClient());
+			if (request.getChatClient() == null) {
+				throw new IllegalArgumentException("switch");
+			}
+			throw new IllegalStateException("retry");
+		};
+		assertThatThrownBy(() -> fallback.interceptModel(ModelRequest.builder().build(),
+				request -> retry.interceptModel(request, terminal)))
+			.isInstanceOfSatisfying(ModelFallbackException.class, stopped -> {
+				assertThat(stopped.reason()).isEqualTo(ModelFallbackException.Reason.ATTEMPT_LIMIT);
+				assertThat(stopped.attempts()).isEqualTo(3);
+				assertThat(stopped.switches()).isOne();
+			});
+		assertThat(calls).containsExactly(null, backup, backup);
+	}
+
 
 	private static Tool tool(String name) {
 		Tool tool = mock(Tool.class);

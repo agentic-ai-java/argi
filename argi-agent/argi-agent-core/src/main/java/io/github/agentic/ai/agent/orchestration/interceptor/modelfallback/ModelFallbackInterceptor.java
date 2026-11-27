@@ -15,11 +15,19 @@
  */
 package io.github.agentic.ai.agent.orchestration.interceptor.modelfallback;
 
+import io.github.agentic.ai.agent.fallback.ModelFallbackException;
+import io.github.agentic.ai.agent.fallback.ModelFallbackPolicy;
 import io.github.agentic.ai.agent.interceptor.ModelCallHandler;
 import io.github.agentic.ai.agent.interceptor.ModelInterceptor;
 import io.github.agentic.ai.agent.interceptor.ModelRequest;
 import io.github.agentic.ai.agent.interceptor.ModelResponse;
-
+import io.github.agentic.ai.agent.retry.ModelAttempt;
+import io.github.agentic.ai.agent.retry.ModelCallFailure;
+import io.github.agentic.ai.agent.retry.ModelCallFailureCategory;
+import io.github.agentic.ai.agent.retry.ModelCallFailureClassifier;
+import io.github.agentic.ai.agent.retry.ModelRetryFailure;
+import io.github.agentic.ai.agent.retry.RetryStopReason;
+import io.github.agentic.ai.agent.retry.TypeBasedModelCallFailureClassifier;
 import io.github.agentic.ai.api.chat.ChatClient;
 import io.github.agentic.ai.api.chat.ChatEvent;
 import io.github.agentic.ai.runtime.execution.ExecutionGuard;
@@ -29,9 +37,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import reactor.adapter.JdkFlowAdapter;
 import reactor.core.publisher.Flux;
@@ -51,8 +56,7 @@ import reactor.core.scheduler.Schedulers;
  * response owns its switch sequence.
  *
  * When combined with {@code ModelRetryInterceptor}, register this interceptor first
- * (outermost), so each model is retried to exhaustion before the sequence fails over to
- * the next candidate.
+ * (outermost), so retry and fallback share the smaller configured total attempt limit.
  *
  * Example: ModelFallbackInterceptor interceptor = ModelFallbackInterceptor.builder()
  * .addFallbackClient(primaryAlternative) .addFallbackClient(secondaryAlternative)
@@ -60,7 +64,9 @@ import reactor.core.scheduler.Schedulers;
  */
 public class ModelFallbackInterceptor extends ModelInterceptor {
 
-	private static final Logger log = LoggerFactory.getLogger(ModelFallbackInterceptor.class);
+	private final ModelFallbackPolicy policy;
+
+	private final ModelCallFailureClassifier classifier;
 
 	/** Bounds the cause-chain walks; a cyclic chain must not spin the thread forever. */
 	private static final int MAX_CAUSE_DEPTH = 32;
@@ -68,6 +74,8 @@ public class ModelFallbackInterceptor extends ModelInterceptor {
 	private final List<ChatClient> fallbackClients;
 
 	private ModelFallbackInterceptor(Builder builder) {
+		this.policy = builder.policy;
+		this.classifier = builder.classifier;
 		this.fallbackClients = List.copyOf(builder.fallbackClients);
 	}
 
@@ -77,165 +85,95 @@ public class ModelFallbackInterceptor extends ModelInterceptor {
 
 	@Override
 	public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
-		Exception lastException = null;
+		ModelAttempt first = request.getModelAttempt().orElseGet(ModelAttempt::first);
+		return callCandidates(request, handler, 0, first.boundedBy(policy.maxTotalAttempts()));
+	}
 
-		// A cancelled or expired run is terminal: no provider call at all, the primary
-		// included, mirroring the per-attempt guard check of the retry interceptor.
-		assertRunActive(request);
-
-		// Try primary model first
-		try {
-			return withSwitchBoundary(request, handler, handler.call(request), 0);
-		}
-		catch (Exception e) {
-			propagateCancellation(e);
-			log.warn("Primary model failed: {}", e.getMessage());
-			lastException = e;
-		}
-
-		// Try fallback models in sequence
-		for (int i = 0; i < fallbackClients.size(); i++) {
-			// A cancelled or expired run is terminal: no further provider call.
+	private ModelResponse callCandidates(ModelRequest request, ModelCallHandler handler, int index, ModelAttempt attempt) {
+		while (true) {
 			assertRunActive(request);
+			propagateCancellation(null);
+			ModelRequest.Builder candidate = ModelRequest.builder(request).modelAttempt(attempt);
+			if (index > 0) {
+				candidate.chatClient(fallbackClients.get(index - 1));
+			}
 			try {
-				log.info("Trying fallback client {} of {}", i + 1, fallbackClients.size());
-				// Reuse the request pipeline so system messages, tools and usage are
-				// retained.
-				ModelResponse fallback = handler
-					.call(ModelRequest.builder(request).chatClient(fallbackClients.get(i)).build());
-				return withSwitchBoundary(request, handler, fallback, i + 1);
+				ModelResponse response = handler.call(candidate.build());
+				if (!response.isStreaming()) {
+					return response;
+				}
+				return withSwitchBoundary(request, handler, response, index, attempt);
 			}
-			catch (Exception e) {
-				propagateCancellation(e);
-				log.warn("Fallback model {} failed: {}", i + 1, e.getMessage());
-				lastException = e;
+			catch (Exception failure) {
+				propagateCancellation(failure);
+				attempt = nextAttempt(request, failure, index, attempt);
+				index++;
 			}
 		}
-
-		// All models failed
-		throw allClientsFailed(lastException);
 	}
 
-	/**
-	 * Attaches the switch boundary to a candidate's streaming response. A
-	 * non-streaming response is returned unchanged. Every subscription of the returned
-	 * publisher owns its own switch state, so a repeated subscription replays the
-	 * captured candidate stream instead of resuming the fallback sequence of an earlier
-	 * one.
-	 */
 	private ModelResponse withSwitchBoundary(ModelRequest request, ModelCallHandler handler, ModelResponse response,
-			int nextClientIndex) {
-		if (!response.isStreaming()) {
-			return response;
-		}
-		return ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(
-				switchingFluxDeferred(request, handler, JdkFlowAdapter.flowPublisherToFlux(response.getStream()),
-						nextClientIndex)));
-	}
-
-	/**
-	 * The deferred form of the switch boundary: fresh switch state per subscription and
-	 * a subscription-time interrupt check, mirroring the retry interceptor.
-	 */
-	private Flux<ChatEvent> switchingFluxDeferred(ModelRequest request, ModelCallHandler handler,
-			Flux<ChatEvent> candidateFlux, int nextClientIndex) {
-		return Flux.defer(() -> {
-			// Mirrors the retry interceptor: a subscribing thread that is already
-			// interrupted must not start (or resume) a provider sequence.
-			if (Thread.currentThread().isInterrupted()) {
-				return Flux.<ChatEvent>error(new CancellationException("Model call interrupted"));
-			}
-			return switchingFlux(request, handler, candidateFlux, nextClientIndex);
-		});
-	}
-
-	/**
-	 * Wraps one candidate's stream with the switch boundary: a failure that arrives
-	 * before any event has been emitted downstream switches to the next candidate,
-	 * because no observable effect has escaped yet. Once an event — text delta, tool
-	 * call, usage or response — has been emitted, the failure terminates the stream: a
-	 * second model's output must never be appended to a partially delivered one. A
-	 * cancellation keeps its unwrapped identity on both sides of that boundary.
-	 */
-	private Flux<ChatEvent> switchingFlux(ModelRequest request, ModelCallHandler handler, Flux<ChatEvent> candidateFlux,
-			int nextClientIndex) {
-		AtomicBoolean eventEmitted = new AtomicBoolean(false);
-		return candidateFlux.doOnNext(event -> eventEmitted.set(true)).onErrorResume(error -> {
-			if (error instanceof Error) {
-				return Flux.error(error);
-			}
-			// The error signal itself carries the cancellation truth on a reactive
-			// thread; the thread's interrupt flag belongs to the pool, not to this run,
-			// and is deliberately not consulted here.
-			CancellationException cancellation = findWrappedCancellation(error);
-			if (cancellation != null) {
-				log.info("Streaming candidate failed with a cancellation; terminating the fallback sequence: {}",
-						cancellation.getMessage());
-				return Flux.error(cancellation);
-			}
-			if (eventEmitted.get()) {
-				return Flux.error(error);
-			}
-			// Dispatch off the signal thread: a non-streaming fallback candidate would
-			// otherwise park the thread that delivered the failure, which for a Netty
-			// event loop stalls every other stream multiplexed on it.
-			return Flux.defer(() -> nextClientFlux(request, handler, nextClientIndex, toException(error)))
-				.subscribeOn(Schedulers.boundedElastic());
-		});
-	}
-
-	/**
-	 * Streams the next fallback candidate, advancing until one succeeds or the sequence
-	 * is exhausted. A cancellation, however wrapped, and a dead execution guard end the
-	 * sequence instead of dispatching another provider call.
-	 */
-	private Flux<ChatEvent> nextClientFlux(ModelRequest request, ModelCallHandler handler, int clientIndex,
-			Exception lastException) {
-		if (clientIndex >= fallbackClients.size()) {
-			return Flux.error(allClientsFailed(lastException));
-		}
-		try {
+			int index, ModelAttempt attempt) {
+		Flux<ChatEvent> candidate = JdkFlowAdapter.flowPublisherToFlux(response.getStream());
+		Flux<ChatEvent> stream = Flux.defer(() -> {
 			assertRunActive(request);
-		}
-		catch (Exception lostRun) {
-			return Flux.error(lostRun);
-		}
-		log.info("Trying fallback client {} of {}", clientIndex + 1, fallbackClients.size());
-		try {
-			ModelResponse next = handler
-				.call(ModelRequest.builder(request).chatClient(fallbackClients.get(clientIndex)).build());
-			if (next.isStreaming()) {
-				return switchingFluxDeferred(request, handler, JdkFlowAdapter.flowPublisherToFlux(next.getStream()),
-						clientIndex + 1);
+			propagateCancellation(null);
+			AtomicBoolean emitted = new AtomicBoolean();
+			return candidate.doOnNext(event -> emitted.set(true)).onErrorResume(error -> {
+				if (error instanceof Error) {
+					return Flux.error(error);
+				}
+				CancellationException cancellation = findWrappedCancellation(error);
+				if (cancellation != null) {
+					return Flux.error(cancellation);
+				}
+				if (emitted.get()) {
+					return Flux.error(error);
+				}
+				ModelAttempt next = nextAttempt(request, error, index, attempt);
+				// Synchronous alternatives must not block the provider's signal thread.
+				return Flux.defer(() -> {
+					ModelResponse alternative = callCandidates(request, handler, index + 1, next);
+					return alternative.isStreaming() ? JdkFlowAdapter.flowPublisherToFlux(alternative.getStream())
+							: Flux.just(ChatEvent.response(alternative.getChatResponse()));
+				}).subscribeOn(Schedulers.boundedElastic());
+			});
+		});
+		return ModelResponse.stream(JdkFlowAdapter.publisherToFlowPublisher(stream));
+	}
+
+	private ModelAttempt nextAttempt(ModelRequest request, Throwable failure, int switches, ModelAttempt attempt) {
+		assertRunActive(request);
+		if (failure instanceof ModelRetryFailure retry) {
+			if (retry.reason() != RetryStopReason.NON_RETRYABLE && retry.reason() != RetryStopReason.ATTEMPTS_EXHAUSTED) {
+				throw retry;
 			}
-			return Flux.just(ChatEvent.response(next.getChatResponse()));
+			attempt = retry.attempt();
+			failure = retry.getCause();
 		}
-		catch (Exception e) {
-			CancellationException cancellation = findWrappedCancellation(e);
-			if (cancellation != null) {
-				return Flux.error(cancellation);
-			}
-			log.warn("Fallback model {} failed: {}", clientIndex + 1, e.getMessage());
-			return nextClientFlux(request, handler, clientIndex + 1, e);
+		ModelCallFailure classified = classifier.classify(failure);
+		ModelCallFailureCategory category = classified == null ? ModelCallFailureCategory.UNKNOWN : classified.category();
+		ModelFallbackException.Reason reason;
+		if (!policy.switchableCategories().contains(category)) {
+			reason = ModelFallbackException.Reason.NON_SWITCHABLE;
 		}
+		else if (attempt.exhausted()) {
+			reason = ModelFallbackException.Reason.ATTEMPT_LIMIT;
+		}
+		else if (switches == fallbackClients.size()) {
+			reason = ModelFallbackException.Reason.CANDIDATES_EXHAUSTED;
+		}
+		else if (switches == policy.maxSwitches()) {
+			reason = ModelFallbackException.Reason.SWITCH_LIMIT;
+		}
+		else {
+			return attempt.next();
+		}
+		throw new ModelFallbackException(reason, attempt.number(), switches, failure);
 	}
 
 	private static void assertRunActive(ModelRequest request) {
 		request.getExecutionGuard().ifPresent(ExecutionGuard::assertActive);
-	}
-
-	private RuntimeException allClientsFailed(Exception lastException) {
-		StringBuilder sequence = new StringBuilder("primary");
-		for (int i = 1; i <= fallbackClients.size(); i++) {
-			sequence.append(", fallback-").append(i);
-		}
-		return new RuntimeException(
-				"All clients failed after " + (fallbackClients.size() + 1) + " attempts (" + sequence + ")",
-				lastException);
-	}
-
-	private static Exception toException(Throwable error) {
-		return error instanceof Exception exception ? exception : new RuntimeException(error);
 	}
 
 	private static void propagateCancellation(Exception failure) {
@@ -314,6 +252,20 @@ public class ModelFallbackInterceptor extends ModelInterceptor {
 	public static class Builder {
 
 		private final List<ChatClient> fallbackClients = new ArrayList<>();
+
+		private ModelFallbackPolicy policy = ModelFallbackPolicy.legacy();
+
+		private ModelCallFailureClassifier classifier = new TypeBasedModelCallFailureClassifier();
+
+		public Builder policy(ModelFallbackPolicy policy) {
+			this.policy = Objects.requireNonNull(policy);
+			return this;
+		}
+
+		public Builder failureClassifier(ModelCallFailureClassifier classifier) {
+			this.classifier = Objects.requireNonNull(classifier);
+			return this;
+		}
 
 		public Builder addFallbackClient(ChatClient client) {
 			this.fallbackClients.add(Objects.requireNonNull(client, "Fallback client must not be null"));
