@@ -241,14 +241,15 @@ public class ScheduledAgentTask {
 		}
 		try {
 			int attempt = 0;
-			while (attempt <= config.getMaxRetries()) {
+			while (attempt <= config.getMaxRetries() && isExecutionPermitted()) {
 				try {
 					executeGraphAttempt(config.getRunnableConfig(), config.getInputs());
 					return;
 				}
 				catch (Exception e) {
 					log.warn("Graph execution failed (attempt {}): {}", attempt + 1, e.getMessage());
-					if (attempt < config.getMaxRetries() && config.getRetryPredicate().apply(e)) {
+					if (attempt < config.getMaxRetries() && config.getRetryPredicate().apply(e)
+							&& isExecutionPermitted()) {
 						attempt++;
 						try {
 							Thread.sleep(config.getRetryDelay().toMillis());
