@@ -56,3 +56,7 @@ bom-consumer-verify: ## Verify the managed versions as an out-of-repo consumer i
 	./mvnw -B -pl argi-bom -am install -DskipTests=true
 	python tools/scripts/check-bom-consistency.py --verify-consumer --mvn ./mvnw
 
+.PHONY: extensions-compat-self-test
+extensions-compat-self-test: ## Run the offline self-test of the cross-repo compatibility gate (issue #229)
+	bash tools/scripts/verify-extensions-compatibility.sh --self-test
+
