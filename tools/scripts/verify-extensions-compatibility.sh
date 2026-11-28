@@ -53,7 +53,8 @@ candidate_version_from_output() {
 	local output="$1"
 	local version
 	version="$(printf '%s\n' "${output}" | sed '/^[[:space:]]*$/d' | tail -n 1 | tr -d '\r')"
-	if [[ -z "${version}" || "${version}" == "null" || "${version}" == *'$'* ]]; then
+	if [[ -z "${version}" || "${version}" == "null" || "${version}" == *'$'*
+			|| ! "${version}" =~ ^[0-9][0-9A-Za-z._-]*$ ]]; then
 		return 1
 	fi
 	printf '%s' "${version}"
@@ -170,6 +171,8 @@ self_test() {
 main() {
 	local extensions_dir=""
 	local core_dir="${core_dir_default}"
+	# Cleanup runs from the EXIT trap after main has returned: these must be global.
+	declare -g maven_repo owned_maven_repo tmp_parent
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 			--core-dir)
@@ -225,7 +228,10 @@ main() {
 
 	echo "Extracting the candidate Core version from ${core_dir}"
 	local candidate_version
-	candidate_version="$(extract_candidate_version "${core_dir}")"
+	if ! candidate_version="$(extract_candidate_version "${core_dir}")"; then
+		echo "VERIFY-FAIL: could not extract the candidate Core version from ${core_dir}; check that the build resolves its own revision" >&2
+		exit 3
+	fi
 	echo "Candidate Core version: ${candidate_version} (Extensions default is deliberately overridden)"
 
 	echo "Testing and installing Core ${candidate_version} into ${maven_repo}"
